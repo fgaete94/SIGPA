@@ -29,9 +29,7 @@ Los despachos se organizan por **comuna y día de la semana** a lo largo de dist
 ## 🛒 Catálogo de productos (MVP)
 
 - Botellón 20L
-- Bidón 10L
-- Botella 1.5L
-- Botella 500ml
+- Bidón 12L
 
 ---
 
