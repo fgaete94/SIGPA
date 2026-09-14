@@ -1,10 +1,27 @@
 import json
+import logging
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from openai import AsyncOpenAI
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
+from app.core.database import SessionLocal
+from app.models import Cliente, DetallePedido, Pedido, Producto
+from app.models.enums import EstadoPedido
+
+logger = logging.getLogger(__name__)
 
 MODEL = "gpt-4o-mini"
+
+CATALOGO_NOMBRES = [
+    "Bidón 12L Nuevo",
+    "Bidón 12L Recarga",
+    "Bidón 20L Nuevo",
+    "Bidón 20L Recarga",
+]
 
 _client: AsyncOpenAI | None = None
 
@@ -37,11 +54,14 @@ Tu tarea es leer el mensaje del cliente (y el contexto de la conversación previ
 {
   "intencion": "...",
   "productos": [{"nombre_producto": "...", "cantidad": N}],
+  "aclaracion_pendiente": null o {"capacidad_litros": 12 o 20, "cantidad": N},
   "usa_direccion_habitual": bool,
   "direccion_texto": null o string,
   "esperando_ubicacion": bool,
   "notas": null o string,
   "pedido_completo": bool,
+  "producto_consultado": null o string,
+  "nombre_cliente": null o string,
   "respuesta_sugerida": "..."
 }
 
@@ -59,37 +79,81 @@ Reglas para "intencion":
 
 Reglas para "productos":
 - "nombre_producto" debe ser exactamente uno de los 4 nombres del catálogo ("Bidón 12L Nuevo", "Bidón 12L Recarga", "Bidón 20L Nuevo", "Bidón 20L Recarga"), nunca una variante inventada ni una versión sin aclarar (por ejemplo, nunca "Bidón 12L" a secas).
-- Si el cliente pidió un bidón de 12L o 20L sin especificar "nuevo" o "recarga", NO agregues ese ítem a "productos" todavía: no sabes cuál de las dos variantes corresponde. Deja ese ítem fuera de "productos" (la lista puede quedar vacía, o incluir solo los ítems que sí estén aclarados) hasta que el cliente aclare.
+- Si el cliente pidió un bidón de 12L o 20L sin especificar "nuevo" o "recarga", NO agregues ese ítem a "productos" todavía: no sabes cuál de las dos variantes corresponde. Deja ese ítem fuera de "productos" (la lista puede quedar vacía, o incluir solo los ítems que sí estén aclarados) hasta que el cliente aclare, y regístralo en "aclaracion_pendiente" (ver más abajo) en vez de solo mencionarlo en "respuesta_sugerida".
 - "cantidad" es un entero. Si el cliente no especifica cantidad, usa 1.
 - Si la intención no es "pedido", "productos" debe ser una lista vacía [].
+
+Reglas para "aclaracion_pendiente":
+- Sirve para recordar, de forma estructurada (no solo en el texto), un ítem de bidón que quedó ambiguo (falta decidir "nuevo" o "recarga") y que el backend te devolverá como parte del contexto en el siguiente turno.
+- Si detectas un ítem ambiguo (bidón de 12L o 20L sin aclarar nuevo/recarga) en el mensaje actual, pon "aclaracion_pendiente": {"capacidad_litros": 12 o 20, "cantidad": N} con la capacidad y cantidad que el cliente pidió. Si hay más de un ítem ambiguo a la vez, usa el más reciente que mencionó el cliente y pregunta por ese primero.
+- Si el contexto recibido trae "aclaracion_pendiente" con un valor no nulo, y el mensaje actual del cliente lo resuelve (ej. responde "recarga", "nuevo", "el nuevo", "recarga porfa"), arma el producto completo combinando "capacidad_litros" y "cantidad" de ese contexto con la aclaración del mensaje actual, agrégalo a "productos" (con "nombre_producto" exacto, ej. "Bidón 20L Recarga"), y deja "aclaracion_pendiente": null.
+- Si el contexto trae "aclaracion_pendiente" no nulo pero el mensaje actual NO lo resuelve (el cliente dice otra cosa), vuelve a devolver el mismo valor de "aclaracion_pendiente" (no lo pierdas) y sigue preguntando en "respuesta_sugerida".
+- Si no hay ningún ítem ambiguo pendiente ni nuevo, usa "aclaracion_pendiente": null. Si la intención no es "pedido", también debe ser null.
+
+Ejemplo (dos turnos consecutivos del mismo cliente):
+1. Cliente: "Quiero 2 bidones de 20 litros" (sin contexto previo)
+   → {"intencion": "pedido", "productos": [], "aclaracion_pendiente": {"capacidad_litros": 20, "cantidad": 2}, ..., "respuesta_sugerida": "¿Los 2 bidones de 20L los quieres nuevos (con envase) o de recarga (solo el agua, entregando tu bidón vacío)?"}
+2. Cliente: "Recarga" (contexto recibido incluye "aclaracion_pendiente": {"capacidad_litros": 20, "cantidad": 2})
+   → {"intencion": "pedido", "productos": [{"nombre_producto": "Bidón 20L Recarga", "cantidad": 2}], "aclaracion_pendiente": null, ...}
+
+Ejemplo (cliente EXISTENTE confirma su dirección habitual, dos turnos consecutivos):
+1. Cliente existente ya tiene sus productos aclarados (es_cliente_nuevo: false) y el contexto aún no registra que se le preguntó por la dirección.
+   → {"intencion": "pedido", "productos": [{"nombre_producto": "Bidón 20L Recarga", "cantidad": 2}], "usa_direccion_habitual": false, "direccion_texto": null, "esperando_ubicacion": false, "pedido_completo": false, ..., "respuesta_sugerida": "¿Confirmas tu dirección habitual o prefieres indicar una distinta para este pedido?"}
+2. Cliente: "Sí, la habitual"
+   → {"intencion": "pedido", "productos": [{"nombre_producto": "Bidón 20L Recarga", "cantidad": 2}], "usa_direccion_habitual": true, "direccion_texto": null, "esperando_ubicacion": false, "pedido_completo": true, ..., "respuesta_sugerida": "¡Perfecto! Confirmo tu pedido: 2x Bidón 20L Recarga, a tu dirección habitual."}
+   (Nota: "esperando_ubicacion" queda en false en ambos turnos — nunca se le pide ubicación cuando confirma la dirección habitual.)
+
+Ejemplo (cliente NUEVO: se necesitan nombre, dirección escrita Y ubicación, las tres cosas):
+1. Cliente nuevo (es_cliente_nuevo: true): "Quiero 1 bidón de 12L nuevo" (contexto sin "nombre_cliente", sin "direccion_texto", ubicación no recibida)
+   → {"intencion": "pedido", "productos": [{"nombre_producto": "Bidón 12L Nuevo", "cantidad": 1}], "usa_direccion_habitual": false, "direccion_texto": null, "esperando_ubicacion": true, "nombre_cliente": null, "pedido_completo": false, ..., "respuesta_sugerida": "¡Perfecto! Para continuar necesito: la dirección de despacho (calle y número), que compartas tu ubicación de WhatsApp, y a nombre de quién registramos el pedido."}
+2. Cliente responde "Av. Siempre Viva 123, soy Juan Pérez" y además comparte su ubicación de WhatsApp (el backend lo agrega al contexto como ubicación ya recibida)
+   → {"intencion": "pedido", "productos": [{"nombre_producto": "Bidón 12L Nuevo", "cantidad": 1}], "usa_direccion_habitual": false, "direccion_texto": "Av. Siempre Viva 123", "esperando_ubicacion": false, "nombre_cliente": "Juan Pérez", "pedido_completo": true, ..., "respuesta_sugerida": "¡Gracias, Juan! Confirmo tu pedido: 1x Bidón 12L Nuevo, a Av. Siempre Viva 123."}
+   (Nota: si al cliente le hubiera faltado solo uno de los tres datos —por ejemplo, compartió ubicación y dio su nombre pero no escribió la dirección— "pedido_completo" seguiría en false y "respuesta_sugerida" debe pedir puntualmente lo que falte.)
 
 Reglas para la dirección de despacho ("usa_direccion_habitual", "direccion_texto", "esperando_ubicacion"):
 - El contexto de la conversación te indica si el cliente es nuevo o existente (dato "es_cliente_nuevo"). Nunca lo infieras del mensaje.
 - IMPORTANTE: nunca recibes ni procesas coordenadas directamente. Cuando el cliente comparte su ubicación de WhatsApp, eso lo captura y guarda el backend (mensaje de tipo "location"), no tú. Tu única responsabilidad respecto a la ubicación es decidir cuándo pedirla ("esperando_ubicacion": true) y redactar ese pedido en "respuesta_sugerida".
-- Caso cliente NUEVO (es_cliente_nuevo = true): no existe una dirección habitual guardada, así que nunca la ofrezcas como opción. Para todo pedido debes pedirle que comparta su ubicación de WhatsApp:
-  - "usa_direccion_habitual": false.
-  - "direccion_texto": null, salvo que el cliente ya haya escrito una dirección de todos modos (en ese caso inclúyela como string).
-  - "esperando_ubicacion": true, y "respuesta_sugerida" debe pedir explícitamente que comparta su ubicación de WhatsApp.
-- Caso cliente EXISTENTE (es_cliente_nuevo = false) y aún no ha dicho si usa su dirección habitual o una distinta:
-  - "usa_direccion_habitual": false (por defecto, hasta que confirme).
-  - "esperando_ubicacion": false.
-  - "respuesta_sugerida" debe preguntarle si confirma su dirección habitual guardada o si quiere indicar una dirección distinta para este pedido.
-- Caso cliente EXISTENTE que confirma usar su dirección habitual:
-  - "usa_direccion_habitual": true.
-  - "direccion_texto": null (la dirección real la resuelve el backend con los datos guardados del cliente).
-  - "esperando_ubicacion": false.
-- Caso cliente (nuevo o existente) que pide o ya viene pidiendo una dirección DISTINTA a la habitual para este pedido:
-  - "usa_direccion_habitual": false.
-  - "direccion_texto": la dirección en texto que el cliente escribió, o null si aún no la ha dado.
+- REGLA CRÍTICA: si "usa_direccion_habitual" es true, "esperando_ubicacion" DEBE ser false SIEMPRE — nunca pidas ubicación a un cliente que ya confirmó usar su dirección habitual, sin importar si es cliente nuevo o existente.
+- Caso cliente NUEVO (es_cliente_nuevo = true): no existe una dirección habitual guardada, así que nunca la ofrezcas como opción. Para completar el pedido necesitas AMBOS datos de despacho, no solo uno: la dirección escrita (calle y número) Y que comparta su ubicación de WhatsApp — son dos datos distintos y los dos son obligatorios, uno no reemplaza al otro:
+  - "usa_direccion_habitual": false (siempre; un cliente nuevo no tiene dirección habitual guardada).
+  - "direccion_texto": la dirección en texto que el cliente haya escrito, o null si todavía no la ha dado. Pídesela explícitamente mientras siga null.
   - "esperando_ubicacion": true hasta que el contexto entregado indique que ya se recibió la ubicación de WhatsApp.
-  - Mientras falte "direccion_texto" y/o la ubicación, "respuesta_sugerida" debe pedir ambos datos (la dirección escrita Y que comparta su ubicación de WhatsApp), sin asumir que uno reemplaza al otro.
+  - "respuesta_sugerida" debe pedir, mientras falten, TODOS los datos pendientes: la dirección escrita, que comparta su ubicación de WhatsApp, y (revisa también la regla de "nombre_cliente" más abajo) su nombre si "nombre_cliente" sigue null. Puedes pedir varios de estos datos juntos en el mismo mensaje.
+- SECUENCIA OBLIGATORIA para cliente EXISTENTE (es_cliente_nuevo = false) — sigue estos 3 pasos en orden, sin saltarte ninguno:
+  1. PRIMERO, mientras el contexto no indique que ya se le preguntó y el cliente no haya respondido nada al respecto todavía, debes preguntarle explícitamente algo equivalente a "¿confirmas tu dirección habitual o prefieres indicar una distinta para este pedido?". Mientras el cliente no haya respondido esta pregunta:
+     - "usa_direccion_habitual": false.
+     - "esperando_ubicacion": false. NUNCA pidas ubicación en este paso: todavía no sabes si el cliente quiere una dirección distinta.
+  2. Si el cliente responde confirmando la habitual (ej. "sí, la habitual", "uso la de siempre", "confirmo", "la de siempre está bien"):
+     - "usa_direccion_habitual": true inmediatamente.
+     - "direccion_texto": null (la dirección real la resuelve el backend con los datos guardados del cliente).
+     - "esperando_ubicacion": false. NUNCA marques "esperando_ubicacion": true ni pidas que comparta su ubicación de WhatsApp en este caso: la dirección habitual ya está guardada y no requiere ubicación nueva.
+  3. Solo si el cliente responde explícitamente que quiere una dirección DISTINTA a la habitual (para este pedido), recién ahí pasas a pedir texto + ubicación:
+     - "usa_direccion_habitual": false.
+     - "direccion_texto": la dirección en texto que el cliente escribió, o null si aún no la ha dado.
+     - "esperando_ubicacion": true hasta que el contexto entregado indique que ya se recibió la ubicación de WhatsApp.
+     - Mientras falte "direccion_texto" y/o la ubicación, "respuesta_sugerida" debe pedir ambos datos (la dirección escrita Y que comparta su ubicación de WhatsApp), sin asumir que uno reemplaza al otro.
+
+Reglas para "producto_consultado" (solo relevante si "intencion" es "consulta_precio"; en cualquier otro caso usa null):
+- Si el cliente pregunta por el precio de un producto exacto del catálogo (ya aclarado si es "nuevo" o "recarga"), usa ese nombre exacto: "Bidón 12L Nuevo", "Bidón 12L Recarga", "Bidón 20L Nuevo" o "Bidón 20L Recarga".
+- Si el cliente pregunta por el precio de "un bidón de 12L" o "un bidón de 20L" sin aclarar si es nuevo o recarga, usa "12L" o "20L" respectivamente (así se le pueden mostrar ambos precios).
+- Si el cliente pregunta por los precios en general o por todo el catálogo (sin especificar un producto), usa "todos".
+- El precio real que se le mostrará al cliente lo agrega el backend a partir de la base de datos: no inventes montos en "respuesta_sugerida" para "consulta_precio", igual redacta una "respuesta_sugerida" razonable ya que el backend puede reemplazarla.
+
+Reglas para "nombre_cliente" (solo relevante si "es_cliente_nuevo" es true; en cualquier otro caso usa null):
+- Un cliente nuevo no tiene ficha creada todavía, así que además de la ubicación necesitas capturar su nombre antes de poder completar el pedido.
+- Si el contexto recibido ya trae "nombre_cliente" con un valor no nulo, mantenlo igual en tu respuesta (no lo pierdas ni lo pidas de nuevo), salvo que el cliente indique explícitamente otro nombre.
+- Si el cliente menciona su nombre en el mensaje actual (espontáneamente, o respondiendo a tu pregunta de "¿a nombre de quién registramos tu pedido?"), captúralo en "nombre_cliente" como string.
+- Si el contexto trae "nombre_cliente" null, es_cliente_nuevo es true, y el mensaje actual del cliente es solo un nombre de persona (sin mencionar productos, dirección ni otra cosa — ej. "Juan Pérez", "Me llamo Ana"), interpreta ese mensaje completo como la respuesta a la pregunta del nombre: pon ese nombre en "nombre_cliente" y mantén igual el resto de los campos que ya venían del contexto (productos, dirección, etc.), sin reiniciar el pedido.
+- Si todavía no lo sabes, usa "nombre_cliente": null.
 
 Reglas para "notas":
 - Usa este campo para cualquier información relevante adicional que el cliente haya dado (ej. horario preferido de entrega, indicaciones especiales). Si no hay nada relevante, usa null.
 
 Reglas para "pedido_completo":
-- true solo si la intención es "pedido" Y todos los productos que el cliente quiere están en "productos" con "nombre_producto" válido y aclarado (nunca un bidón sin decidir si es nuevo o recarga) y sus cantidades Y la dirección de despacho está resuelta: "usa_direccion_habitual" es true, O BIEN "usa_direccion_habitual" es false pero "direccion_texto" no es null Y el contexto entregado confirma que ya se recibió la ubicación de WhatsApp (esto lo determina el backend, no lo asumas por tu cuenta).
-- false en cualquier otro caso, incluyendo cuando falta información: cantidad/producto sin definir, un bidón sin aclarar si es nuevo o recarga, dirección habitual sin confirmar, o dirección distinta sin texto y/o sin ubicación aún. En todos estos casos hay que seguir preguntando.
+- true solo si la intención es "pedido" Y todos los productos que el cliente quiere están en "productos" con "nombre_producto" válido y aclarado (nunca un bidón sin decidir si es nuevo o recarga) y sus cantidades, Y además, según el tipo de cliente:
+  - Si "es_cliente_nuevo" es false (cliente EXISTENTE): la dirección de despacho está resuelta: "usa_direccion_habitual" es true, O BIEN "usa_direccion_habitual" es false pero "direccion_texto" no es null Y el contexto entregado confirma que ya se recibió la ubicación de WhatsApp (esto lo determina el backend, no lo asumas por tu cuenta).
+  - Si "es_cliente_nuevo" es true (cliente NUEVO): se requieren las TRES cosas siguientes, no basta con una o dos — "nombre_cliente" no es null, Y "direccion_texto" no es null, Y el contexto entregado confirma que ya se recibió la ubicación de WhatsApp (esto lo determina el backend, no lo asumas por tu cuenta).
+- false en cualquier otro caso, incluyendo cuando falta información: cantidad/producto sin definir, un bidón sin aclarar si es nuevo o recarga, dirección habitual sin confirmar, dirección distinta sin texto y/o sin ubicación aún, o (para cliente nuevo) nombre, dirección escrita o ubicación sin resolver. En todos estos casos hay que seguir preguntando.
 
 Reglas para "respuesta_sugerida":
 - Es el mensaje en español, breve y cordial, que se le enviará al cliente por WhatsApp como respuesta. Debe ser coherente con la intención detectada:
@@ -101,6 +165,136 @@ Reglas para "respuesta_sugerida":
 
 Responde ÚNICAMENTE con el objeto JSON, sin explicaciones, sin markdown, sin texto adicional.
 """.strip()
+
+
+def _formatear_clp(precio) -> str:
+    return f"${int(round(float(precio))):,.0f}".replace(",", ".")
+
+
+ZONA_HORARIA_CHILE = ZoneInfo("America/Santiago")
+
+
+def _formatear_fecha_chile(fecha: datetime) -> str:
+    # creado_en se guarda naive en la BD (Postgres/SQLAlchemy en UTC por defecto);
+    # se asume UTC antes de convertir a la hora real de Chile para mostrarla.
+    if fecha.tzinfo is None:
+        fecha = fecha.replace(tzinfo=ZoneInfo("UTC"))
+    return fecha.astimezone(ZONA_HORARIA_CHILE).strftime("%d/%m/%Y %H:%M")
+
+
+async def _construir_respuesta_precio(producto_consultado: str | None) -> str:
+    async with SessionLocal() as session:
+        result = await session.execute(select(Producto))
+        precios = {p.nombre: p.precio_unitario for p in result.scalars().all()}
+
+    def precio_de(nombre: str) -> str:
+        valor = precios.get(nombre)
+        return _formatear_clp(valor) if valor is not None else "precio no disponible"
+
+    if producto_consultado in CATALOGO_NOMBRES:
+        return f'El precio de "{producto_consultado}" es {precio_de(producto_consultado)}.'
+
+    if producto_consultado in ("12L", "20L"):
+        nombre_nuevo = f"Bidón {producto_consultado} Nuevo"
+        nombre_recarga = f"Bidón {producto_consultado} Recarga"
+        return (
+            f"Para el bidón de {producto_consultado} tenemos dos opciones: "
+            f'"{nombre_nuevo}" (con envase incluido) a {precio_de(nombre_nuevo)}, y '
+            f'"{nombre_recarga}" (solo el agua, entregando tu bidón vacío) a {precio_de(nombre_recarga)}. '
+            "¿Cuál de las dos prefieres?"
+        )
+
+    lineas = [f"- {nombre}: {precio_de(nombre)}" for nombre in CATALOGO_NOMBRES]
+    return "Estos son nuestros precios vigentes:\n" + "\n".join(lineas)
+
+
+async def construir_resumen_pedido(productos: list[dict]) -> dict:
+    if not productos:
+        raise ValueError("La lista de productos está vacía; no se puede construir el resumen del pedido.")
+
+    nombres = [item["nombre_producto"] for item in productos]
+
+    async with SessionLocal() as session:
+        result = await session.execute(select(Producto).where(Producto.nombre.in_(nombres)))
+        productos_bd = {p.nombre: p for p in result.scalars().all()}
+
+    faltantes = sorted({nombre for nombre in nombres if nombre not in productos_bd})
+    if faltantes:
+        raise ValueError(
+            "Los siguientes productos no existen en el catálogo (nombre no coincide con la BD): "
+            + ", ".join(faltantes)
+        )
+
+    lineas = []
+    total = 0.0
+    for item in productos:
+        nombre = item["nombre_producto"]
+        cantidad = item["cantidad"]
+        precio_unitario = float(productos_bd[nombre].precio_unitario)
+        subtotal = precio_unitario * cantidad
+        total += subtotal
+        lineas.append(
+            {
+                "nombre": nombre,
+                "cantidad": cantidad,
+                "precio_unitario": precio_unitario,
+                "subtotal": subtotal,
+            }
+        )
+
+    lineas_texto = "\n".join(
+        f'- {linea["cantidad"]}x {linea["nombre"]} — {_formatear_clp(linea["subtotal"])}'
+        for linea in lineas
+    )
+    texto_resumen = (
+        "Resumen de tu pedido:\n"
+        f"{lineas_texto}\n"
+        f"Total: {_formatear_clp(total)}\n\n"
+        "¿Confirmas el pedido? Responde SI para confirmar."
+    )
+
+    return {"lineas": lineas, "total": total, "texto_resumen": texto_resumen}
+
+
+ESTADOS_PEDIDO_ACTIVOS = (
+    EstadoPedido.PENDIENTE,
+    EstadoPedido.CONFIRMADO,
+    EstadoPedido.EN_DESPACHO,
+)
+
+
+async def _construir_respuesta_pedidos(phone: str) -> str:
+    async with SessionLocal() as session:
+        result = await session.execute(select(Cliente).where(Cliente.telefono == phone))
+        cliente = result.scalar_one_or_none()
+
+        if cliente is None:
+            return "Aún no tienes pedidos registrados con nosotros."
+
+        result = await session.execute(
+            select(Pedido)
+            .where(Pedido.cliente_id == cliente.id, Pedido.estado.in_(ESTADOS_PEDIDO_ACTIVOS))
+            .order_by(Pedido.creado_en.desc())
+            .options(selectinload(Pedido.detalles).selectinload(DetallePedido.producto))
+        )
+        pedidos = result.scalars().all()
+
+    if not pedidos:
+        return "No tienes pedidos activos en este momento."
+
+    bloques = []
+    for pedido in pedidos:
+        lineas_producto = "\n".join(
+            f"- {detalle.cantidad}x {detalle.producto.nombre}" for detalle in pedido.detalles
+        )
+        fecha = _formatear_fecha_chile(pedido.creado_en)
+        bloques.append(
+            f"Pedido #{pedido.id} ({pedido.estado.value}) - {fecha}\n"
+            f"{lineas_producto}\n"
+            f"Total: {_formatear_clp(pedido.total)}"
+        )
+
+    return "Tus pedidos activos:\n\n" + "\n\n".join(bloques)
 
 
 async def interpret_message(
@@ -135,6 +329,27 @@ async def interpret_message(
         model=MODEL,
         messages=messages,
         response_format={"type": "json_object"},
+        temperature=0,
     )
 
-    return json.loads(response.choices[0].message.content)
+    usage = response.usage
+    if usage is not None:
+        logger.info(
+            "[OpenAI usage] phone=%s prompt_tokens=%s completion_tokens=%s total_tokens=%s",
+            phone,
+            usage.prompt_tokens,
+            usage.completion_tokens,
+            usage.total_tokens,
+        )
+
+    resultado = json.loads(response.choices[0].message.content)
+
+    if resultado.get("intencion") == "consulta_precio":
+        resultado["respuesta_sugerida"] = await _construir_respuesta_precio(
+            resultado.get("producto_consultado")
+        )
+
+    if resultado.get("intencion") == "consulta_pedidos":
+        resultado["respuesta_sugerida"] = await _construir_respuesta_pedidos(phone)
+
+    return resultado

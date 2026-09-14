@@ -18,6 +18,7 @@ MENSAJES_PRUEBA = [
     "Necesito una máquina dispensadora",
     "Ayúdame a escribir un poema",
     "Hola",
+    "¿Qué productos tienen disponibles y a cuánto?",
 ]
 
 

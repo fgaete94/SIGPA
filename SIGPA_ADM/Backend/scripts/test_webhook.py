@@ -53,7 +53,7 @@ def build_payload() -> dict:
 
 def main():
     payload = build_payload()
-    response = httpx.post(WEBHOOK_URL, json=payload)
+    response = httpx.post(WEBHOOK_URL, json=payload, timeout=30.0)
     print(f"Status: {response.status_code}")
     print(f"Response: {response.text}")
 

@@ -10,7 +10,7 @@ import asyncio
 from sqlalchemy import select
 
 from app.core.database import SessionLocal
-from app.models import Producto
+from app.models import Cliente, Producto
 
 PRODUCTOS_SEED = [
     {"nombre": "Bidón 12L Nuevo", "precio_unitario": 6000, "stock": 0, "capacidad_litros": 12},
@@ -18,6 +18,14 @@ PRODUCTOS_SEED = [
     {"nombre": "Bidón 20L Nuevo", "precio_unitario": 6000, "stock": 0, "capacidad_litros": 20},
     {"nombre": "Bidón 20L Recarga", "precio_unitario": 2500, "stock": 0, "capacidad_litros": 20},
 ]
+
+CLIENTE_SEED = {
+    "nombre": "Cliente de Prueba",
+    "telefono": "56900000000",
+    "latitud": -33.0472,
+    "longitud": -71.6127,
+    "activo": True,
+}
 
 
 async def seed_productos() -> None:
@@ -60,9 +68,36 @@ async def seed_productos() -> None:
         print("Ya existían: ninguno")
 
 
+async def seed_cliente_prueba() -> None:
+    async with SessionLocal() as session:
+        try:
+            result = await session.execute(
+                select(Cliente).where(Cliente.telefono == CLIENTE_SEED["telefono"])
+            )
+            cliente = result.scalar_one_or_none()
+
+            if cliente is not None:
+                creado = False
+            else:
+                session.add(Cliente(**CLIENTE_SEED))
+                creado = True
+
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+
+    print("=== Resumen del seed de cliente de prueba ===")
+    if creado:
+        print(f"Insertado: {CLIENTE_SEED['nombre']} ({CLIENTE_SEED['telefono']})")
+    else:
+        print(f"Ya existía: {CLIENTE_SEED['nombre']} ({CLIENTE_SEED['telefono']})")
+
+
 async def main() -> None:
     try:
         await seed_productos()
+        await seed_cliente_prueba()
     except Exception as exc:
         print("[ERROR] Falló el seed de datos:")
         print(repr(exc))
