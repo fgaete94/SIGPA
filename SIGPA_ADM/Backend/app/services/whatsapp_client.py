@@ -23,12 +23,19 @@ async def send_whatsapp_message(to: str, message: str) -> dict | None:
     async with httpx.AsyncClient() as client:
         response = await client.post(url, headers=headers, json=payload)
 
+    try:
+        response_body = response.json()
+    except ValueError:
+        response_body = response.text
+
+    # TEMPORAL: log completo para debugging, quitar cuando se resuelva el problema.
+    logger.info(
+        "WhatsApp API response (status %s): %s",
+        response.status_code,
+        response_body,
+    )
+
     if response.status_code != 200:
-        logger.error(
-            "Error sending WhatsApp message (status %s): %s",
-            response.status_code,
-            response.text,
-        )
         return None
 
-    return response.json()
+    return response_body

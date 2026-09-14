@@ -25,12 +25,24 @@ async def receive_webhook(request: Request):
     try:
         message = payload["entry"][0]["changes"][0]["value"]["messages"][0]
         phone_number = message["from"]
-        message_text = message.get("text", {}).get("body")
-        print(f"[WhatsApp] From: {phone_number} - Message: {message_text}")
+        message_type = message.get("type")
 
-        # TODO: conectar la lógica del agente para procesar el mensaje entrante
-        # Llamada de prueba temporal para validar el envío real vía Graph API
-        await send_whatsapp_message(to=phone_number, message=f"Recibido: {message_text}")
+        if message_type == "location":
+            location = message.get("location", {})
+            latitude = location.get("latitude")
+            longitude = location.get("longitude")
+            print(f"[WhatsApp] Location from {phone_number}: lat={latitude}, lon={longitude}")
+
+            # TODO: conectar la lógica del agente. Cuando exista, esta ubicación debe
+            # guardarse en el draft_store como la ubicación pendiente de confirmar
+            # del pedido en curso para este phone_number.
+        else:
+            message_text = message.get("text", {}).get("body")
+            print(f"[WhatsApp] From: {phone_number} - Message: {message_text}")
+
+            # TODO: conectar la lógica del agente para procesar el mensaje entrante
+            # Llamada de prueba temporal para validar el envío real vía Graph API
+            await send_whatsapp_message(to=phone_number, message=f"Recibido: {message_text}")
     except (KeyError, IndexError):
         print(f"[WhatsApp] Payload without message data: {payload}")
 

@@ -9,7 +9,7 @@ from app.core.config import settings
 
 WEBHOOK_URL = "http://localhost:8000/webhook"
 
-SENDER_PHONE_NUMBER = "TU_NUMERO_REAL"
+SENDER_PHONE_NUMBER = "56957721243"
 MESSAGE_TEXT = "Hola, esto es una prueba"
 
 
