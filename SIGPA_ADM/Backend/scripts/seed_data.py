@@ -17,6 +17,8 @@ PRODUCTOS_SEED = [
     {"nombre": "Bidón 12L Recarga", "precio_unitario": 2000, "stock": 0, "capacidad_litros": 12},
     {"nombre": "Bidón 20L Nuevo", "precio_unitario": 6000, "stock": 0, "capacidad_litros": 20},
     {"nombre": "Bidón 20L Recarga", "precio_unitario": 2500, "stock": 0, "capacidad_litros": 20},
+    {"nombre": "Dispensador Básico", "precio_unitario": 7000, "stock": 0, "capacidad_litros": None},
+    {"nombre": "Dispensador USB", "precio_unitario": 7000, "stock": 0, "capacidad_litros": None},
 ]
 
 CLIENTE_SEED = {

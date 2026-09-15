@@ -54,16 +54,18 @@ def _contexto_desde_draft(draft: dict | None) -> dict | None:
 async def _interpretar_con_debug(
     phone: str, message: str, es_cliente_nuevo: bool, context: dict | None
 ) -> dict:
-    # TODO(temporal): logging de debug para diagnosticar un bug puntual. Quitar
-    # una vez resuelto.
-    logger.info("[DEBUG contexto] %s", json.dumps(context, ensure_ascii=False))
+    # Logging de debug para diagnosticar problemas de interpretación. Usa
+    # logger.debug a propósito: no aparece con el nivel INFO por defecto, así
+    # que no hace falta quitarlo; si se necesita volver a diagnosticar algo,
+    # basta con subir temporalmente el nivel de logging a DEBUG.
+    logger.debug("[DEBUG contexto] %s", json.dumps(context, ensure_ascii=False))
     resultado = await interpret_message(
         phone=phone,
         message=message,
         es_cliente_nuevo=es_cliente_nuevo,
         context=context,
     )
-    logger.info("[DEBUG resultado_llm] %s", json.dumps(resultado, ensure_ascii=False))
+    logger.debug("[DEBUG resultado_llm] %s", json.dumps(resultado, ensure_ascii=False))
     return resultado
 
 
