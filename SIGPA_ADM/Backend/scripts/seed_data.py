@@ -19,6 +19,10 @@ PRODUCTOS_SEED = [
     {"nombre": "Bidón 20L Recarga", "precio_unitario": 2500, "stock": 0, "capacidad_litros": 20},
     {"nombre": "Dispensador Básico", "precio_unitario": 7000, "stock": 0, "capacidad_litros": None},
     {"nombre": "Dispensador USB", "precio_unitario": 7000, "stock": 0, "capacidad_litros": None},
+    {"nombre": "Promo Dispensador Básico + 1 Bidón", "precio_unitario": 11000, "stock": 0, "capacidad_litros": None},
+    {"nombre": "Promo Dispensador Básico + 2 Bidones", "precio_unitario": 17000, "stock": 0, "capacidad_litros": None},
+    {"nombre": "Promo Dispensador USB + 1 Bidón", "precio_unitario": 11000, "stock": 0, "capacidad_litros": None},
+    {"nombre": "Promo Dispensador USB + 2 Bidones", "precio_unitario": 17000, "stock": 0, "capacidad_litros": None},
 ]
 
 CLIENTE_SEED = {

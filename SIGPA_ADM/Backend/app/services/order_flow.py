@@ -29,6 +29,45 @@ PREGUNTA_DIRECCION_HABITUAL = (
     "¿Confirmas tu dirección habitual o prefieres indicar una distinta para este pedido?"
 )
 
+PREGUNTA_ALGO_MAS = "¿Deseas agregar algo más a tu pedido?"
+
+MENSAJE_CONTINUAR_PEDIDO_GENERICO = (
+    "¡Perfecto, ya tengo registrada tu dirección de despacho! ¿Cómo seguimos con tu pedido?"
+)
+
+# Frases (no solo palabras sueltas) que indican que el texto está PIDIENDO o
+# volviendo a CONFIRMAR dirección/ubicación al cliente. Deliberadamente más
+# específicas que un simple "direcci"/"ubicaci": una mención declarativa y
+# legítima como "...a tu dirección habitual" o "ya registré tu ubicación" no
+# debe dispararlas, solo un pedido/confirmación real (segunda persona:
+# "confirmas", "compartas", "indica", etc.).
+_FRASES_REABREN_DIRECCION_UBICACION = (
+    "confirmas tu dirección",
+    "confirmas tu direccion",
+    "confirmes tu dirección",
+    "confirmes tu direccion",
+    "confirmar tu dirección",
+    "confirmar tu direccion",
+    "indicar una distinta",
+    "indicar tu dirección",
+    "indicar tu direccion",
+    "indica tu dirección",
+    "indica tu direccion",
+    "cuál es tu dirección",
+    "cual es tu direccion",
+    "compartas tu ubicación",
+    "compartas tu ubicacion",
+    "compartas la ubicación",
+    "compartas la ubicacion",
+    "compartir tu ubicación",
+    "compartir tu ubicacion",
+    "comparte tu ubicación",
+    "comparte tu ubicacion",
+    "necesito tu ubicación",
+    "necesito tu ubicacion",
+    "necesito que compartas",
+)
+
 MENSAJE_PEDIR_NOMBRE = "¿A nombre de quién registramos tu pedido?"
 
 MENSAJE_ERROR_PEDIDO = (
@@ -48,7 +87,41 @@ def _contexto_desde_draft(draft: dict | None) -> dict | None:
         "notas": draft.get("notas"),
         "ubicacion_recibida": draft.get("ubicacion") is not None,
         "nombre_cliente": draft.get("nombre_cliente"),
+        "algo_mas_preguntado": bool(draft.get("algo_mas_preguntado")),
     }
+
+
+def _pedido_listo_salvo_algo_mas(
+    resultado: dict, es_cliente_nuevo: bool, ubicacion_recibida: bool
+) -> bool:
+    """True si productos/dirección/nombre ya están resueltos y lo único que
+    falta para pedido_completo es el paso "¿algo más?" (ver SYSTEM_PROMPT).
+    Se usa solo para trackear "algo_mas_preguntado" en el draft, nunca para
+    forzar pedido_completo por código (eso lo decide el LLM)."""
+    productos = resultado.get("productos") or []
+    if not productos or resultado.get("aclaracion_pendiente"):
+        return False
+    if es_cliente_nuevo:
+        return (
+            bool(resultado.get("nombre_cliente"))
+            and resultado.get("direccion_texto") is not None
+            and ubicacion_recibida
+        )
+    return bool(resultado.get("usa_direccion_habitual")) or (
+        resultado.get("direccion_texto") is not None and ubicacion_recibida
+    )
+
+
+def _menciona_direccion_o_ubicacion(texto: str | None) -> bool:
+    """Detección por frases: True si el texto vuelve a pedir o confirmar
+    dirección, o pide compartir ubicación, en vez de solo mencionarla de
+    paso (ver _FRASES_REABREN_DIRECCION_UBICACION). Se usa para sanear
+    respuestas del LLM que reabren ese tema cuando ya no corresponde (ver
+    salvaguarda centralizada de dirección en _aplicar_resultado_llm)."""
+    if not texto:
+        return False
+    texto_normalizado = texto.lower()
+    return any(frase in texto_normalizado for frase in _FRASES_REABREN_DIRECCION_UBICACION)
 
 
 async def _interpretar_con_debug(
@@ -72,25 +145,52 @@ async def _interpretar_con_debug(
 async def _aplicar_resultado_llm(
     phone: str, resultado: dict, draft_previo: dict | None, es_cliente_nuevo: bool
 ) -> str:
-    direccion_preguntada = bool((draft_previo or {}).get("direccion_preguntada"))
+    draft_previo = draft_previo or {}
+    direccion_preguntada = bool(draft_previo.get("direccion_preguntada"))
+    respuesta_a_sanear = False
 
-    if resultado.get("usa_direccion_habitual"):
-        # Salvaguarda: la dirección habitual nunca requiere ubicación, sin
-        # importar qué haya devuelto el LLM en "esperando_ubicacion" ni si el
-        # cliente es nuevo o existente. pedido_completo se recalcula sin
-        # exigir ubicación (solo productos y, si aplica, nombre_cliente).
-        nombre_resuelto = (not es_cliente_nuevo) or bool(resultado.get("nombre_cliente"))
+    # Salvaguarda CENTRALIZADA de dirección/ubicación: un solo punto de
+    # verdad sobre "¿ya está resuelta la dirección de despacho?", aplicado
+    # en todos los caminos del flujo. Reemplaza a las dos salvaguardas
+    # puntuales que existían antes (una solo para "usa_direccion_habitual",
+    # otra solo para el primer "esperando_ubicacion" de un cliente
+    # existente). Son tres ramas mutuamente excluyentes según el momento del
+    # flujo en el que estemos, pero comparten el mismo mecanismo de saneo de
+    # texto más abajo (respuesta_a_sanear):
+    if direccion_preguntada:
+        # A) La dirección YA quedó resuelta en un turno anterior
+        #    (draft_previo.direccion_preguntada == True). El LLM no debe
+        #    volver a tocarla en este turno:
+        #    1. Ignoramos cualquier cambio que proponga a
+        #       "usa_direccion_habitual"/"direccion_texto": se mantienen los
+        #       valores que ya estaban en el draft.
+        #    2. Forzamos "esperando_ubicacion": False incondicionalmente: la
+        #       ubicación, si hacía falta, ya se resolvió o no aplica aquí.
+        #    3. Si el texto que sugirió el LLM en este turno vuelve a pedir o
+        #       confirmar dirección o a pedir ubicación (bug intermitente del
+        #       LLM), lo marcamos para reemplazarlo más abajo por el texto
+        #       que sí corresponde al estado real del pedido en este punto.
+        respuesta_a_sanear = _menciona_direccion_o_ubicacion(resultado.get("respuesta_sugerida"))
         resultado = {
             **resultado,
+            "usa_direccion_habitual": draft_previo.get("usa_direccion_habitual"),
+            "direccion_texto": draft_previo.get("direccion_texto"),
             "esperando_ubicacion": False,
-            "pedido_completo": bool(resultado.get("productos")) and nombre_resuelto,
         }
+    elif resultado.get("usa_direccion_habitual"):
+        # B) La dirección se resuelve recién EN ESTE turno: el cliente
+        #    acaba de confirmar su dirección habitual (draft_previo todavía
+        #    no tenía direccion_preguntada=True). Aceptamos ese cambio tal
+        #    como lo decidió el LLM —no hay nada que "ignorar" todavía—,
+        #    pero la dirección habitual nunca requiere ubicación: forzamos
+        #    "esperando_ubicacion": False y saneamos el texto si de todas
+        #    formas la pidió por error en esta misma respuesta.
+        respuesta_a_sanear = _menciona_direccion_o_ubicacion(resultado.get("respuesta_sugerida"))
+        resultado = {**resultado, "esperando_ubicacion": False}
         direccion_preguntada = True
-
-    if not es_cliente_nuevo and not direccion_preguntada and resultado.get("esperando_ubicacion"):
-        # Salvaguarda: a un cliente existente nunca se le debe pedir ubicación
-        # sin antes haberle preguntado explícitamente por su dirección habitual,
-        # aunque el LLM se haya saltado ese paso.
+    elif not es_cliente_nuevo and resultado.get("esperando_ubicacion"):
+        # C) Cliente existente al que el LLM saltó a pedir ubicación sin
+        #    haber preguntado ni confirmado la dirección habitual todavía.
         resultado = {
             **resultado,
             "esperando_ubicacion": False,
@@ -100,6 +200,8 @@ async def _aplicar_resultado_llm(
         }
         direccion_preguntada = True
 
+    ubicacion_recibida = draft_previo.get("ubicacion") is not None
+
     nuevo_draft = {
         "intencion": resultado.get("intencion"),
         "productos": resultado.get("productos", []),
@@ -107,26 +209,47 @@ async def _aplicar_resultado_llm(
         "usa_direccion_habitual": resultado.get("usa_direccion_habitual"),
         "direccion_texto": resultado.get("direccion_texto"),
         "notas": resultado.get("notas"),
-        "ubicacion": (draft_previo or {}).get("ubicacion"),
+        "ubicacion": draft_previo.get("ubicacion"),
         "direccion_preguntada": direccion_preguntada,
         "nombre_cliente": resultado.get("nombre_cliente"),
     }
 
     if resultado.get("esperando_ubicacion"):
+        nuevo_draft["algo_mas_preguntado"] = False
         nuevo_draft["estado"] = "esperando_ubicacion"
         save_draft(phone, nuevo_draft)
         return resultado.get("respuesta_sugerida", MENSAJE_PEDIR_UBICACION)
 
     if resultado.get("pedido_completo"):
+        # No depende de "respuesta_sugerida": el texto que se envía es el
+        # resumen, así que aunque el LLM haya reabierto dirección/ubicación
+        # por error más arriba, ese texto nunca llega al cliente en este caso.
         resumen = await construir_resumen_pedido(resultado.get("productos", []))
+        nuevo_draft["algo_mas_preguntado"] = False
         nuevo_draft["estado"] = "esperando_confirmacion"
         nuevo_draft["resumen"] = resumen
         save_draft(phone, nuevo_draft)
         return resumen["texto_resumen"]
 
+    # pedido_completo sigue en false: si productos/dirección/nombre ya
+    # estaban resueltos y lo único pendiente era el paso "¿algo más?",
+    # marcamos algo_mas_preguntado=true para que el backend le indique al
+    # LLM, en el próximo turno, que el mensaje del cliente responde
+    # únicamente a esa pregunta (ver SYSTEM_PROMPT en agent_service.py).
+    algo_mas_pendiente = _pedido_listo_salvo_algo_mas(resultado, es_cliente_nuevo, ubicacion_recibida)
+    nuevo_draft["algo_mas_preguntado"] = algo_mas_pendiente
     nuevo_draft["estado"] = "armando"
     save_draft(phone, nuevo_draft)
-    return resultado.get("respuesta_sugerida", "")
+
+    respuesta_sugerida = resultado.get("respuesta_sugerida", "")
+    if respuesta_a_sanear:
+        # El LLM reabrió el tema de dirección/ubicación por error aunque ya
+        # estaba resuelto (ver salvaguarda centralizada más arriba): no
+        # dejamos pasar ese texto, lo reemplazamos por el que corresponde al
+        # estado real del pedido en este punto.
+        respuesta_sugerida = PREGUNTA_ALGO_MAS if algo_mas_pendiente else MENSAJE_CONTINUAR_PEDIDO_GENERICO
+
+    return respuesta_sugerida
 
 
 async def _confirmar_pedido(phone: str, draft: dict) -> str:
@@ -242,30 +365,19 @@ async def procesar_mensaje(
                 "latitud": ubicacion.get("latitude"),
                 "longitud": ubicacion.get("longitude"),
             }
-            draft["estado"] = "armando"
 
-            direccion_resuelta = draft.get("usa_direccion_habitual") or (
-                draft.get("direccion_texto") is not None
+            # No calculamos pedido_completo aquí: dejamos que el LLM lo
+            # decida (con el contexto ya actualizado, incluyendo
+            # "ubicacion_recibida": true) para que respete el paso
+            # obligatorio "¿algo más?" antes de completar el pedido, igual
+            # que en cualquier otro turno de texto.
+            resultado = await _interpretar_con_debug(
+                phone,
+                "[El cliente compartió su ubicación de WhatsApp]",
+                es_cliente_nuevo,
+                _contexto_desde_draft(draft),
             )
-            nombre_resuelto = (not es_cliente_nuevo) or bool(draft.get("nombre_cliente"))
-            pedido_completo = bool(draft.get("productos")) and direccion_resuelta and nombre_resuelto
-
-            if pedido_completo:
-                resumen = await construir_resumen_pedido(draft.get("productos", []))
-                draft["estado"] = "esperando_confirmacion"
-                draft["resumen"] = resumen
-                save_draft(phone, draft)
-                return resumen["texto_resumen"]
-
-            save_draft(phone, draft)
-            if draft.get("direccion_texto") is None and not draft.get("usa_direccion_habitual"):
-                return (
-                    "¡Gracias, ya registré tu ubicación! ¿Puedes indicarme también la "
-                    "dirección (calle y número) para este pedido?"
-                )
-            if not nombre_resuelto:
-                return f"¡Gracias, ya registré tu ubicación! {MENSAJE_PEDIR_NOMBRE}"
-            return "¡Gracias, ya registré tu ubicación! ¿Hay algo más que quieras agregar a tu pedido?"
+            return await _aplicar_resultado_llm(phone, resultado, draft, es_cliente_nuevo)
 
         save_draft(phone, draft)
         return MENSAJE_PEDIR_UBICACION
