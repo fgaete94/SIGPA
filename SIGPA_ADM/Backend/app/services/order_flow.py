@@ -14,7 +14,7 @@ from app.core.database import SessionLocal
 from app.models import Cliente, DetallePedido, Pedido, Producto
 from app.models.enums import EstadoPedido
 from app.services.agent_service import construir_resumen_pedido, interpret_message
-from app.services.draft_store import clear_draft, get_draft, save_draft
+from app.services.draft_store import clear_draft, get_draft, get_lock, save_draft
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +112,11 @@ def _pedido_listo_salvo_algo_mas(
     )
 
 
+def _ubicacion_ya_recibida(draft_previo: dict) -> bool:
+    ubicacion = draft_previo.get("ubicacion") or {}
+    return ubicacion.get("latitud") is not None and ubicacion.get("longitud") is not None
+
+
 def _menciona_direccion_o_ubicacion(texto: str | None) -> bool:
     """Detección por frases: True si el texto vuelve a pedir o confirmar
     dirección, o pide compartir ubicación, en vez de solo mencionarla de
@@ -200,6 +205,19 @@ async def _aplicar_resultado_llm(
         }
         direccion_preguntada = True
 
+    # Salvaguarda CENTRALIZADA de ubicación, INDEPENDIENTE de la de
+    # dirección de arriba (no es un "elif" de esa cadena): si la ubicación
+    # ya fue recibida en un turno anterior, el LLM nunca debe volver a
+    # pedirla en este turno, sin importar qué otro dato falte todavía
+    # (nombre, "algo más", etc.) ni qué haya pasado con la dirección en las
+    # ramas de arriba. Un mismo turno puede necesitar sanear ambos campos a
+    # la vez si el LLM se equivoca en más de uno simultáneamente.
+    if _ubicacion_ya_recibida(draft_previo) and resultado.get("esperando_ubicacion"):
+        respuesta_a_sanear = respuesta_a_sanear or _menciona_direccion_o_ubicacion(
+            resultado.get("respuesta_sugerida")
+        )
+        resultado = {**resultado, "esperando_ubicacion": False}
+
     ubicacion_recibida = draft_previo.get("ubicacion") is not None
 
     nuevo_draft = {
@@ -252,7 +270,14 @@ async def _aplicar_resultado_llm(
     return respuesta_sugerida
 
 
-async def _confirmar_pedido(phone: str, draft: dict) -> str:
+async def _confirmar_pedido(phone: str, draft: dict | None) -> str:
+    if draft is None:
+        # Idempotencia: un mensaje duplicado (ej. reintento de webhook) puede
+        # llegar después de que el primero ya confirmó el pedido y limpió el
+        # draft. En vez de fallar o crear un pedido nuevo, respondemos con un
+        # mensaje neutro.
+        return "Tu pedido ya fue confirmado anteriormente."
+
     async with SessionLocal() as session:
         try:
             result = await session.execute(select(Cliente).where(Cliente.telefono == phone))
@@ -336,53 +361,58 @@ async def procesar_mensaje(
     message_text: str | None,
     location: dict | None,
 ) -> str:
-    es_cliente_nuevo = await _es_cliente_nuevo(phone)
-    draft = get_draft(phone)
-    estado = draft.get("estado") if draft else None
+    # Serializa el procesamiento de mensajes de un mismo teléfono: si llegan
+    # dos mensajes del mismo cliente en paralelo (ej. reintento de webhook),
+    # el segundo espera a que el primero termine por completo (incluyendo
+    # cualquier escritura en el draft o creación de pedido) antes de empezar.
+    async with get_lock(phone):
+        es_cliente_nuevo = await _es_cliente_nuevo(phone)
+        draft = get_draft(phone)
+        estado = draft.get("estado") if draft else None
 
-    if draft is not None and estado == "esperando_confirmacion":
-        if draft.get("esperando_nombre"):
-            nombre_cliente = (message_text or "").strip()
-            draft["nombre_cliente"] = nombre_cliente or draft.get("nombre_cliente")
-            draft["esperando_nombre"] = False
+        if draft is not None and estado == "esperando_confirmacion":
+            if draft.get("esperando_nombre"):
+                nombre_cliente = (message_text or "").strip()
+                draft["nombre_cliente"] = nombre_cliente or draft.get("nombre_cliente")
+                draft["esperando_nombre"] = False
+                save_draft(phone, draft)
+                return await _confirmar_pedido(phone, draft)
+
+            texto_normalizado = (message_text or "").strip().lower()
+
+            if texto_normalizado in CONFIRMACIONES:
+                return await _confirmar_pedido(phone, draft)
+
+            resultado = await _interpretar_con_debug(
+                phone, message_text or "", es_cliente_nuevo, _contexto_desde_draft(draft)
+            )
+            return await _aplicar_resultado_llm(phone, resultado, draft, es_cliente_nuevo)
+
+        if draft is not None and estado == "esperando_ubicacion":
+            if message_type == "location":
+                ubicacion = location or {}
+                draft["ubicacion"] = {
+                    "latitud": ubicacion.get("latitude"),
+                    "longitud": ubicacion.get("longitude"),
+                }
+
+                # No calculamos pedido_completo aquí: dejamos que el LLM lo
+                # decida (con el contexto ya actualizado, incluyendo
+                # "ubicacion_recibida": true) para que respete el paso
+                # obligatorio "¿algo más?" antes de completar el pedido, igual
+                # que en cualquier otro turno de texto.
+                resultado = await _interpretar_con_debug(
+                    phone,
+                    "[El cliente compartió su ubicación de WhatsApp]",
+                    es_cliente_nuevo,
+                    _contexto_desde_draft(draft),
+                )
+                return await _aplicar_resultado_llm(phone, resultado, draft, es_cliente_nuevo)
+
             save_draft(phone, draft)
-            return await _confirmar_pedido(phone, draft)
-
-        texto_normalizado = (message_text or "").strip().lower()
-
-        if texto_normalizado in CONFIRMACIONES:
-            return await _confirmar_pedido(phone, draft)
+            return MENSAJE_PEDIR_UBICACION
 
         resultado = await _interpretar_con_debug(
             phone, message_text or "", es_cliente_nuevo, _contexto_desde_draft(draft)
         )
         return await _aplicar_resultado_llm(phone, resultado, draft, es_cliente_nuevo)
-
-    if draft is not None and estado == "esperando_ubicacion":
-        if message_type == "location":
-            ubicacion = location or {}
-            draft["ubicacion"] = {
-                "latitud": ubicacion.get("latitude"),
-                "longitud": ubicacion.get("longitude"),
-            }
-
-            # No calculamos pedido_completo aquí: dejamos que el LLM lo
-            # decida (con el contexto ya actualizado, incluyendo
-            # "ubicacion_recibida": true) para que respete el paso
-            # obligatorio "¿algo más?" antes de completar el pedido, igual
-            # que en cualquier otro turno de texto.
-            resultado = await _interpretar_con_debug(
-                phone,
-                "[El cliente compartió su ubicación de WhatsApp]",
-                es_cliente_nuevo,
-                _contexto_desde_draft(draft),
-            )
-            return await _aplicar_resultado_llm(phone, resultado, draft, es_cliente_nuevo)
-
-        save_draft(phone, draft)
-        return MENSAJE_PEDIR_UBICACION
-
-    resultado = await _interpretar_con_debug(
-        phone, message_text or "", es_cliente_nuevo, _contexto_desde_draft(draft)
-    )
-    return await _aplicar_resultado_llm(phone, resultado, draft, es_cliente_nuevo)
