@@ -7,7 +7,7 @@ import httpx
 
 from app.core.config import settings
 
-WEBHOOK_URL = "http://localhost:8000/webhook"
+WEBHOOK_URL = "https://sigpa-34sy.onrender.com/webhook"
 
 SENDER_PHONE_NUMBER = "56957721243"
 MESSAGE_TEXT = "Hola, esto es una prueba"
