@@ -5,11 +5,15 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
+from app.models.sector import Sector
+from app.models.comuna import Comuna
+from app.schemas.pedido import PedidoDespachoOut
+
 from app.core.database import SessionLocal
 from app.core.security import get_current_user
 from app.models.cliente import Cliente
 from app.models.detalle_pedido import DetallePedido
-from app.models.enums import EstadoPedido
+from app.models.enums import DiaSemana, EstadoPedido
 from app.models.pedido import Pedido
 from app.models.producto import Producto
 from app.schemas.pedido import (
@@ -50,6 +54,84 @@ def _pedido_a_detalle_out(pedido: Pedido) -> PedidoDetalleOut:
     ]
     return PedidoDetalleOut(**_pedido_a_out(pedido).model_dump(), lineas=lineas)
 
+
+def _pedido_despacho_a_out(pedido: Pedido) -> PedidoDespachoOut:
+    """
+    Convierte un Pedido (ya cargado con cliente -> sector -> comuna) en la
+    respuesta PedidoDespachoOut. Requiere que la consulta que trajo `pedido`
+    haya hecho selectinload de esas relaciones, si no, SQLAlchemy async
+    lanza un error al intentar acceder a ellas aquí.
+    """
+    return PedidoDespachoOut(
+        id=pedido.id,
+        cliente_id=pedido.cliente_id,
+        cliente_nombre=pedido.cliente.nombre if pedido.cliente else None,
+        cliente_telefono=pedido.cliente.telefono if pedido.cliente else None,
+        comuna_nombre=(
+            pedido.cliente.sector.comuna.nombre
+            if pedido.cliente and pedido.cliente.sector
+            else None
+        ),
+        dia_reparto=pedido.cliente.dia_reparto if pedido.cliente else None,
+        estado=pedido.estado,
+        direccion_despacho=pedido.direccion_despacho,
+        total=float(pedido.total),
+        creado_en=pedido.creado_en,
+        actualizado_en=pedido.actualizado_en,
+        latitud=pedido.latitud,
+        longitud=pedido.longitud,
+    )
+
+
+@router.get("/despacho", response_model=list[PedidoDespachoOut])
+async def listar_pedidos_despacho(
+    comuna_id: int | None = Query(None),
+    dia_reparto: DiaSemana | None = Query(None),
+):
+    """
+    Historia #67: listado de pedidos confirmados para organizar el despacho,
+    agrupados por comuna y ordenados por día de reparto configurado.
+
+    Solo incluye pedidos en estado confirmado, en_despacho o entregado
+    (los "pendiente" de confirmación y los "cancelado" no forman parte
+    de este listado, según la historia de usuario).
+
+    Filtros opcionales por query params:
+    - comuna_id: filtra a los pedidos de clientes en esa comuna
+    - dia_reparto: filtra a los pedidos de clientes con ese día de reparto
+    """
+    async with SessionLocal() as session:
+        query = (
+            select(Pedido)
+            .join(Cliente, Pedido.cliente_id == Cliente.id)
+            # LEFT JOIN porque sector_id puede ser nulo en Cliente
+            .join(Sector, Cliente.sector_id == Sector.id, isouter=True)
+            .options(
+                selectinload(Pedido.cliente)
+                .selectinload(Cliente.sector)
+                .selectinload(Sector.comuna)
+            )
+            .where(
+                Pedido.estado.in_(
+                    [EstadoPedido.CONFIRMADO, EstadoPedido.EN_DESPACHO, EstadoPedido.ENTREGADO]
+                )
+            )
+        )
+
+        if comuna_id is not None:
+            query = query.where(Sector.comuna_id == comuna_id)
+
+        if dia_reparto is not None:
+            query = query.where(Cliente.dia_reparto == dia_reparto)
+
+        # Agrupado visualmente por día de reparto y comuna, y dentro de cada
+        # grupo, los pedidos más recientes primero
+        query = query.order_by(Cliente.dia_reparto, Sector.comuna_id, Pedido.creado_en.desc())
+
+        result = await session.execute(query)
+        pedidos = result.scalars().all()
+
+        return [_pedido_despacho_a_out(pedido) for pedido in pedidos]
 
 @router.get("", response_model=list[PedidoOut])
 async def listar_pedidos(
@@ -175,3 +257,5 @@ async def actualizar_pedido(id: int, datos: PedidoUpdate):
         await session.commit()
 
         return _pedido_a_out(pedido)
+
+
