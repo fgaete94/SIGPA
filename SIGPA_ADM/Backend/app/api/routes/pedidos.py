@@ -7,7 +7,6 @@ from sqlalchemy.orm import selectinload
 
 from app.models.sector import Sector
 from app.models.comuna import Comuna
-from app.schemas.pedido import PedidoDespachoOut
 
 from app.core.database import SessionLocal
 from app.core.security import get_current_user
@@ -33,6 +32,12 @@ def _pedido_a_out(pedido: Pedido) -> PedidoOut:
         cliente_id=pedido.cliente_id,
         cliente_nombre=pedido.cliente.nombre if pedido.cliente else None,
         cliente_telefono=pedido.cliente.telefono if pedido.cliente else None,
+        comuna_nombre=(
+            pedido.cliente.sector.comuna.nombre
+            if pedido.cliente and pedido.cliente.sector
+            else None
+        ),
+        dia_reparto=pedido.cliente.dia_reparto if pedido.cliente else None,
         estado=pedido.estado,
         direccion_despacho=pedido.direccion_despacho,
         total=pedido.total,
@@ -55,35 +60,7 @@ def _pedido_a_detalle_out(pedido: Pedido) -> PedidoDetalleOut:
     return PedidoDetalleOut(**_pedido_a_out(pedido).model_dump(), lineas=lineas)
 
 
-def _pedido_despacho_a_out(pedido: Pedido) -> PedidoDespachoOut:
-    """
-    Convierte un Pedido (ya cargado con cliente -> sector -> comuna) en la
-    respuesta PedidoDespachoOut. Requiere que la consulta que trajo `pedido`
-    haya hecho selectinload de esas relaciones, si no, SQLAlchemy async
-    lanza un error al intentar acceder a ellas aquí.
-    """
-    return PedidoDespachoOut(
-        id=pedido.id,
-        cliente_id=pedido.cliente_id,
-        cliente_nombre=pedido.cliente.nombre if pedido.cliente else None,
-        cliente_telefono=pedido.cliente.telefono if pedido.cliente else None,
-        comuna_nombre=(
-            pedido.cliente.sector.comuna.nombre
-            if pedido.cliente and pedido.cliente.sector
-            else None
-        ),
-        dia_reparto=pedido.cliente.dia_reparto if pedido.cliente else None,
-        estado=pedido.estado,
-        direccion_despacho=pedido.direccion_despacho,
-        total=float(pedido.total),
-        creado_en=pedido.creado_en,
-        actualizado_en=pedido.actualizado_en,
-        latitud=pedido.latitud,
-        longitud=pedido.longitud,
-    )
-
-
-@router.get("/despacho", response_model=list[PedidoDespachoOut])
+@router.get("/despacho", response_model=list[PedidoOut])
 async def listar_pedidos_despacho(
     comuna_id: int | None = Query(None),
     dia_reparto: DiaSemana | None = Query(None),
@@ -98,7 +75,7 @@ async def listar_pedidos_despacho(
 
     Filtros opcionales por query params:
     - comuna_id: filtra a los pedidos de clientes en esa comuna
-    - dia_reparto: filtra a los pedidos de clientes con ese día de reparto
+    - dia_reparto: filtra a los pedidos de clientes con ese día de reparto.
     """
     async with SessionLocal() as session:
         query = (
@@ -131,8 +108,9 @@ async def listar_pedidos_despacho(
         result = await session.execute(query)
         pedidos = result.scalars().all()
 
-        return [_pedido_despacho_a_out(pedido) for pedido in pedidos]
+        return [_pedido_a_out(pedido) for pedido in pedidos]
 
+    
 @router.get("", response_model=list[PedidoOut])
 async def listar_pedidos(
     estado: EstadoPedido | None = Query(None),
@@ -140,7 +118,9 @@ async def listar_pedidos(
     fecha_hasta: date | None = Query(None),
 ):
     async with SessionLocal() as session:
-        query = select(Pedido).options(selectinload(Pedido.cliente))
+        query = select(Pedido).options(
+            selectinload(Pedido.cliente).selectinload(Cliente.sector).selectinload(Sector.comuna)
+            )
 
         if estado is not None:
             query = query.where(Pedido.estado == estado)
@@ -162,7 +142,7 @@ async def obtener_pedido(id: int):
             select(Pedido)
             .where(Pedido.id == id)
             .options(
-                selectinload(Pedido.cliente),
+                selectinload(Pedido.cliente).selectinload(Cliente.sector).selectinload(Sector.comuna),
                 selectinload(Pedido.detalles).selectinload(DetallePedido.producto),
             )
         )
@@ -182,7 +162,9 @@ async def crear_pedido(datos: PedidoCreate):
             raise HTTPException(status_code=404, detail="Cliente no encontrado")
 
         producto_ids = [linea.producto_id for linea in datos.lineas]
-        result = await session.execute(select(Producto).where(Producto.id.in_(producto_ids)))
+        result = await session.execute(
+            select(Producto).where(Producto.id.in_(producto_ids))
+            )
         productos_por_id = {producto.id: producto for producto in result.scalars().all()}
 
         faltantes = [pid for pid in producto_ids if pid not in productos_por_id]
@@ -229,7 +211,7 @@ async def crear_pedido(datos: PedidoCreate):
             select(Pedido)
             .where(Pedido.id == pedido.id)
             .options(
-                selectinload(Pedido.cliente),
+                selectinload(Pedido.cliente).selectinload(Cliente.sector).selectinload(Sector.comuna),
                 selectinload(Pedido.detalles).selectinload(DetallePedido.producto),
             )
         )
@@ -242,7 +224,8 @@ async def crear_pedido(datos: PedidoCreate):
 async def actualizar_pedido(id: int, datos: PedidoUpdate):
     async with SessionLocal() as session:
         result = await session.execute(
-            select(Pedido).where(Pedido.id == id).options(selectinload(Pedido.cliente))
+            select(Pedido).where(Pedido.id == id)
+            .options(selectinload(Pedido.cliente).selectinload(Cliente.sector).selectinload(Sector.comuna))
         )
         pedido = result.scalar_one_or_none()
 
