@@ -2,7 +2,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models.enums import EstadoPedido
+from app.models.enums import DiaSemana, EstadoPedido
 
 
 class PedidoOut(BaseModel):
@@ -12,6 +12,8 @@ class PedidoOut(BaseModel):
     cliente_id: int
     cliente_nombre: str | None = None
     cliente_telefono: str | None = None
+    comuna_nombre: str | None = None
+    dia_reparto: DiaSemana | None = None
     estado: EstadoPedido
     direccion_despacho: str | None = None
     total: float
