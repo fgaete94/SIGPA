@@ -42,7 +42,8 @@ from app.services.auditoria_service import construir_snapshot
 from app.services.cliente_lookup import buscar_clientes_por_telefono, normalizar_telefono
 from app.services.conversacion_bot_service import marcar_inactiva
 from app.services.draft_store import clear_draft, get_draft, get_lock, save_draft
-from app.services.horario_atencion import marcar_notificacion_ejecutiva, mensaje_derivacion_ejecutiva
+from app.services.horario_atencion import en_horario_atencion, mensaje_derivacion_ejecutiva
+from app.services.notificacion_ejecutiva import clasificar_clientes, texto_notificacion_ejecutiva
 from app.services.whatsapp_client import send_whatsapp_message
 
 logger = logging.getLogger(__name__)
@@ -176,12 +177,6 @@ MENSAJE_PRODUCTOS_NO_REGISTRADOS = (
     "Antes de mostrarte el resumen, revisemos tu pedido: tengo anotado {registrados}, "
     "pero también mencionaste {faltantes}, que no quedó registrado. ¿Qué quieres agregar? "
     "Si no quieres agregar nada, responde NO."
-)
-
-MENSAJE_NOTIFICACION_DUPLICADO = (
-    "Hola, el teléfono {telefono} escribió al WhatsApp de pedidos, pero está registrado "
-    "en más de un cliente (ids {ids}). El bot no tomó el pedido: por favor revisa la "
-    "ficha y contacta al cliente."
 )
 
 # Intenciones cuya "respuesta_sugerida" se envía tal cual (la arma el backend
@@ -2140,10 +2135,11 @@ async def _escalar_telefono_duplicado(phone: str, clientes: list[Cliente]) -> st
     clear_draft(phone)
     ahora = datetime.now().astimezone()
     try:
+        tipo_cliente, nombres = clasificar_clientes(clientes)
         await send_whatsapp_message(
             to=settings.EJECUTIVA_PHONE,
-            message=marcar_notificacion_ejecutiva(
-                MENSAJE_NOTIFICACION_DUPLICADO.format(telefono=phone, ids=ids), ahora
+            message=texto_notificacion_ejecutiva(
+                tipo_cliente, nombres, phone, fuera_de_horario=not en_horario_atencion(ahora)
             ),
         )
     except Exception:

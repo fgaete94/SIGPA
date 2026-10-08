@@ -5,13 +5,14 @@ from datetime import datetime
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import PlainTextResponse
 
-from app.core.config import MENSAJE_NOTIFICACION_EJECUTIVA, settings
+from app.core.config import settings
 from app.services.conversacion_bot_service import es_primer_mensaje_conversacion, esta_activa
 from app.services.horario_atencion import (
-    marcar_notificacion_ejecutiva,
+    en_horario_atencion,
     mensaje_derivacion_ejecutiva,
     presentacion_asistente,
 )
+from app.services.notificacion_ejecutiva import clasificar_remitente, texto_notificacion_ejecutiva
 from app.services.mensaje_whatsapp_service import registrar_mensaje_entrante
 from app.services.order_flow import procesar_mensaje
 from app.services.webhook_queue import encolar, reservar_wamid
@@ -56,17 +57,19 @@ async def _enrutar_a_ejecutiva(phone_number: str, ahora: datetime | None = None)
     procesar el mensaje con el bot se saluda al cliente y se avisa a la
     ejecutiva para que continúe manualmente. El saludo depende del horario
     de atención (ver horario_atencion); `ahora` es la hora actual, que se
-    puede inyectar para probarlo."""
+    puede inyectar para probarlo. La notificación dice quién es el cliente
+    (existente, nuevo o teléfono duplicado, ver notificacion_ejecutiva)."""
     logger.info(
         "[WhatsApp] Mensaje de %s enrutado a la ejecutiva: no hay conversación activa del bot",
         phone_number,
     )
     ahora = ahora or datetime.now().astimezone()
     await send_whatsapp_message(to=phone_number, message=mensaje_derivacion_ejecutiva(ahora))
+    tipo_cliente, nombres = await clasificar_remitente(phone_number)
     await send_whatsapp_message(
         to=settings.EJECUTIVA_PHONE,
-        message=marcar_notificacion_ejecutiva(
-            MENSAJE_NOTIFICACION_EJECUTIVA.format(telefono=phone_number), ahora
+        message=texto_notificacion_ejecutiva(
+            tipo_cliente, nombres, phone_number, fuera_de_horario=not en_horario_atencion(ahora)
         ),
     )
 

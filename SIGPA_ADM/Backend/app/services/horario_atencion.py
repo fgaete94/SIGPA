@@ -129,11 +129,3 @@ def mensaje_derivacion_ejecutiva(ahora: datetime | None = None) -> str:
         f"{saludo} Nuestro horario de atención es {texto_horario_atencion()}. "
         "Una ejecutiva se pondrá en contacto contigo dentro del horario de atención."
     )
-
-
-def marcar_notificacion_ejecutiva(texto: str, ahora: datetime | None = None) -> str:
-    """Agrega la marca "(fuera de horario)" a la notificación a la ejecutiva
-    cuando `ahora` está fuera del horario de atención."""
-    if en_horario_atencion(ahora):
-        return texto
-    return f"{texto} {MARCA_FUERA_DE_HORARIO}"

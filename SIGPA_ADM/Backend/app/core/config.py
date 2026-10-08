@@ -53,8 +53,3 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
-
-MENSAJE_NOTIFICACION_EJECUTIVA = (
-    "Hola, un cliente ({telefono}) escribió al WhatsApp de pedidos. "
-    "Por favor revisa y continúa la conversación."
-)

@@ -31,15 +31,15 @@ from sqlalchemy import text
 
 import app.api.routes.whatsapp as whatsapp_route
 import app.services.order_flow as order_flow
-from app.core.config import MENSAJE_NOTIFICACION_EJECUTIVA, settings
+from app.core.config import settings
 from app.core.database import SessionLocal
 from app.services.conversacion_bot_service import esta_activa, marcar_activa
 from app.services.draft_store import clear_draft, get_draft
 from app.services.horario_atencion import (
     en_horario_atencion,
-    marcar_notificacion_ejecutiva,
     mensaje_derivacion_ejecutiva,
 )
+from app.services.notificacion_ejecutiva import CLIENTE_NUEVO, texto_notificacion_ejecutiva
 
 CHILE = ZoneInfo("America/Santiago")
 UTC = ZoneInfo("UTC")
@@ -256,8 +256,8 @@ async def caso_h(v: Verificador) -> None:
             "NOMBRE_ASISTENTE configurado se refleja en el texto",
         )
     v.check(
-        marcar_notificacion_ejecutiva("Aviso", _chile(JUEVES, 10, 0)) == "Aviso"
-        and marcar_notificacion_ejecutiva("Aviso", _chile(JUEVES, 20, 0)) == "Aviso (fuera de horario)",
+        not texto_notificacion_ejecutiva(CLIENTE_NUEVO, [], "56900000000", False).endswith("(fuera de horario)")
+        and texto_notificacion_ejecutiva(CLIENTE_NUEVO, [], "56900000000", True).endswith(" (fuera de horario)"),
         "marca '(fuera de horario)' solo fuera de horario",
     )
 
@@ -269,7 +269,10 @@ async def caso_h(v: Verificador) -> None:
 
 async def caso_flujo_espontaneo(v: Verificador) -> None:
     phone = TELEFONO_ESPONTANEO
-    notificacion = MENSAJE_NOTIFICACION_EJECUTIVA.format(telefono=phone)
+    notificacion = (
+        f"Hola, un cliente nuevo (+{phone}) escribió al WhatsApp de pedidos. "
+        "Por favor revisa y continúa la conversación."
+    )
     for etiqueta, ahora, esperado, notif_esperada in (
         ("dentro (jueves 10:00)", _chile(JUEVES, 10, 0), MENSAJE_DENTRO, notificacion),
         ("fuera (jueves 21:00)", _chile(JUEVES, 21, 0), MENSAJE_FUERA, f"{notificacion} (fuera de horario)"),
@@ -292,7 +295,10 @@ async def caso_flujo_duplicado(v: Verificador) -> None:
     """Teléfono en más de un cliente: mismo mensaje de derivación (según
     horario) y marca en la notificación a la ejecutiva."""
     phone = TELEFONO_DUPLICADO
-    clientes = [SimpleNamespace(id=1001), SimpleNamespace(id=1002)]
+    clientes = [
+        SimpleNamespace(id=1001, nombre="Uno", apellido_paterno=None, apellido_materno=None),
+        SimpleNamespace(id=1002, nombre="Dos", apellido_paterno=None, apellido_materno=None),
+    ]
     datetime_original = order_flow.datetime
     for etiqueta, ahora, esperado in (
         ("dentro (jueves 10:00)", _chile(JUEVES, 10, 0), MENSAJE_DENTRO),
@@ -314,7 +320,7 @@ async def caso_flujo_duplicado(v: Verificador) -> None:
         v.check(respuesta == esperado, f"{etiqueta}: el cliente recibe el mensaje de derivación correcto")
         notif = enviados[0][1] if enviados else ""
         v.check(
-            len(enviados) == 1 and enviados[0][0] == settings.EJECUTIVA_PHONE and "1001, 1002" in notif,
+            len(enviados) == 1 and enviados[0][0] == settings.EJECUTIVA_PHONE and "(Uno, Dos)" in notif,
             f"{etiqueta}: notifica a la ejecutiva",
         )
         v.check(
