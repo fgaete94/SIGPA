@@ -22,6 +22,7 @@ import json
 import logging
 import re
 import unicodedata
+from datetime import datetime
 from difflib import SequenceMatcher, get_close_matches
 
 from sqlalchemy import select
@@ -41,6 +42,7 @@ from app.services.auditoria_service import construir_snapshot
 from app.services.cliente_lookup import buscar_clientes_por_telefono, normalizar_telefono
 from app.services.conversacion_bot_service import marcar_inactiva
 from app.services.draft_store import clear_draft, get_draft, get_lock, save_draft
+from app.services.horario_atencion import marcar_notificacion_ejecutiva, mensaje_derivacion_ejecutiva
 from app.services.whatsapp_client import send_whatsapp_message
 
 logger = logging.getLogger(__name__)
@@ -174,11 +176,6 @@ MENSAJE_PRODUCTOS_NO_REGISTRADOS = (
     "Antes de mostrarte el resumen, revisemos tu pedido: tengo anotado {registrados}, "
     "pero también mencionaste {faltantes}, que no quedó registrado. ¿Qué quieres agregar? "
     "Si no quieres agregar nada, responde NO."
-)
-
-MENSAJE_CLIENTE_DUPLICADO = (
-    "¡Gracias por escribirnos! Una ejecutiva revisará tus datos y te contactará "
-    "a la brevedad para completar tu pedido."
 )
 
 MENSAJE_NOTIFICACION_DUPLICADO = (
@@ -2136,19 +2133,23 @@ async def _escalar_telefono_duplicado(phone: str, clientes: list[Cliente]) -> st
     """Más de un cliente con el mismo teléfono: el bot no elige uno. Se avisa
     a la ejecutiva, se cierra la conversación del bot (los mensajes
     siguientes van a la ejecutiva, ver whatsapp.py) y se le avisa al cliente
-    que lo contactarán."""
+    que lo contactarán, con el mismo mensaje de derivación según horario de
+    atención que un mensaje espontáneo (ver horario_atencion)."""
     ids = ", ".join(str(cliente.id) for cliente in clientes)
     logger.warning("[order_flow] Teléfono %s registrado en varios clientes (ids %s)", phone, ids)
     clear_draft(phone)
+    ahora = datetime.now().astimezone()
     try:
         await send_whatsapp_message(
             to=settings.EJECUTIVA_PHONE,
-            message=MENSAJE_NOTIFICACION_DUPLICADO.format(telefono=phone, ids=ids),
+            message=marcar_notificacion_ejecutiva(
+                MENSAJE_NOTIFICACION_DUPLICADO.format(telefono=phone, ids=ids), ahora
+            ),
         )
     except Exception:
         logger.exception("[order_flow] Falló avisar a la ejecutiva del teléfono duplicado %s", phone)
     await marcar_inactiva(phone)
-    return MENSAJE_CLIENTE_DUPLICADO
+    return mensaje_derivacion_ejecutiva(ahora)
 
 
 async def _buscar_clientes(phone: str) -> list[Cliente]:

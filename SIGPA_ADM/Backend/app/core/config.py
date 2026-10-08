@@ -30,6 +30,14 @@ class Settings(BaseSettings):
 
     INTERNAL_CRON_SECRET: str = ""
 
+    # Asistente virtual y horario de atención de las ejecutivas (hora de
+    # Chile), ver app/services/horario_atencion.py. DIAS_ATENCION: días
+    # separados por coma o un rango, ej. "lunes-viernes".
+    NOMBRE_ASISTENTE: str = "Lea"
+    HORARIO_ATENCION_INICIO: str = "09:00"
+    HORARIO_ATENCION_FIN: str = "18:00"
+    DIAS_ATENCION: str = "lunes,martes,miercoles,jueves,viernes,sabado,domingo"
+
     # Webhook de n8n que geocodifica y optimiza la ruta de reparto (EP-04).
     # El backend lo llama desde POST /rutas/planificar (ver ruta_service).
     N8N_ROUTE_WEBHOOK_URL: str = ""
@@ -45,10 +53,6 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
-
-MENSAJE_SALUDO_ESPONTANEO = (
-    "¡Hola! Gracias por escribirnos. Una ejecutiva revisará tu mensaje y te contactará a la brevedad."
-)
 
 MENSAJE_NOTIFICACION_EJECUTIVA = (
     "Hola, un cliente ({telefono}) escribió al WhatsApp de pedidos. "

@@ -5,11 +5,12 @@ marcar_activa/marcar_inactiva y su uso en whatsapp.py y order_flow.py)."""
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.core.database import SessionLocal
 from app.models.conversacion_bot import ConversacionBot
+from app.models.mensaje_whatsapp import MensajeWhatsApp
 
 ZONA_HORARIA_CHILE = ZoneInfo("America/Santiago")
 
@@ -17,6 +18,12 @@ ZONA_HORARIA_CHILE = ZoneInfo("America/Santiago")
 # día siguiente a iniciada_en (ver esta_activa), para no dejarla abierta
 # indefinidamente si el cliente nunca la cierra confirmando un pedido.
 HORA_CORTE_CONVERSACION = 7
+
+# Margen al comparar iniciada_en (reloj de la app) con mensaje_whatsapp.creado_en
+# (reloj de la BD): si la BD va atrasada, un mensaje recibido justo después de
+# activar la conversación quedaría "antes" de iniciada_en. Ver
+# es_primer_mensaje_conversacion.
+MARGEN_RELOJ_BD = timedelta(minutes=5)
 
 
 def _a_hora_chile(fecha: datetime) -> datetime:
@@ -90,3 +97,29 @@ async def esta_activa(phone: str) -> bool:
         return False
 
     return True
+
+
+async def es_primer_mensaje_conversacion(phone: str) -> bool:
+    """True si el mensaje entrante que se está procesando (ya registrado en
+    mensaje_whatsapp) es el primero de texto o ubicación del cliente desde
+    que se inició la conversación activa, es decir, si la respuesta del bot
+    es su primer mensaje de la conversación (ver la presentación del
+    asistente en whatsapp.py). Se cuenta en la BD para que no dependa de
+    memoria del proceso. Ambas fechas están en UTC (iniciada_en viene de
+    datetime.utcnow() y creado_en del now() de la BD), pero de relojes
+    distintos: por eso se cuenta desde MARGEN_RELOJ_BD antes de iniciada_en.
+    Un mensaje espontáneo en ese margen ya recibió la presentación (en el
+    mensaje de derivación), así que no repetirla es correcto."""
+    async with SessionLocal() as session:
+        iniciada_en = await session.scalar(
+            select(ConversacionBot.iniciada_en).where(ConversacionBot.telefono == phone)
+        )
+        consulta = select(func.count()).select_from(MensajeWhatsApp).where(
+            MensajeWhatsApp.telefono == phone,
+            MensajeWhatsApp.direccion == "entrante",
+            MensajeWhatsApp.tipo.in_(("text", "location")),
+        )
+        if iniciada_en is not None:
+            consulta = consulta.where(MensajeWhatsApp.creado_en >= iniciada_en - MARGEN_RELOJ_BD)
+        entrantes = await session.scalar(consulta)
+    return (entrantes or 0) <= 1
