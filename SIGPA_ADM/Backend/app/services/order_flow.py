@@ -134,11 +134,31 @@ PREGUNTA_OPCIONES_PEDIDO = "¿Quieres cambiar algo, confirmar el pedido o cancel
 
 MENSAJE_CORRECCION_APLICADA = "Listo, hice el cambio."
 
+# Después del resumen, "quiero el dispensador básico" con un dispensador en
+# el pedido: puede ser un cambio o algo que se suma, se pregunta (ver
+# _cambio_atributo_simple y _responder_a_correccion).
+PREGUNTA_CAMBIAR_O_AGREGAR = "¿Quieres cambiar el {actual} por el {nuevo}, o agregarlo al pedido?"
+
+MENSAJE_PRODUCTO_AGREGADO = "Listo, lo agregué."
+
+# Respuestas a PREGUNTA_CAMBIAR_O_AGREGAR (texto normalizado).
+_PATRON_RESPUESTA_CAMBIAR = re.compile(r"\b(cambi\w*|reemplaz\w*)\b")
+_PATRON_RESPUESTA_AGREGAR = re.compile(r"\b(agreg\w*|sum\w*|anad\w*|los dos|las dos|ambos|ambas)\b")
+
 # Pedido explícito de cambio que no modificó nada del pedido (ver
 # _aplicar_resultado_llm): nunca se vuelve a mostrar el mismo resumen como si
 # el cambio se hubiera hecho.
 MENSAJE_CAMBIO_NO_APLICADO = (
     "No pude aplicar el cambio. ¿Me dices qué producto y cuántas unidades quieres? "
+    "Tengo anotado: {pedido}."
+)
+
+# Igual que el anterior, pero cuando el cliente no dijo que era un cambio
+# ("quiero el dispensador básico" después del resumen, ver
+# correccion_implicita en _aplicar_resultado_llm): el texto no asume que lo
+# pidió.
+MENSAJE_MODIFICACION_NO_ENTENDIDA = (
+    "No entendí qué quieres modificar. ¿Me dices qué producto y cuántas unidades quieres? "
     "Tengo anotado: {pedido}."
 )
 
@@ -217,6 +237,14 @@ _PATRON_MODIFICACION = re.compile(
     r"\b(cambi\w*|mejor|quit\w*|saca\w*|elimin\w*|borr\w*|reemplaz\w*|correg\w*|corrig\w*"
     r"|solo|sin|deja\w*|sean|en vez|en lugar|ya no|no quiero)\b"
 )
+
+# Palabras que indican que el cliente quiere SUMAR un producto ("quiero
+# también un dispensador", "agrega otro bidón"), no corregir uno ya pedido.
+# Sin ellas, después del resumen "quiero el dispensador básico" puede ser
+# cualquiera de las dos cosas (ver correccion_implicita en
+# _aplicar_resultado_llm). "quiero" NO va en _PATRON_MODIFICACION: en "¿algo
+# más?", "sí, quiero un dispensador" agrega (bug del 2026-10-03).
+_PATRON_ADICION = re.compile(r"\b(tambien|ademas|otr[oa]s?|agreg\w*|sum\w*|mas)\b")
 
 _NUMEROS_TEXTO = {
     "un": 1, "una": 1, "uno": 1, "dos": 2, "tres": 3, "cuatro": 4, "cinco": 5,
@@ -760,6 +788,19 @@ _PATRON_NO_FIJAR = re.compile(
 )
 
 
+def _cantidades_mensaje(texto_normalizado: str) -> list[int]:
+    """Cantidades que trae el mensaje ("2", "dos"). No cuentan las
+    capacidades ("de 12", "20 litros") ni los números negados ("no 3")."""
+    tokens = texto_normalizado.split()
+    return [
+        int(t) if t.isdigit() else _NUMEROS_TEXTO[t]
+        for j, t in enumerate(tokens)
+        if (t.isdigit() or t in _NUMEROS_TEXTO)
+        and _capacidad_en(tokens, j) is None
+        and not (j > 0 and tokens[j - 1] in _NEGACIONES)
+    ]
+
+
 def _cambio_cantidad_simple(productos: list[dict], texto_normalizado: str) -> tuple[int, int] | None:
     """(índice de la línea, cantidad nueva) si el mensaje es un cambio de
     cantidad simple que se puede resolver sin el LLM: "mejor que sean 2
@@ -772,14 +813,7 @@ def _cambio_cantidad_simple(productos: list[dict], texto_normalizado: str) -> tu
     devuelve None y no se adivina."""
     if not _PATRON_MODIFICACION.search(texto_normalizado) or _PATRON_NO_FIJAR.search(texto_normalizado):
         return None
-    tokens = texto_normalizado.split()
-    cantidades = [
-        int(t) if t.isdigit() else _NUMEROS_TEXTO[t]
-        for j, t in enumerate(tokens)
-        if (t.isdigit() or t in _NUMEROS_TEXTO)
-        and _capacidad_en(tokens, j) is None
-        and not (j > 0 and tokens[j - 1] in _NEGACIONES)
-    ]
+    cantidades = _cantidades_mensaje(texto_normalizado)
     tipos = [tipo for tipo in _PATRONES_TIPO_PRODUCTO if _menciona_tipo(tipo, texto_normalizado)]
     if len(cantidades) != 1 or cantidades[0] < 1 or len(tipos) != 1:
         return None
@@ -1230,6 +1264,48 @@ def _validar_correccion(propuesta: dict | None, productos: list[dict], catalogo:
     return {"cambios": cambios, "pide_cantidad": False}
 
 
+def _cambio_atributo_simple(productos: list[dict], texto_normalizado: str, catalogo: list[dict]) -> dict | None:
+    """Corrección validada (formato de _validar_correccion) si el mensaje
+    cambia el modelo, la variante o la capacidad de un producto del pedido y
+    se puede resolver sin el LLM: "mejor el dispensador básico", "cambia el
+    bidón a nuevo", "mejor de 12 litros el bidón" (bug del 2026-10-07: "quiero
+    el dispensador básico" repitió el resumen sin aviso). Debe mencionar un
+    solo tipo de producto con exactamente una línea en el pedido, y cambiar
+    una sola dimensión, con un solo valor. Una cantidad distinta de la de la
+    línea no se combina aquí (la resuelven _cambio_cantidad_simple o el LLM);
+    "un dispensador" con 1 en el pedido no es una cantidad nueva. Con "solo"
+    o "sin" ("solo el dispensador básico", "sin el bidón, el dispensador
+    básico") el cliente puede querer quitar otras líneas, y este helper solo
+    cambia un atributo manteniendo el resto: no se adivina. Si algo es
+    ambiguo o el producto resultante no existe (o es el mismo), devuelve None
+    y lo resuelve el LLM o el aviso de cambio no aplicado."""
+    if re.search(r"\b(solo|sin)\b", texto_normalizado):
+        return None
+    tipos = [tipo for tipo in _PATRONES_TIPO_PRODUCTO if _menciona_tipo(tipo, texto_normalizado)]
+    if len(tipos) != 1:
+        return None
+    lineas = [p for p in productos if _tipo_producto(p.get("nombre_producto") or "") == tipos[0]]
+    if len(lineas) != 1:
+        return None
+    nombre = lineas[0]["nombre_producto"]
+    if any(n != _cantidad_valida(lineas[0].get("cantidad")) for n in _cantidades_mensaje(texto_normalizado)):
+        return None
+    actuales = _atributos(nombre)
+    dichos = _atributos_mensaje(texto_normalizado)
+    cambios = []
+    for atributo, es_de_la_dimension in _DIMENSIONES_CORRECCION.items():
+        valores = {a for a in dichos if es_de_la_dimension(a)}
+        if len(valores) > 1:
+            return None  # "el usb o el básico"
+        if valores and not valores <= actuales:
+            cambios.append((atributo, valores.pop()))
+    if len(cambios) != 1:
+        return None
+    atributo, valor = cambios[0]
+    propuesta = {"productos_actuales": [nombre], "atributo": atributo, "valor_nuevo": valor, "alcance": "todas"}
+    return _validar_correccion(propuesta, productos, catalogo)
+
+
 def _pregunta_correccion(correccion: dict, productos: list[dict]) -> str:
     en_pedido = {p.get("nombre_producto"): _cantidad_valida(p.get("cantidad")) for p in productos}
     cambios = correccion["cambios"]
@@ -1674,6 +1750,21 @@ async def _aplicar_resultado_llm(
         intencion = "duda_pedido"
         resultado = {"intencion": intencion}
         extraidos, aclaracion_llm, respuesta_llm, mensaje, texto = [], None, None, None, ""
+
+    # Justo después del resumen, "quiero el dispensador básico" sin decir
+    # "cambia" ni "también" puede ser un cambio o algo que se suma (bug del
+    # 2026-10-07: el bot repitió el mismo resumen sin aviso). El bot no
+    # adivina: si no lo puede resolver, avisa (ver cambio_no_aplicado). Aplica
+    # aunque el LLM lo marque duda_pedido, si no es pregunta ni reclamo
+    # (es_duda False). En cualquier otro paso es False: en "¿algo más?", "sí,
+    # quiero un dispensador" agrega.
+    correccion_implicita = (
+        paso_previo == "confirmacion"
+        and not es_duda
+        and intencion not in ("consulta_precio", "consulta_pedidos")
+        and _menciona_algun_producto(texto)
+        and not _PATRON_ADICION.search(texto)
+    )
     catalogo = await _catalogo()
     no_encontrados: list[dict] = []
     lineas_codigo: list[dict] = []
@@ -1708,14 +1799,30 @@ async def _aplicar_resultado_llm(
     familia_cambio = _familia(productos_previos[cambio_simple[0]]["nombre_producto"]) if cambio_simple else None
     if familia_cambio in familias_resueltas:
         cambio_simple = familia_cambio = None
+    # Un cambio de modelo, variante o capacidad ("mejor el dispensador
+    # básico") también se resuelve en código. Si el cliente no dijo que era un
+    # cambio (correccion_implicita), no se aplica: se le pregunta (más abajo).
+    # Lo que el LLM extrajo de esa familia se ignora en ambos casos.
+    cambio_atributo = None
+    if (modificacion_explicita or correccion_implicita) and not cambio_simple:
+        cambio_atributo = _cambio_atributo_simple(productos_previos, texto, catalogo)
+    familia_atributo = _familia(cambio_atributo["cambios"][0]["desde"]) if cambio_atributo else None
+    if familia_atributo in familias_resueltas:
+        cambio_atributo = familia_atributo = None
     aceptados, nombres_no_encontrados = _validar_extraidos(extraidos, mensaje, productos_previos, catalogo)
     no_encontrados += [
         {"texto": f"«{nombre}»", "opciones": _sugerencias(nombre, None, catalogo)}
         for nombre in nombres_no_encontrados
     ]
     productos, familias_modificadas = _fusionar_productos(
-        productos_previos, aceptados, mensaje, excluir_familias=frozenset(familias_resueltas | {familia_cambio})
+        productos_previos,
+        aceptados,
+        mensaje,
+        excluir_familias=frozenset(familias_resueltas | {familia_cambio, familia_atributo}),
     )
+    # Si lo que extrajo el LLM no cambió nada, el único cambio de este turno
+    # es el que resuelve el código (ver algo_mas_respondido más abajo).
+    fusion_sin_cambios = productos == productos_previos
     if cambio_simple:
         indice, cantidad = cambio_simple
         nombre = productos_previos[indice]["nombre_producto"]
@@ -1724,6 +1831,11 @@ async def _aplicar_resultado_llm(
             {**p, "cantidad": cantidad} if p.get("nombre_producto") == nombre else p for p in productos
         ]
         familias_modificadas.add(familia_cambio)
+    if cambio_atributo and modificacion_explicita:
+        cambio = cambio_atributo["cambios"][0]
+        logger.info("[order_flow] Cambio de atributo resuelto en código: %s -> %s", cambio["desde"], cambio["hacia"])
+        productos = _aplicar_cambios_correccion(productos, cambio_atributo)
+        familias_modificadas.add(familia_atributo)
 
     # 3. Lo que el cliente mencionó y el LLM no extrajo (bien) no se descarta
     # en silencio: se agrega si calza con un solo producto, queda pendiente
@@ -1737,6 +1849,12 @@ async def _aplicar_resultado_llm(
         pass
     elif not modificacion_explicita:
         menciones = [m for m in _menciones_productos(texto) if m["familia"] not in familias_resueltas]
+        if correccion_implicita:
+            # Lo que nombra de una familia que ya está en el pedido puede ser
+            # un cambio: no se suma en código (sumaba un segundo dispensador
+            # con "quiero el dispensador básico").
+            en_pedido = {_familia(p.get("nombre_producto") or "") for p in productos_previos}
+            menciones = [m for m in menciones if m["familia"] not in en_pedido]
         lineas, bidon_mencionado, nuevos_pendientes, sin_catalogo = _resolver_menciones(
             menciones, aceptados, catalogo
         )
@@ -1778,7 +1896,7 @@ async def _aplicar_resultado_llm(
             "cantidad": max(1, _cantidad_valida(aclaracion_llm.get("cantidad"))),
         }
 
-    if familias_resueltas or lineas_codigo or cambio_simple:
+    if familias_resueltas or lineas_codigo or cambio_simple or cambio_atributo:
         # El texto del LLM pudo preguntar algo que el código ya resolvió.
         respuesta_llm = None
     hay_pendientes = bool(aclaracion_pendiente or pendientes_modelo or no_encontrados)
@@ -1790,8 +1908,9 @@ async def _aplicar_resultado_llm(
     # se pudo aplicar en vez de fingir que sí. No cuentan los pasos de texto
     # libre (una dirección "quiero cambiarla" no es un cambio del pedido), "no
     # quiero nada más" en "¿algo más?", ni las consultas que responde el LLM.
+    # Vale también para una corrección implícita después del resumen.
     cambio_no_aplicado = (
-        modificacion_explicita
+        (modificacion_explicita or correccion_implicita)
         and productos_previos
         and not es_duda
         and intencion not in ("consulta_precio", "consulta_pedidos")
@@ -1839,7 +1958,17 @@ async def _aplicar_resultado_llm(
 
     algo_mas_respondido = bool(draft_previo.get("algo_mas_respondido"))
     quiere_agregar_algo = False
-    if productos_cambiaron and productos_previos:
+    # Un cambio pedido sobre el resumen y resuelto en código ("mejor que sean
+    # 2 bidones", "mejor el dispensador básico") vuelve directo al resumen
+    # actualizado: el cliente ya respondió "¿algo más?". Cualquier otro cambio
+    # de productos lo reabre.
+    cambio_resuelto_en_codigo = (
+        paso_previo == "confirmacion"
+        and bool(cambio_simple or (cambio_atributo and modificacion_explicita))
+        and fusion_sin_cambios
+        and not lineas_codigo
+    )
+    if productos_cambiaron and productos_previos and not cambio_resuelto_en_codigo:
         algo_mas_respondido = False
     elif paso_previo == "algo_mas":
         # "sí" a "¿algo más?" significa que quiere agregar algo, aunque el
@@ -1882,6 +2011,22 @@ async def _aplicar_resultado_llm(
         save_draft(phone, {**nuevo_draft, "paso": "producto", "estado": "armando"})
         paso, texto = "producto", PREGUNTA_PRODUCTO
 
+    if cambio_atributo and not modificacion_explicita:
+        # No se adivina si cambia o suma: se pregunta, y la propuesta queda
+        # guardada para el mensaje siguiente (ver _responder_a_correccion). Un
+        # "sí" posterior responde esta pregunta, nunca confirma el pedido.
+        cambio = cambio_atributo["cambios"][0]
+        guardado = get_draft(phone) or nuevo_draft
+        save_draft(
+            phone,
+            {
+                **guardado,
+                "estado": ESTADO_ESPERANDO_MODIFICACION if paso == "confirmacion" else guardado.get("estado"),
+                "correccion_pendiente": {**cambio_atributo, "permite_agregar": True},
+            },
+        )
+        return PREGUNTA_CAMBIAR_O_AGREGAR.format(actual=cambio["desde"], nuevo=cambio["hacia"])
+
     if cambio_no_aplicado:
         logger.info("[order_flow] Cambio pedido y no aplicado para phone=%s: %r", phone, mensaje)
         if paso == "confirmacion":
@@ -1889,7 +2034,8 @@ async def _aplicar_resultado_llm(
             # cliente quería cambiar. En "¿algo más?" el estado no se toca:
             # un "no" posterior es "no quiero nada más", no una cancelación.
             save_draft(phone, {**(get_draft(phone) or nuevo_draft), "estado": ESTADO_ESPERANDO_MODIFICACION})
-        return MENSAJE_CAMBIO_NO_APLICADO.format(pedido=_resumen_productos_corto(productos))
+        aviso = MENSAJE_CAMBIO_NO_APLICADO if modificacion_explicita else MENSAJE_MODIFICACION_NO_ENTENDIDA
+        return aviso.format(pedido=_resumen_productos_corto(productos))
 
     # Con el pedido listo para confirmar, una respuesta a otra cosa (duda,
     # tema fuera de alcance) no va pegada al resumen: va seguida de las
@@ -2131,6 +2277,24 @@ async def _confirmar_pedido(phone: str, draft: dict | None) -> str:
     )
 
 
+def _quiere_agregar(texto: str | None) -> bool:
+    """Respuesta a PREGUNTA_CAMBIAR_O_AGREGAR que pide sumar ("agrégalo",
+    "los dos"). Si dice ambas cosas no se adivina."""
+    texto_normalizado = _normalizar_texto(texto)
+    return bool(_PATRON_RESPUESTA_AGREGAR.search(texto_normalizado)) and not _PATRON_RESPUESTA_CAMBIAR.search(
+        texto_normalizado
+    )
+
+
+def _quiere_cambiar(texto: str | None) -> bool:
+    """Respuesta a PREGUNTA_CAMBIAR_O_AGREGAR que pide reemplazar
+    ("cámbialo", "reemplázalo")."""
+    texto_normalizado = _normalizar_texto(texto)
+    return bool(_PATRON_RESPUESTA_CAMBIAR.search(texto_normalizado)) and not _PATRON_RESPUESTA_AGREGAR.search(
+        texto_normalizado
+    )
+
+
 async def _responder_a_correccion(
     phone: str, draft: dict, cliente: dict | None, correccion: dict, mensaje: str | None
 ) -> str | None:
@@ -2148,10 +2312,24 @@ async def _responder_a_correccion(
             }
         else:
             return None
+    elif correccion.get("permite_agregar") and _quiere_agregar(mensaje):
+        # "agrégalo", "los dos": suma el producto nuevo con la misma cantidad
+        # que la línea actual, sin quitar nada.
+        cambio = correccion["cambios"][0]
+        productos = [dict(p) for p in draft.get("productos") or []]
+        cantidad = next(
+            (_cantidad_valida(p.get("cantidad")) for p in productos if p.get("nombre_producto") == cambio["desde"]), 1
+        )
+        _sumar_linea(productos, cambio["hacia"], cantidad)
+        nuevo = {**draft, "productos": productos}
+        nuevo["unidades_pedidas"] = _unidades_draft(nuevo)
+        _, texto = await _responder_siguiente_paso(phone, nuevo, cliente)
+        logger.info("[order_flow] Producto agregado para phone=%s: %dx %s", phone, cantidad, cambio["hacia"])
+        return f"{MENSAJE_PRODUCTO_AGREGADO}\n\n{texto}"
     elif _es_negativa_simple(mensaje):
         save_draft(phone, {**draft, "estado": ESTADO_ESPERANDO_MODIFICACION})
         return MENSAJE_CORRECCION_RECHAZADA
-    elif not _es_confirmacion_explicita(mensaje):
+    elif not (_es_confirmacion_explicita(mensaje) or (correccion.get("permite_agregar") and _quiere_cambiar(mensaje))):
         return None
 
     productos = _aplicar_cambios_correccion(draft.get("productos") or [], correccion)
