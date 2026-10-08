@@ -106,7 +106,7 @@ export default function Landing({ onAdmin }) {
           <p className="lp-nota" data-revelar style={{ '--i': REPARTO.length }}>¿Estás en Reñaca o en otro sector? <a href={enlaceWhatsApp('Hola, ¿qué día reparten en mi sector?')} target="_blank" rel="noopener noreferrer">Escríbenos</a> y te confirmamos el día.</p>
         </div>
         <figure className="lp-repartidor" data-revelar style={{ '--i': 2 }}>
-          <img src="/marca/repartidor.webp" alt="Repartidor de Agua DM con un bidón de 20 litros al hombro" width="880" height="1280" loading="lazy"/>
+          <img src="/marca/repartidor.webp" alt="Repartidor de Agua DM con un bidón de 20 litros al hombro" width="780" height="1180" loading="lazy"/>
           <figcaption>El despacho a domicilio no tiene costo.</figcaption>
         </figure>
       </section>

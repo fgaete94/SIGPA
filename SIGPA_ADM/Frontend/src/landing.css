@@ -64,8 +64,8 @@ html:has(.lp){background:#e9f0f7}
 .lp-zona{padding-left:20px;font-size:19px}
 .lp-nota{margin-top:22px;color:var(--suave)}
 .lp-nota a{color:#fff;font-weight:700}
-.lp-repartidor{margin:0;background:var(--fondo);border-radius:120px 28px 28px 28px;overflow:hidden;border-bottom:10px solid var(--verde);isolation:isolate}
-.lp-repartidor img{width:100%;mix-blend-mode:multiply}
+.lp-repartidor{margin:0;background:var(--fondo);border-radius:120px 28px 28px 28px;overflow:hidden;border-bottom:10px solid var(--verde)}
+.lp-repartidor img{display:block;width:100%;height:auto}
 .lp-repartidor figcaption{color:var(--azul);font-weight:700;padding:14px 22px 18px}
 
 /* Precios */
