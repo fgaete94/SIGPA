@@ -1026,6 +1026,24 @@ async def caso_z(ctx: dict, v: Verificador) -> None:
     clear_draft(phone)
 
 
+async def caso_aa(ctx: dict, v: Verificador) -> None:
+    """Bug de la primera prueba real del 2026-10-08: a "¿Los 2 bidones de
+    20L y el bidón de 12L los quieres nuevos o de recarga?" el cliente
+    respondió "20 nuevo y 12 recarga" y el bot preguntó por "32 bidones"."""
+    phone = CLIENTE["telefono"]
+    respuestas = await _conversar(phone, ["2 de 20 y 1 de 12", "20 nuevo y 12 recarga"])
+    draft = get_draft(phone) or {}
+    v.check("2 bidones de 20L" in respuestas[0] and "bidón de 12L" in respuestas[0], "pregunta por capacidad")
+    v.check(
+        draft.get("productos")
+        == [{"nombre_producto": "Bidón 20L Nuevo", "cantidad": 2}, {"nombre_producto": "Bidón 12L Recarga", "cantidad": 1}]
+        and not draft.get("aclaracion_pendiente"),
+        "registra 2x 20L Nuevo y 1x 12L Recarga",
+    )
+    v.check("32" not in respuestas[1] and CLIENTE["direccion"] in respuestas[1], "sin pregunta por 32 bidones: pasa a la dirección")
+    clear_draft(phone)
+
+
 async def caso_x(ctx: dict, v: Verificador) -> None:
     transport = httpx.ASGITransport(app=app)
     original = os.environ.pop("RENDER_GIT_COMMIT", None)
@@ -1070,6 +1088,7 @@ CASOS = [
     ("x", "/health incluye el commit desplegado", caso_x),
     ("y", "Respuesta a la pregunta pendiente marcada 'fuera de alcance' por el LLM: se resuelve igual", caso_y),
     ("z", "'3 bidones de 20 y 1 de 12': pregunta ambas capacidades y no pierde la de 12L", caso_z),
+    ("aa", "'2 de 20 y 1 de 12' + '20 nuevo y 12 recarga': 2x 20L Nuevo y 1x 12L Recarga, sin '32 bidones'", caso_aa),
 ]
 
 

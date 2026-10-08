@@ -124,6 +124,15 @@ PREGUNTA_ACLARACION_BIDONES = (
     "entregando tu bidón vacío)? Puedes responder por capacidad, por ejemplo: «{ejemplo}»."
 )
 
+# Respuesta a una aclaración de bidones en que un número puede ser cantidad o
+# capacidad y las dos lecturas dan pedidos distintos (ver
+# _resolver_aclaracion_bidon).
+MENSAJE_NUMERO_AMBIGUO = "No me quedó claro si «{numero}» es la cantidad de bidones o su capacidad en litros."
+
+# Respuesta a una aclaración de bidones que sumaba unidades que el cliente no
+# pidió (ver el tope en _aplicar_resultado_llm).
+MENSAJE_ACLARACION_NO_ENTENDIDA = "No me quedó clara tu respuesta."
+
 MENSAJE_UBICACION_RECIBIDA ="¡Gracias, recibí tu ubicación!"
 
 MENSAJE_ERROR_PEDIDO = (
@@ -1066,7 +1075,125 @@ def _capacidad_respuesta(texto_normalizado: str) -> int | None:
     return None
 
 
-def _resolver_aclaracion_bidon(aclaracion: dict | None, mensaje: str | None) -> dict | None:
+_PATRON_VARIANTE_BIDON = re.compile(r"recargas?|nuev[oa]s?")
+
+
+def _reinterpretar_capacidades(texto_normalizado: str, capacidades: set[int]) -> str:
+    """Al responder una aclaración, un número suelto pegado a la variante que
+    coincide con la capacidad de un bidón pendiente es esa CAPACIDAD, no una
+    cantidad: "20 nuevo y 12 recarga" con 2x 20L y 1x 12L pendientes es "de
+    20 nuevo y de 12 recarga" (bug del 2026-10-08: se leía como 20 + 12 = 32
+    bidones). Devuelve el texto reescrito así, o el mismo si no hay nada que
+    reinterpretar.
+
+    - El número puede ir antes ("20 nuevo") o después ("nuevo 20") de la
+      variante; se usa el orden del primero que aparece en el mensaje, así
+      "20 nuevo 12 recarga" asigna el 12 a la recarga.
+    - Evidencia de que es cantidad (no se reinterpreta): "bidón(es)" entre el
+      número y la variante ("20 bidones nuevos"), o una "x" antes ("x 20
+      nuevos").
+    - Números que no son capacidades pendientes ("2 recarga y 1 nuevo") y
+      capacidades ya explícitas ("de 20", "20L") no se tocan.
+    """
+    tokens = texto_normalizado.split()
+    if not capacidades:
+        return texto_normalizado
+
+    def capacidad_suelta(j: int) -> bool:
+        return (
+            0 <= j < len(tokens)
+            and tokens[j].isdigit()
+            and int(tokens[j]) in capacidades
+            and _capacidad_en(tokens, j) is None
+            and not (j > 0 and tokens[j - 1] == "x")
+        )
+
+    variantes = [i for i, token in enumerate(tokens) if _PATRON_VARIANTE_BIDON.fullmatch(token)]
+    primero = next((j for j in range(len(tokens)) if j in variantes or capacidad_suelta(j)), None)
+    if primero is None or not variantes:
+        return texto_normalizado
+    numero_antes = primero not in variantes
+
+    asignados: dict[int, int] = {}
+    for p in variantes:
+        for j in ((p - 1, p + 1) if numero_antes else (p + 1, p - 1)):
+            if j in asignados.values() or not capacidad_suelta(j):
+                continue
+            # Un número pegado a la variante siguiente es de esa variante.
+            if numero_antes and j == p + 1 and j + 1 in variantes:
+                continue
+            if not numero_antes and j == p - 1 and j - 1 in variantes:
+                continue
+            asignados[p] = j
+            break
+    if not asignados:
+        return texto_normalizado
+    reescrito = []
+    for i, token in enumerate(tokens):
+        if i in asignados.values():
+            continue
+        if i in asignados:
+            reescrito += ["de", tokens[asignados[i]]]
+        reescrito.append(token)
+    return " ".join(reescrito)
+
+
+def _capacidades_pendientes(aclaracion) -> set[int]:
+    return {
+        a.get("capacidad_litros") for a in _lista_aclaraciones(aclaracion) if a.get("capacidad_litros") in _CAPACIDADES
+    }
+
+
+def _mismo_resultado(a: dict, b: dict) -> bool:
+    def clave(resultado: dict):
+        lineas = sorted((linea["nombre_producto"], linea["cantidad"]) for linea in resultado["lineas"])
+        pendientes = sorted(
+            (p.get("capacidad_litros") or 0, _cantidad_valida(p.get("cantidad")))
+            for p in _lista_aclaraciones(resultado["aclaracion"])
+        )
+        return lineas, pendientes
+
+    return clave(a) == clave(b)
+
+
+def _resolver_aclaracion_bidon(aclaracion, mensaje: str | None) -> dict | None:
+    """Resuelve la respuesta a los bidones pendientes de aclarar (ver
+    _resolver_aclaracion_bidon_texto), desambiguando antes si un número es
+    cantidad o capacidad (ver _reinterpretar_capacidades):
+
+    - Se prefiere leerlo como capacidad. Como cantidad solo vale si calza con
+      lo pendiente (no suma más unidades de las que había).
+    - Si las dos lecturas calzan y dan el mismo pedido (12x 12L pendientes y
+      "12 recarga"), se resuelve.
+    - Si las dos calzan y dan pedidos distintos (12x 20L y 1x 12L pendientes y
+      "12 recarga": ¿los 12 de 20L o el de 12L?), no se adivina: queda todo
+      pendiente y se vuelve a preguntar con un aviso ("aviso" en el
+      resultado).
+    """
+    texto = _normalizar_texto(mensaje)
+    alterno = _reinterpretar_capacidades(texto, _capacidades_pendientes(aclaracion))
+    if alterno == texto:
+        return _resolver_aclaracion_bidon_texto(aclaracion, texto)
+
+    por_capacidad = _resolver_aclaracion_bidon_texto(aclaracion, alterno)
+    por_cantidad = _resolver_aclaracion_bidon_texto(aclaracion, texto)
+    pendiente_total = sum(_cantidad_valida(a.get("cantidad")) for a in _lista_aclaraciones(aclaracion))
+    if por_cantidad is not None and sum(linea["cantidad"] for linea in por_cantidad["lineas"]) > pendiente_total:
+        por_cantidad = None
+    if por_capacidad is None or por_cantidad is None or _mismo_resultado(por_capacidad, por_cantidad):
+        return por_capacidad or por_cantidad
+    capacidades = _capacidades_pendientes(aclaracion)
+    numero = next(t for t in texto.split() if t.isdigit() and int(t) in capacidades)
+    logger.info("[order_flow] Respuesta ambigua (cantidad o capacidad): %r", mensaje)
+    return {
+        "aclaracion": _empaquetar_aclaraciones(_lista_aclaraciones(aclaracion)),
+        "lineas": [],
+        "no_encontrado": None,
+        "aviso": MENSAJE_NUMERO_AMBIGUO.format(numero=numero),
+    }
+
+
+def _resolver_aclaracion_bidon_texto(aclaracion, mensaje: str | None) -> dict | None:
     """Resuelve en código lo que falta de un bidón pendiente, sin depender
     del LLM: primero la capacidad ("¿de 12L o de 20L?") y después la variante
     ("¿nuevo o recarga?"). Devuelve {"aclaracion": lo que sigue pendiente o
@@ -2234,6 +2361,42 @@ async def _aplicar_resultado_llm(
             "cantidad": max(1, _cantidad_valida(aclaracion_llm.get("cantidad"))),
         }
 
+    # 5. Tope contra unidades inventadas: al responder una aclaración de
+    # bidones pendientes, los bidones del pedido (líneas + pendientes) no
+    # pueden aumentar más de lo que respaldan las cantidades del mensaje,
+    # leídas con las capacidades pendientes como capacidades (bug del
+    # 2026-10-08: "20 nuevo y 12 recarga" dejó 32 bidones pendientes). Si
+    # aumentan, se descarta lo de bidones de este turno y se vuelve a
+    # preguntar lo pendiente. No aplica si el cliente agrega ("agrega 5
+    # bidones", "también") o cambia algo ("mejor 10 de 20"); las correcciones
+    # aceptadas con "sí" van por _responder_a_correccion.
+    aviso_aclaracion = (resolucion or {}).get("aviso")
+    if _lista_aclaraciones(aclaracion_previa) and not modificacion_explicita and not _PATRON_ADICION.search(texto):
+        antes = _unidades_por_familia(productos_previos, aclaracion_previa).get("Bidón", 0)
+        despues = _unidades_por_familia(productos, aclaracion_pendiente).get("Bidón", 0)
+        respaldo = sum(
+            _cantidades_mensaje(_reinterpretar_capacidades(texto, _capacidades_pendientes(aclaracion_previa)))
+        )
+        if despues - antes > respaldo:
+            logger.warning(
+                "[order_flow] Aumento de bidones sin respaldo descartado para phone=%s: %d -> %d (%r)",
+                phone,
+                antes,
+                despues,
+                mensaje,
+            )
+            def es_bidon(item: dict) -> bool:
+                return _familia(item.get("nombre_producto") or "") == "Bidón"
+
+            otros = [p for p in productos if not es_bidon(p)]
+            if otros == [p for p in productos_previos if not es_bidon(p)]:
+                productos = [dict(p) for p in productos_previos]
+            else:
+                productos = [dict(p) for p in productos_previos if es_bidon(p)] + otros
+            lineas_codigo = [l for l in lineas_codigo if _familia(l["nombre_producto"]) != "Bidón"]
+            aclaracion_pendiente = aclaracion_previa
+            aviso_aclaracion = MENSAJE_ACLARACION_NO_ENTENDIDA
+
     if familias_resueltas or lineas_codigo or cambio_simple or cambio_atributo:
         # El texto del LLM pudo preguntar algo que el código ya resolvió.
         respuesta_llm = None
@@ -2430,6 +2593,9 @@ async def _aplicar_resultado_llm(
     if correccion:
         # Válida solo para el mensaje siguiente (ver procesar_mensaje).
         save_draft(phone, {**(get_draft(phone) or nuevo_draft), "correccion_pendiente": correccion})
+
+    if aviso_aclaracion and paso == "producto":
+        texto = f"{aviso_aclaracion} {texto}"
 
     if es_primer_turno:
         texto = f"{_saludo(cliente)} {_quitar_saludo_inicial(texto)}"
