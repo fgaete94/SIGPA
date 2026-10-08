@@ -249,6 +249,18 @@ async def caso_6(v: Verificador) -> None:
     clear_draft(PHONE)
 
 
+async def caso_7(v: Verificador) -> None:
+    texto = await _turno(_draft(PEDIDO, "confirmacion"), "mejor que sean 2 bidones, no 3")
+    draft = get_draft(PHONE) or {}
+    v.check(
+        draft.get("productos") == [{"nombre_producto": "Bidón 12L Recarga", "cantidad": 2}, DISPENSADOR],
+        "2x Bidón 12L Recarga, dispensador intacto",
+    )
+    v.check("Resumen de tu pedido" in texto, "vuelve directo al resumen (no pregunta '¿algo más?')")
+    v.check(draft.get("estado") == ESTADO_ESPERANDO_CONFIRMACION, "espera confirmación")
+    clear_draft(PHONE)
+
+
 CASOS = [
     ("1", "[3x Bidón 12L Recarga, 1x Dispensador USB] + 'mejor que sean 2 bidones, no 3'", caso_1),
     ("2", "Mismo pedido + 'que sean dos bidones'", caso_2),
@@ -256,6 +268,7 @@ CASOS = [
     ("4", "[2x 12L Recarga, 1x 20L Nuevo] + 'mejor que sean 3 bidones': ambiguo, no se resuelve en código", caso_4),
     ("5", "'cambia eso' con LLM vacío: MENSAJE_CAMBIO_NO_APLICADO y esperando_modificacion", caso_5),
     ("6", "Regresión 2026-10-03: 'si, un dispensador usb' en '¿algo más?' suma el dispensador", caso_6),
+    ("7", "Resumen mostrado + 'mejor que sean 2 bidones, no 3': vuelve directo al resumen", caso_7),
 ]
 
 
