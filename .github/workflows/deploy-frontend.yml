@@ -1,0 +1,16 @@
+# Dispara un deploy en Render cuando hay cambios del frontend en main
+name: Deploy frontend a Render
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "SIGPA_ADM/Frontend/**"   # mismo criterio que el Root Directory del Static Site
+  workflow_dispatch:              # permite lanzarlo a mano desde la pestaña Actions
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Llamar al deploy hook de Render (frontend)
+        run: curl -fsS -X POST "${{ secrets.RENDER_DEPLOY_HOOK_FRONTEND }}"
