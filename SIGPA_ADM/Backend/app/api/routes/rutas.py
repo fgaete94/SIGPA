@@ -18,6 +18,8 @@ class PedidoPendienteOut(BaseModel):
     latitud: float | None = None
     longitud: float | None = None
     creado_en: datetime
+    estado: str
+    motivo_revision_direccion: str | None = None
 
 
 class PlanificarRutaRequest(BaseModel):
@@ -26,9 +28,10 @@ class PlanificarRutaRequest(BaseModel):
 
 @router.get("/pedidos-pendientes", response_model=list[PedidoPendienteOut])
 async def pedidos_pendientes():
-    """Todos los pedidos en estado "pendiente": la ejecutiva decide cuáles
-    incluir en la ruta. No hay filtro por fecha porque pedido no tiene
-    fecha_entrega."""
+    """Pedidos planificables: todos los "pendiente" más los "confirmado" sin
+    orden_entrega o con la dirección por revisar (ver listar_pendientes). La
+    ejecutiva decide cuáles incluir en la ruta. No hay filtro por fecha
+    porque pedido no tiene fecha_entrega."""
     return await listar_pendientes()
 
 

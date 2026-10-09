@@ -26,7 +26,9 @@ class Settings(BaseSettings):
 
     CORS_ORIGINS: str = "http://localhost:5173"
 
-    EJECUTIVA_PHONE: str = "56957721243"
+    # Teléfono (WhatsApp) de la ejecutiva que recibe las derivaciones. Sin
+    # default: se define en el .env / entorno de Render.
+    EJECUTIVA_PHONE: str = ""
 
     INTERNAL_CRON_SECRET: str = ""
 
@@ -43,6 +45,8 @@ class Settings(BaseSettings):
     N8N_ROUTE_WEBHOOK_URL: str = ""
     N8N_ROUTE_WEBHOOK_SECRET: str = ""
     N8N_ROUTE_TIMEOUT_SECONDS: float = 45
+    # Máximo de pedidos por POST /rutas/planificar.
+    RUTA_MAX_PEDIDOS: int = 30
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
@@ -53,3 +57,8 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+if not settings.EJECUTIVA_PHONE:
+    logging.getLogger(__name__).warning(
+        "EJECUTIVA_PHONE está vacío: las derivaciones a la ejecutiva no se podrán enviar"
+    )

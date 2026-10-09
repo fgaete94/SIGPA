@@ -25,6 +25,15 @@ El frontend no usa Supabase ni necesita sus claves: la autenticación pasa por e
 - GET `/pedidos`, GET `/pedidos/{id}`, GET `/clientes`.
 - Landing pública: GET `/productos` (solo lectura, sin sesión) para nombres y precios, a través del backend; nunca se conecta a Supabase. Solo se usan nombre y precio. Mientras Render despierta se muestran los últimos precios conocidos (`src/catalogo.js`, `PRECIOS_RESPALDO` en `src/marca.js`). Cada tarjeta se asocia a un producto por su nombre exacto en la tabla `producto`.
 - GET `/rutas/pedidos-pendientes` y POST `/rutas/planificar` con `{pedido_ids:[...]}`.
+  - El GET lista los pedidos planificables, ordenados por `creado_en` ascendente: todos los `pendiente` y además los `confirmado` con `orden_entrega` null o `motivo_revision_direccion` no null (por ejemplo, los que quedaron en `sin_resolver` en una ruta anterior, antes o después de corregir sus coordenadas con POST `/pedidos/{id}/coordenadas`).
+  - Cada item: `pedido_id`, `cliente_id`, `cliente_nombre`, `cliente_telefono`, `direccion_texto`, `latitud`, `longitud`, `creado_en`, `estado` (`pendiente` o `confirmado`) y `motivo_revision_direccion` (texto o `null`).
+  - `creado_en` viene en ISO 8601 con zona horaria UTC (ej. `2026-10-08T14:03:12.123456Z`); `new Date(...)` lo interpreta bien y se muestra en hora de Chile con `timeZone: 'America/Santiago'`.
+  - POST `/rutas/planificar` acepta pedidos `pendiente` y `confirmado`, hasta `RUTA_MAX_PEDIDOS` por solicitud (default 30). Los que quedan en `sin_resolver` guardan el motivo en `motivo_revision_direccion`; los que entran a la ruta lo dejan en `null`.
+  - Errores de POST `/rutas/planificar` (siempre con `detail.mensaje` para mostrar):
+    - 422 sobre el tope: `{mensaje, maximo, recibidos}`; 422 con IDs repetidos: `{mensaje, pedido_ids}`.
+    - 409: pedidos que ya no se pueden incluir (`{mensaje, pedido_ids, inexistentes, estado_invalido}`), otra planificación en curso, o un pedido que cambió mientras se calculaba la ruta (`"El pedido <id> cambió durante la planificación, reintenta"`). En todos los casos no se guardó nada: refrescar la lista y reintentar.
+    - 503: servicio de rutas no configurado en el backend (falta la URL o el secreto de n8n).
+    - 502: n8n rechazó la solicitud o está mal configurado (`{mensaje, codigo}`, donde `codigo` es el código de error de n8n o el status HTTP), no respondió bien, devolvió algo que no es JSON o una ruta inválida (`{mensaje, problemas}`). 504: n8n no respondió a tiempo. Nada se guarda en ninguno de estos casos.
 - El panel pide confirmación antes de planificar porque el endpoint también confirma pedidos y guarda el orden.
 - Los errores no se sustituyen por datos ficticios. Los indicadores corresponden a todos los registros devueltos, no a una jornada.
 - Los cambios manuales de orden solo afectan la impresión actual. Se indica expresamente en pantalla; no hay endpoint existente para persistirlos. Se pierden al recargar/cerrar sesión.

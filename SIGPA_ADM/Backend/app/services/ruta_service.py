@@ -29,17 +29,22 @@ pedidos de la solicitud pasan a "confirmado"; los de "ruta" reciben su
 orden_entrega y los de "sin_resolver" quedan con orden_entrega null; las
 coordenadas se guardan en el pedido solo si llegó sin ellas; la dirección y
 las coordenadas del cliente nunca se tocan. Los pedidos que no están en la
-solicitud no se modifican.
+solicitud no se modifican. Los de "sin_resolver" guardan el motivo en
+motivo_revision_direccion; los que entran a la ruta lo dejan en null.
+
+GET /rutas/pedidos-pendientes lista los "pendiente" y además los
+"confirmado" con orden_entrega null o motivo_revision_direccion no null,
+para que un sin_resolver con coordenadas corregidas se pueda replanificar.
 """
 
 import asyncio
 import logging
 import math
-from datetime import datetime
+from datetime import datetime, timezone
 
 import httpx
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
@@ -88,11 +93,39 @@ def _coordenada(valor) -> float | None:
     return float(valor) if valor is not None else None
 
 
+def _tiene_coordenadas(pedido: Pedido) -> bool:
+    """Un par a medias (solo latitud o solo longitud) cuenta como sin
+    coordenadas: se geocodifica y se sobrescribe el par completo."""
+    return pedido.latitud is not None and pedido.longitud is not None
+
+
+def _como_utc(valor: datetime) -> datetime:
+    """creado_en se guarda sin zona (timestamp de Postgres con now() del
+    servidor, que corre en UTC): se marca como UTC para devolver ISO 8601
+    con zona."""
+    return valor.replace(tzinfo=timezone.utc) if valor.tzinfo is None else valor.astimezone(timezone.utc)
+
+
 async def listar_pendientes() -> list[dict]:
+    """Pedidos que se pueden incluir en la próxima ruta: los "pendiente" y
+    los "confirmado" que quedaron fuera de una ruta anterior (sin_resolver:
+    orden_entrega null) o que siguen con la dirección por revisar. Así, tras
+    corregir sus coordenadas, vuelven a aparecer y se pueden replanificar."""
     async with SessionLocal() as session:
         result = await session.execute(
             select(Pedido)
-            .where(Pedido.estado == EstadoPedido.PENDIENTE)
+            .where(
+                or_(
+                    Pedido.estado == EstadoPedido.PENDIENTE,
+                    and_(
+                        Pedido.estado == EstadoPedido.CONFIRMADO,
+                        or_(
+                            Pedido.orden_entrega.is_(None),
+                            Pedido.motivo_revision_direccion.is_not(None),
+                        ),
+                    ),
+                )
+            )
             .options(selectinload(Pedido.cliente))
             .order_by(Pedido.creado_en)
         )
@@ -106,14 +139,16 @@ async def listar_pendientes() -> list[dict]:
             "direccion_texto": _direccion(pedido),
             "latitud": _coordenada(pedido.latitud),
             "longitud": _coordenada(pedido.longitud),
-            "creado_en": pedido.creado_en,
+            "creado_en": _como_utc(pedido.creado_en),
+            "estado": pedido.estado.value,
+            "motivo_revision_direccion": pedido.motivo_revision_direccion,
         }
         for pedido in pedidos
     ]
 
 
-def _error(codigo: int, mensaje: str, **extra) -> HTTPException:
-    return HTTPException(status_code=codigo, detail={"mensaje": mensaje, **extra})
+def _error(estado_http: int, mensaje: str, **extra) -> HTTPException:
+    return HTTPException(status_code=estado_http, detail={"mensaje": mensaje, **extra})
 
 
 async def _cargar_pedidos(session, pedido_ids: list[int], bloquear: bool = False) -> dict[int, Pedido]:
@@ -167,6 +202,14 @@ async def _llamar_n8n(paradas: list[dict]) -> dict:
         )
     if respuesta.status_code != 200:
         logger.warning("[rutas] n8n respondió %s: %s", respuesta.status_code, respuesta.text[:500])
+        codigo_n8n = _codigo_error_n8n(respuesta)
+        if respuesta.status_code in (401, 403) or codigo_n8n is not None:
+            # El "detalle" de n8n solo va al log, nunca al panel.
+            raise _error(
+                status.HTTP_502_BAD_GATEWAY,
+                "Servicio de rutas mal configurado o rechazó la solicitud",
+                codigo=codigo_n8n or respuesta.status_code,
+            )
         raise _error(
             status.HTTP_502_BAD_GATEWAY,
             f"El servicio de rutas respondió con error ({respuesta.status_code}). Los pedidos siguen pendientes.",
@@ -175,6 +218,19 @@ async def _llamar_n8n(paradas: list[dict]) -> dict:
         return respuesta.json()
     except ValueError:
         raise _error(status.HTTP_502_BAD_GATEWAY, "El servicio de rutas devolvió una respuesta que no es JSON.")
+
+
+def _codigo_error_n8n(respuesta: httpx.Response) -> str | None:
+    """Valor de "error" si n8n respondió un error 4xx/5xx con cuerpo
+    {"error": "...", "detalle": "..."}; None si no trae un cuerpo útil."""
+    if respuesta.status_code < 400:
+        return None
+    try:
+        cuerpo = respuesta.json()
+    except ValueError:
+        return None
+    error = cuerpo.get("error") if isinstance(cuerpo, dict) else None
+    return error.strip() if isinstance(error, str) and error.strip() else None
 
 
 def _es_entero(valor) -> bool:
@@ -235,6 +291,8 @@ def _validar_respuesta(respuesta, enviados: list[int]) -> tuple[list[dict], list
         problemas.append(f"pedidos enviados que no vinieron en la respuesta: {faltantes}")
     if ordenes_repetidos:
         problemas.append(f"orden_entrega repetidos: {ordenes_repetidos}")
+    elif len(ordenes) == len(ruta) and sorted(ordenes) != list(range(1, len(ruta) + 1)):
+        problemas.append(f"orden_entrega no es consecutivo 1..{len(ruta)}: {sorted(ordenes)}")
     if problemas:
         logger.warning("[rutas] Respuesta de n8n inválida: %s", problemas)
         raise _error(
@@ -246,6 +304,13 @@ def _validar_respuesta(respuesta, enviados: list[int]) -> tuple[list[dict], list
 
 
 async def planificar_ruta(pedido_ids: list[int], usuario: str | None) -> dict:
+    if len(pedido_ids) > settings.RUTA_MAX_PEDIDOS:
+        raise _error(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"Máximo {settings.RUTA_MAX_PEDIDOS} pedidos por planificación",
+            maximo=settings.RUTA_MAX_PEDIDOS,
+            recibidos=len(pedido_ids),
+        )
     repetidos = sorted({pid for pid in pedido_ids if pedido_ids.count(pid) > 1})
     if repetidos:
         raise _error(
@@ -256,6 +321,10 @@ async def planificar_ruta(pedido_ids: list[int], usuario: str | None) -> dict:
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "El servicio de rutas no está configurado (falta N8N_ROUTE_WEBHOOK_URL).",
         )
+    if not settings.N8N_ROUTE_WEBHOOK_SECRET:
+        # Sin secreto n8n rechaza la llamada (403): no tiene sentido hacerla.
+        logger.warning("[rutas] N8N_ROUTE_WEBHOOK_SECRET vacío: no se llama a n8n")
+        raise _error(status.HTTP_503_SERVICE_UNAVAILABLE, "Servicio de rutas no configurado")
     # Chequeo y toma del lock sin awaits entremedio: dos solicitudes
     # simultáneas no pueden pasar ambas.
     if _planificacion_en_curso.locked():
@@ -273,11 +342,13 @@ async def _planificar(pedido_ids: list[int], usuario: str | None) -> dict:
         {
             "pedido_id": pid,
             "direccion_texto": _direccion(pedidos[pid]),
-            "latitud": _coordenada(pedidos[pid].latitud),
-            "longitud": _coordenada(pedidos[pid].longitud),
+            "latitud": _coordenada(pedidos[pid].latitud) if _tiene_coordenadas(pedidos[pid]) else None,
+            "longitud": _coordenada(pedidos[pid].longitud) if _tiene_coordenadas(pedidos[pid]) else None,
         }
         for pid in pedido_ids
     ]
+    # Para detectar cambios hechos mientras se espera a n8n.
+    leido_en = {pid: pedidos[pid].actualizado_en for pid in pedido_ids}
 
     # 2. n8n (sin ninguna transacción abierta mientras se espera).
     respuesta = await _llamar_n8n(paradas)
@@ -290,8 +361,15 @@ async def _planificar(pedido_ids: list[int], usuario: str | None) -> dict:
     async with SessionLocal() as session:
         async with session.begin():
             pedidos = await _cargar_pedidos(session, pedido_ids, bloquear=True)
-            # Pudieron cambiar mientras se esperaba a n8n (ej. un cancelado).
+            # Pudieron cambiar mientras se esperaba a n8n (ej. un cancelado, o
+            # una dirección o coordenadas corregidas): no se escribe nada.
             _verificar_planificables(pedido_ids, pedidos)
+            for pid in pedido_ids:
+                if pedidos[pid].actualizado_en != leido_en[pid]:
+                    raise _error(
+                        status.HTTP_409_CONFLICT,
+                        f"El pedido {pid} cambió durante la planificación, reintenta",
+                    )
             for pid in pedido_ids:
                 pedido = pedidos[pid]
                 antes = construir_snapshot(pedido)
@@ -303,9 +381,10 @@ async def _planificar(pedido_ids: list[int], usuario: str | None) -> dict:
                 # con el motivo para revisión manual. Si entró a la ruta, se
                 # limpia una marca anterior.
                 pedido.motivo_revision_direccion = motivos.get(pid)
-                if parada and pedido.latitud is None and pedido.longitud is None:
+                if parada and not _tiene_coordenadas(pedido):
                     # Solo se completan las coordenadas del pedido que llegó
-                    # sin ellas; las del cliente nunca se tocan.
+                    # sin ellas (o con el par a medias, que se sobrescribe
+                    # entero); las del cliente nunca se tocan.
                     pedido.latitud = parada["latitud"]
                     pedido.longitud = parada["longitud"]
                 pedido.actualizado_en = ahora

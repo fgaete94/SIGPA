@@ -1811,6 +1811,66 @@ def _resumen_productos_corto(productos: list[dict]) -> str:
     )
 
 
+def _lista_natural(partes: list[str]) -> str:
+    return partes[0] if len(partes) == 1 else f"{', '.join(partes[:-1])} y {partes[-1]}"
+
+
+def _texto_cambios_pedido(draft_previo: dict | None, draft_nuevo: dict | None) -> str | None:
+    """Frase corta, armada en código, con lo que cambió en las líneas del
+    pedido entre dos drafts, o None si no cambió nada. Así el bot confirma lo
+    que hizo en vez de repetir la misma pregunta (en WhatsApp parecía un
+    loop: "si un dispensador basico" → "¿Deseas agregar algo más...?").
+
+    - "Agregué 1x Dispensador Básico." / "Quité 2x Bidón 12L Nuevo." /
+      "Dejé 5x Bidón 20L Recarga." (cantidad nueva).
+    - Una línea que desaparece y otra de la misma familia que aparece es un
+      cambio: "Cambié el Dispensador Básico por Dispensador USB."
+    - Varias acciones van en una frase: "Listo: quité 2x Bidón 12L Nuevo y
+      cambié el Dispensador Básico por Dispensador USB."
+
+    Solo cuenta las líneas de "productos": lo pendiente de aclarar
+    (aclaracion_pendiente, pendientes_modelo) tiene su propia pregunta. Sin
+    precios ni totales (eso es del resumen)."""
+
+    def lineas(draft: dict | None) -> dict[str, int]:
+        cantidades: dict[str, int] = {}
+        for item in (draft or {}).get("productos") or []:
+            nombre = item.get("nombre_producto") or ""
+            cantidades[nombre] = cantidades.get(nombre, 0) + _cantidad_valida(item.get("cantidad"))
+        return {nombre: n for nombre, n in cantidades.items() if n > 0}
+
+    antes, despues = lineas(draft_previo), lineas(draft_nuevo)
+    quitadas = [nombre for nombre in antes if nombre not in despues]
+    agregadas = [nombre for nombre in despues if nombre not in antes]
+    cambios = []
+    for quitada in list(quitadas):
+        reemplazo = next((a for a in agregadas if _familia(a) == _familia(quitada)), None)
+        if reemplazo is None:
+            continue
+        quitadas.remove(quitada)
+        agregadas.remove(reemplazo)
+        if antes[quitada] == 1 and despues[reemplazo] == 1:
+            cambios.append(f"el {quitada} por {reemplazo}")
+        else:
+            cambios.append(f"{antes[quitada]}x {quitada} por {despues[reemplazo]}x {reemplazo}")
+
+    acciones = []
+    if quitadas:
+        acciones.append("quité " + _lista_natural([f"{antes[n]}x {n}" for n in quitadas]))
+    if cambios:
+        acciones.append("cambié " + _lista_natural(cambios))
+    dejadas = [f"{despues[n]}x {n}" for n in despues if n in antes and despues[n] != antes[n]]
+    if dejadas:
+        acciones.append("dejé " + _lista_natural(dejadas))
+    if agregadas:
+        acciones.append("agregué " + _lista_natural([f"{despues[n]}x {n}" for n in agregadas]))
+    if not acciones:
+        return None
+    if len(acciones) == 1:
+        return f"{acciones[0][0].upper()}{acciones[0][1:]}."
+    return f"Listo: {_lista_natural(acciones)}."
+
+
 def _menciona_direccion_o_ubicacion(texto: str | None) -> bool:
     if not texto:
         return False
@@ -2512,6 +2572,20 @@ async def _aplicar_resultado_llm(
         save_draft(phone, {**nuevo_draft, "paso": "producto", "estado": "armando"})
         paso, texto = "producto", PREGUNTA_PRODUCTO
 
+    # Si el turno cambió las líneas del pedido, el bot dice qué hizo antes de
+    # la pregunta siguiente (ver _texto_cambios_pedido): siempre antes de
+    # "¿Deseas agregar algo más...?", y, si ya había un pedido en curso,
+    # también antes de la dirección o del resumen. No en el paso "producto"
+    # (la pregunta de lo pendiente ya dice qué falta) ni en el primer pedido
+    # de la conversación.
+    frase_cambios = _texto_cambios_pedido({"productos": productos_previos}, {"productos": productos})
+    if frase_cambios and (
+        (paso == "algo_mas" and texto == PREGUNTA_ALGO_MAS)
+        or (productos_previos and paso not in ("producto", "algo_mas"))
+    ):
+        separador = "\n\n" if paso == "confirmacion" else " "
+        texto = f"{frase_cambios}{separador}{texto}"
+
     if cambio_atributo and not modificacion_explicita:
         # No se adivina si cambia o suma: se pregunta, y la propuesta queda
         # guardada para el mensaje siguiente (ver _responder_a_correccion). Un
@@ -2834,7 +2908,7 @@ async def _responder_a_correccion(
         nuevo["unidades_pedidas"] = _unidades_draft(nuevo)
         _, texto = await _responder_siguiente_paso(phone, nuevo, cliente)
         logger.info("[order_flow] Producto agregado para phone=%s: %dx %s", phone, cantidad, cambio["hacia"])
-        return f"{MENSAJE_PRODUCTO_AGREGADO}\n\n{texto}"
+        return f"{_texto_cambios_pedido(draft, nuevo) or MENSAJE_PRODUCTO_AGREGADO}\n\n{texto}"
     elif _es_negativa_simple(mensaje):
         save_draft(phone, {**draft, "estado": ESTADO_ESPERANDO_MODIFICACION})
         return MENSAJE_CORRECCION_RECHAZADA
@@ -2847,7 +2921,7 @@ async def _responder_a_correccion(
     nuevo["unidades_pedidas"] = _unidades_draft(nuevo)
     paso, texto = await _responder_siguiente_paso(phone, nuevo, cliente)
     logger.info("[order_flow] Corrección aplicada para phone=%s: %s", phone, correccion["cambios"])
-    return f"{MENSAJE_CORRECCION_APLICADA}\n\n{texto}"
+    return f"{_texto_cambios_pedido(draft, nuevo) or MENSAJE_CORRECCION_APLICADA}\n\n{texto}"
 
 
 async def _es_cliente_nuevo(phone: str) -> bool:

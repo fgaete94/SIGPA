@@ -875,10 +875,13 @@ async def caso_s(ctx: dict, v: Verificador) -> None:
     precios = ctx["precios"]
     total = sum(precios[item["nombre_producto"]] * item["cantidad"] for item in LINEAS_20L)
     v.check(_sin_orden(draft.get("productos") or []) == _sin_orden(LINEAS_20L), "el draft queda con 2x 20L Recarga y 1x 20L Nuevo")
+    # Antes del resumen va la confirmación del cambio ("Cambié 2x Bidón 12L
+    # Recarga por ..."), que sí nombra los de 12L: se revisa solo el resumen.
+    resumen = respuestas[1][respuestas[1].find("Resumen de tu pedido"):]
     v.check(
         _es_resumen(respuestas[1])
-        and all(f"{i['cantidad']}x {i['nombre_producto']}" in respuestas[1] for i in LINEAS_20L)
-        and "12L" not in respuestas[1],
+        and all(f"{i['cantidad']}x {i['nombre_producto']}" in resumen for i in LINEAS_20L)
+        and "12L" not in resumen,
         "muestra el resumen nuevo, sin 12L",
     )
     v.check(f"Total: {_clp(total)}" in respuestas[1], f"con precios y total recalculados ({_clp(total)})")
