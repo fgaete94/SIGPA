@@ -24,7 +24,11 @@ export async function api(path, { signal, ...options } = {}) {
   try { body = text ? JSON.parse(text) : null; } catch { body = null; }
   if (!response.ok) {
     const detail = body?.detail;
-    throw new Error(typeof detail === 'string' ? detail : detail?.mensaje || `No se pudo completar la operación (${response.status}).`);
+    const error = new Error(typeof detail === 'string' ? detail : detail?.mensaje || `No se pudo completar la operación (${response.status}).`);
+    // Para mostrar el detalle completo (ej. errores de rutas: {mensaje, problemas, pedido_ids, ...}).
+    error.status = response.status;
+    if (detail && typeof detail === 'object') error.detalle = detail;
+    throw error;
   }
   if (response.status === 204 || !text) return null;
   if (body === null) throw new Error('El servidor devolvió una respuesta inesperada.');

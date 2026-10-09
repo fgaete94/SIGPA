@@ -35,6 +35,11 @@ El frontend no usa Supabase ni necesita sus claves: la autenticación pasa por e
     - 503: servicio de rutas no configurado en el backend (falta la URL o el secreto de n8n).
     - 502: n8n rechazó la solicitud o está mal configurado (`{mensaje, codigo}`, donde `codigo` es el código de error de n8n o el status HTTP), no respondió bien, devolvió algo que no es JSON o una ruta inválida (`{mensaje, problemas}`). 504: n8n no respondió a tiempo. Nada se guarda en ninguno de estos casos.
 - El panel pide confirmación antes de planificar porque el endpoint también confirma pedidos y guarda el orden.
+- Pestaña Rutas (`src/Rutas.jsx`, lógica en `src/planificacion.js`):
+  - Cada pedido muestra su estado y, si n8n no pudo ubicarlo, la marca "Dirección por revisar" con el motivo (`motivo_revision_direccion`).
+  - "Corregir ubicación" (#113) abre la dirección en Google Maps y recibe las coordenadas tal como las copia Maps (`-33.0458, -71.6197`); valida que estén en Chile y llama a POST `/pedidos/{id}/coordenadas`.
+  - La selección se limita a 30 pedidos (`RUTA_MAX_PEDIDOS`, igual al valor por defecto del backend) con un contador.
+  - Los errores de POST `/rutas/planificar` se muestran con su detalle (`api()` deja `error.status` y `error.detalle`): pedidos que cambiaron de estado, problemas de la respuesta de n8n, tope y aviso de arranque en frío en el 504.
 - Los errores no se sustituyen por datos ficticios. Los indicadores corresponden a todos los registros devueltos, no a una jornada.
 - Los cambios manuales de orden solo afectan la impresión actual. Se indica expresamente en pantalla; no hay endpoint existente para persistirlos. Se pierden al recargar/cerrar sesión.
 
@@ -56,4 +61,4 @@ No habilitar CORS universal ni exponer secretos para resolver esto. Las variable
 
 ## Verificación
 
-`npm run build` verifica la compilación. `npm test` comprueba que el reordenamiento conserve todos los pedidos y respete los extremos de la lista, y prueba el módulo de sesión (decodificación del JWT, expiración con margen y un único refresh ante llamadas simultáneas).
+`npm run build` verifica la compilación. `npm test` comprueba que el reordenamiento conserve todos los pedidos y respete los extremos de la lista, y prueba el módulo de sesión (decodificación del JWT, expiración con margen y un único refresh ante llamadas simultáneas). También prueba la pestaña Rutas: tope de selección, lectura y validación de coordenadas y textos de error.
