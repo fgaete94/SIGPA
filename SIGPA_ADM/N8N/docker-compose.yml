@@ -3,16 +3,20 @@
 # optimiza). No se conecta directo a Supabase ni escribe en la base.
 #
 # Uso: cp .env.example .env  (completar valores)  ->  docker compose up -d
+# Despliegue en un host público (Render): ver Dockerfile y DESPLIEGUE.md.
 
 services:
   n8n:
-    image: n8nio/n8n:latest
+    # Versión fija de n8n: N8N_VERSION en el .env (la misma que usa el
+    # Dockerfile). Sin ella docker compose se niega a arrancar.
+    image: n8nio/n8n:${N8N_VERSION:?Definir N8N_VERSION en el .env (ver .env.example)}
     container_name: sigpa-n8n
     restart: unless-stopped
     ports:
       - "5678:5678"
-    # Secreto compartido, depósito y API key de ORS vienen solo del .env
-    # (nunca hardcodeados aquí).
+    # Depósito (DEPOT_LAT/DEPOT_LON), API key de ORS y demás variables del
+    # workflow vienen solo del .env (nunca hardcodeadas aquí). El secreto
+    # X-Route-Secret es una credencial de n8n, no una variable.
     env_file: .env
     environment:
       # Huso horario de Chile: lo usan los nodos Cron/Schedule de n8n.
@@ -22,6 +26,8 @@ services:
       # Permite usar {{ $env.X }} en los nodos (variables del .env).
       - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
       - N8N_DIAGNOSTICS_ENABLED=false
+      # Corte de 40 s por ejecución (el backend espera 45 s).
+      - EXECUTIONS_TIMEOUT=40
     volumes:
       - n8n_data:/home/node/.n8n
     healthcheck:

@@ -1,7 +1,8 @@
 # n8n — entorno local de SIGPA
 
 Entorno local (Docker) de [n8n](https://n8n.io) que va a correr el workflow de
-optimización de rutas (EP-04).
+optimización de rutas (EP-04). Para desplegarlo en un host público (Render) ver
+[`DESPLIEGUE.md`](DESPLIEGUE.md) y el [`Dockerfile`](Dockerfile).
 
 ## Cómo encaja en la arquitectura
 
@@ -20,7 +21,7 @@ La ruta se genera a pedido de la ejecutiva desde el panel, no con un cron:
   "confirmado" con su `orden_entrega`). Ver `Backend/app/services/ruta_service.py`.
 - **n8n geocodifica y optimiza:** recibe las paradas, geocodifica las que vienen sin coordenadas
   (OpenRouteService), calcula el orden desde el depósito y responde. Las coordenadas del depósito
-  viven solo en n8n (nodo Config del workflow).
+  viven solo en n8n, en las variables de entorno `DEPOT_LAT` / `DEPOT_LON` (las lee el nodo Config).
 - **n8n no escribe en la base de datos** ni se conecta a Supabase.
 
 ### Contrato con el backend
@@ -45,14 +46,14 @@ Reglas que el backend valida (si no se cumplen, no guarda nada y responde error 
 
 - Cada pedido enviado aparece **exactamente una vez**, en `ruta` o en `sin_resolver`; ningún
   `pedido_id` que no se haya enviado.
-- `orden_entrega`: enteros positivos, sin repetir (1 = primera parada).
+- `orden_entrega`: enteros consecutivos 1..N, sin repetir ni huecos (1 = primera parada).
 - `latitud` en [-90, 90] y `longitud` en [-180, 180].
 - El webhook debe responder antes de `N8N_ROUTE_TIMEOUT_SECONDS` (default 45 s del lado del backend).
 
 ## Levantarlo
 
 ```bash
-cp .env.example .env      # completar los valores
+cp .env.example .env      # completar N8N_VERSION, DEPOT_LAT, DEPOT_LON, OPENROUTESERVICE_API_KEY
 docker compose up -d
 docker compose ps         # esperar a que el estado sea "healthy"
 ```
@@ -104,6 +105,8 @@ Webhook → Config → Normalizar → ¿Entrada válida? ─no→ 400 entrada_in
 - Las paradas que traen coordenadas se usan tal cual (y se devuelven iguales). Las demás se
   geocodifican de a una, con 1500 ms entre requests (cuota gratuita de ORS), sesgadas hacia el
   depósito y limitadas a `PAIS`.
+- Sin depósito válido (`DEPOT_LAT`/`DEPOT_LON` ausentes, no numéricos o 0/0) o sin
+  `OPENROUTESERVICE_API_KEY`, responde 500 `configuracion_incompleta` sin llamar a ORS.
 - Una dirección geocodificada solo se acepta si el resultado tiene `layer` = `address` **y**
   `confidence` >= `CONFIDENCE_MIN`. El `confidence` de ORS no basta por sí solo: en pruebas
   reales, "Pasaje Zxqwyrt 98765, Villa Inexistente" volvió con `confidence` 1 y `match_type`
@@ -125,18 +128,30 @@ Webhook → Config → Normalizar → ¿Entrada válida? ─no→ 400 entrada_in
 
 ## Qué configurar antes de usarlo
 
+**Variables de entorno** (en el `.env` local, o en el servicio al desplegar). El workflow las lee
+con `{{ $env.X }}`, por eso `N8N_BLOCK_ENV_ACCESS_IN_NODE=false` (ya está en el compose y el
+Dockerfile):
+
+| Variable | Obligatoria | Uso |
+|---|---|---|
+| `DEPOT_LAT`, `DEPOT_LON` | Sí | Coordenadas del depósito (inicio y fin de la ruta). |
+| `OPENROUTESERVICE_API_KEY` | Sí | API key de <https://openrouteservice.org> (nivel gratuito). Va en el header `Authorization` de **Geocodificar (ORS)** y **Optimizar (ORS)**. |
+| `CONFIDENCE_MIN` | No (0.6) | Confianza mínima para aceptar una geocodificación de layer `address`. Un valor no numérico se ignora y se usa 0.6. |
+| `PAIS` | No (CL) | País al que se limita la geocodificación. |
+| `N8N_VERSION` | Sí (compose) | Versión fija de la imagen `n8nio/n8n`, la misma del `Dockerfile`. |
+
 Después de importar el workflow en el editor:
 
 1. **Credencial `SIGPA X-Route-Secret`** (tipo *Header Auth*): Name `X-Route-Secret`, Value = el
    mismo secreto que `N8N_ROUTE_WEBHOOK_SECRET` en el backend. Asignarla en el nodo **Webhook**.
-2. **Credencial `OpenRouteService API key`** (tipo *Header Auth*): Name `Authorization`, Value =
-   la API key de <https://openrouteservice.org> (nivel gratuito). Asignarla en **Geocodificar (ORS)**
-   y **Optimizar (ORS)**.
-3. **Nodo Config:** completar `DEPOT_LAT` y `DEPOT_LON` con las coordenadas del depósito. Con
-   0/0 el workflow responde 500 `configuracion_incompleta`. `CONFIDENCE_MIN` (0.6) y `PAIS` (CL)
-   se pueden ajustar ahí.
-4. **Publicar (activar) el workflow** para que responda en `/webhook/sigpa-ruta`, y en el backend
+   Es la única credencial del workflow (n8n exige credencial para la autenticación del webhook).
+2. **Publicar (activar) el workflow** para que responda en `/webhook/sigpa-ruta`, y en el backend
    configurar `N8N_ROUTE_WEBHOOK_URL` con esa URL.
+
+Si venías de la versión anterior del workflow (API key en la credencial `OpenRouteService API
+key` y depósito escrito en el nodo Config): copiar la API key a `OPENROUTESERVICE_API_KEY` en el
+`.env`, reiniciar el contenedor (`docker compose up -d`) y reimportar el workflow. La credencial
+vieja ya no se usa y se puede borrar desde el editor.
 
 El nodo Webhook trae datos de prueba fijados (4 paradas: dos con coordenadas, una real de Viña
 del Mar sin coordenadas y una inventada) para ejecutarlo desde el editor con **Test workflow**.

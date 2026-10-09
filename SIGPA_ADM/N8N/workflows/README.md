@@ -8,8 +8,11 @@ Para que queden versionados en git, cada workflow se exporta como JSON a esta ca
 - Un archivo por workflow, en kebab-case: `optimizacion-rutas.json`.
 - Los borradores no importables llevan el sufijo `.placeholder.json`.
 - Exportar después de cada cambio relevante y commitear el JSON junto con el cambio.
-- Los JSON no deben contener secretos: usar `{{ $env.VARIABLE }}` en los nodos y credenciales de n8n
-  (las credenciales no se exportan con el workflow).
+- Los JSON no deben contener secretos ni datos reales (API keys, tokens, coordenadas del
+  depósito): usar `{{ $env.VARIABLE }}` en los nodos. Solo se usa una credencial de n8n donde n8n
+  la exige (Header Auth del Webhook); las credenciales no se exportan con su valor.
+- Antes de commitear un export, revisar que no traiga valores escritos a mano en el nodo Config
+  ni en headers de los nodos HTTP.
 
 ## Exportar
 
@@ -32,4 +35,6 @@ Para que queden versionados en git, cada workflow se exporta como JSON a esta ca
   ```
 
 Al importar, las credenciales quedan referenciadas por nombre pero sin valor: hay que asignarlas
-en cada nodo que las usa (ver el README de la carpeta `N8N/`).
+en cada nodo que las usa. En `optimizacion-rutas` es solo `SIGPA X-Route-Secret` en el nodo
+Webhook; el depósito y la API key de ORS vienen de variables de entorno (ver el README de la
+carpeta `N8N/` y `DESPLIEGUE.md`).

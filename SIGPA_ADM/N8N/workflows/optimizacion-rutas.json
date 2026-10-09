@@ -33,30 +33,32 @@
             {
               "id": "c1",
               "name": "DEPOT_LAT",
-              "value": -33.014677,
+              "value": "={{ String($env.DEPOT_LAT || '').trim() !== '' && isFinite($env.DEPOT_LAT) ? Number($env.DEPOT_LAT) : null }}",
               "type": "number"
             },
             {
               "id": "c2",
               "name": "DEPOT_LON",
-              "value": -71.505148,
+              "value": "={{ String($env.DEPOT_LON || '').trim() !== '' && isFinite($env.DEPOT_LON) ? Number($env.DEPOT_LON) : null }}",
               "type": "number"
             },
             {
               "id": "c3",
               "name": "CONFIDENCE_MIN",
-              "value": 0.6,
+              "value": "={{ String($env.CONFIDENCE_MIN || '').trim() !== '' && isFinite($env.CONFIDENCE_MIN) ? Number($env.CONFIDENCE_MIN) : 0.6 }}",
               "type": "number"
             },
             {
               "id": "c4",
               "name": "PAIS",
-              "value": "CL",
+              "value": "={{ String($env.PAIS || '').trim() || 'CL' }}",
               "type": "string"
             }
           ]
         },
-        "options": {}
+        "options": {
+          "ignoreConversionErrors": true
+        }
       },
       "id": "a1000000-0000-4000-8000-000000000002",
       "name": "Config",
@@ -66,12 +68,13 @@
         220,
         300
       ],
-      "notes": "Completar DEPOT_LAT y DEPOT_LON con las coordenadas del depósito. Con 0/0 el workflow responde 500 configuracion_incompleta.",
-      "notesInFlow": true
+      "notes": "Lee DEPOT_LAT, DEPOT_LON, CONFIDENCE_MIN (default 0.6) y PAIS (default CL) de las variables de entorno. Sin depósito válido el workflow responde 500 configuracion_incompleta.",
+      "notesInFlow": true,
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
-        "jsCode": "// Valida la entrada y separa paradas con coordenadas de las que hay que geocodificar.\n// Nunca lanza errores: si algo está mal devuelve valido=false para que se responda.\nconst cfg = $('Config').first().json;\nconst body = $('Webhook').first().json.body;\n\nconst enRango = (lat, lon) =>\n  Number.isFinite(lat) && Number.isFinite(lon) &&\n  lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180;\nconst aNumero = (v) => (v === null || v === undefined || v === '' ? NaN : Number(v));\nconst invalido = (status, error, detalle) =>\n  [{ json: { valido: false, status, error, detalle } }];\n\nconst depotLat = aNumero(cfg.DEPOT_LAT);\nconst depotLon = aNumero(cfg.DEPOT_LON);\nif (!enRango(depotLat, depotLon) || (depotLat === 0 && depotLon === 0)) {\n  return invalido(500, 'configuracion_incompleta', 'Completar DEPOT_LAT y DEPOT_LON en el nodo Config');\n}\n\nif (!body || !Array.isArray(body.paradas)) {\n  return invalido(400, 'entrada_invalida', 'Se esperaba {\"paradas\": [...]}');\n}\n\nconst resueltas = [];\nconst pendientes = [];\nconst sin_resolver = [];\nconst ids_recibidos = [];\nconst vistos = new Set();\n\nfor (const p of body.paradas) {\n  let id = p ? p.pedido_id : undefined;\n  if (typeof id === 'string' && /^\\d+$/.test(id)) id = Number(id);\n  if (!Number.isInteger(id)) {\n    return invalido(400, 'entrada_invalida', 'pedido_id debe ser entero: ' + JSON.stringify(p));\n  }\n  // Un pedido_id repetido se considera una sola parada (la primera).\n  if (vistos.has(id)) continue;\n  vistos.add(id);\n  ids_recibidos.push(id);\n\n  const lat = aNumero(p.latitud);\n  const lon = aNumero(p.longitud);\n  const direccion = typeof p.direccion_texto === 'string' ? p.direccion_texto.trim() : '';\n\n  if (enRango(lat, lon)) {\n    resueltas.push({ pedido_id: id, latitud: lat, longitud: lon });\n  } else if (direccion) {\n    pendientes.push({ pedido_id: id, direccion_texto: direccion });\n  } else {\n    sin_resolver.push({ pedido_id: id, motivo: 'dirección no encontrada' });\n  }\n}\n\nreturn [{ json: { valido: true, ids_recibidos, resueltas, pendientes, sin_resolver } }];"
+        "jsCode": "// Valida la entrada y separa paradas con coordenadas de las que hay que geocodificar.\n// Nunca lanza errores: si algo está mal devuelve valido=false para que se responda.\nconst cfg = $('Config').first().json;\nconst body = $('Webhook').first().json.body;\n\nconst enRango = (lat, lon) =>\n  Number.isFinite(lat) && Number.isFinite(lon) &&\n  lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180;\nconst aNumero = (v) => (v === null || v === undefined || v === '' ? NaN : Number(v));\nconst invalido = (status, error, detalle) =>\n  [{ json: { valido: false, status, error, detalle } }];\n\nconst depotLat = aNumero(cfg.DEPOT_LAT);\nconst depotLon = aNumero(cfg.DEPOT_LON);\nif (!enRango(depotLat, depotLon) || (depotLat === 0 && depotLon === 0)) {\n  return invalido(500, 'configuracion_incompleta', 'Definir DEPOT_LAT y DEPOT_LON (variables de entorno de n8n)');\n}\n// La API key de ORS se lee del entorno en los nodos HTTP; aquí solo se\n// verifica que exista (nunca se copia a los datos de la ejecución).\nlet orsKey = '';\ntry {\n  orsKey = String($env.OPENROUTESERVICE_API_KEY || '').trim();\n} catch (e) {\n  orsKey = '';\n}\nif (!orsKey) {\n  return invalido(500, 'configuracion_incompleta', 'Definir OPENROUTESERVICE_API_KEY (variable de entorno de n8n)');\n}\n\nif (!body || !Array.isArray(body.paradas)) {\n  return invalido(400, 'entrada_invalida', 'Se esperaba {\"paradas\": [...]}');\n}\n\nconst resueltas = [];\nconst pendientes = [];\nconst sin_resolver = [];\nconst ids_recibidos = [];\nconst vistos = new Set();\n\nfor (const p of body.paradas) {\n  let id = p ? p.pedido_id : undefined;\n  if (typeof id === 'string' && /^\\d+$/.test(id)) id = Number(id);\n  if (!Number.isInteger(id)) {\n    return invalido(400, 'entrada_invalida', 'pedido_id debe ser entero: ' + JSON.stringify(p));\n  }\n  // Un pedido_id repetido se considera una sola parada (la primera).\n  if (vistos.has(id)) continue;\n  vistos.add(id);\n  ids_recibidos.push(id);\n\n  const lat = aNumero(p.latitud);\n  const lon = aNumero(p.longitud);\n  const direccion = typeof p.direccion_texto === 'string' ? p.direccion_texto.trim() : '';\n\n  if (enRango(lat, lon)) {\n    resueltas.push({ pedido_id: id, latitud: lat, longitud: lon });\n  } else if (direccion) {\n    pendientes.push({ pedido_id: id, direccion_texto: direccion });\n  } else {\n    sin_resolver.push({ pedido_id: id, motivo: 'dirección no encontrada' });\n  }\n}\n\nreturn [{ json: { valido: true, ids_recibidos, resueltas, pendientes, sin_resolver } }];"
       },
       "id": "a1000000-0000-4000-8000-000000000003",
       "name": "Normalizar",
@@ -185,8 +188,15 @@
     {
       "parameters": {
         "url": "https://api.openrouteservice.org/geocode/search",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $env.OPENROUTESERVICE_API_KEY }}"
+            }
+          ]
+        },
         "sendQuery": true,
         "queryParameters": {
           "parameters": [
@@ -231,12 +241,6 @@
         80
       ],
       "onError": "continueRegularOutput",
-      "credentials": {
-        "httpHeaderAuth": {
-          "id": "REEMPLAZAR_ORS",
-          "name": "OpenRouteService API key"
-        }
-      },
       "notes": "De a una parada, 1500 ms entre requests (cuota gratuita). Un error no detiene el workflow.",
       "notesInFlow": true
     },
@@ -305,8 +309,15 @@
       "parameters": {
         "method": "POST",
         "url": "https://api.openrouteservice.org/optimization",
-        "authentication": "genericCredentialType",
-        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $env.OPENROUTESERVICE_API_KEY }}"
+            }
+          ]
+        },
         "sendBody": true,
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify($json.body_optimizacion) }}",
@@ -323,12 +334,6 @@
         100
       ],
       "onError": "continueErrorOutput",
-      "credentials": {
-        "httpHeaderAuth": {
-          "id": "REEMPLAZAR_ORS",
-          "name": "OpenRouteService API key"
-        }
-      },
       "notes": "Timeout, 429, 4xx o 5xx salen por la rama de error -> 502.",
       "notesInFlow": true
     },
