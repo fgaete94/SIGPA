@@ -48,12 +48,13 @@ Reglas que el backend valida (si no se cumplen, no guarda nada y responde error 
   `pedido_id` que no se haya enviado.
 - `orden_entrega`: enteros consecutivos 1..N, sin repetir ni huecos (1 = primera parada).
 - `latitud` en [-90, 90] y `longitud` en [-180, 180].
-- El webhook debe responder antes de `N8N_ROUTE_TIMEOUT_SECONDS` (default 45 s del lado del backend).
+- El webhook debe responder antes de `N8N_ROUTE_TIMEOUT_SECONDS` del backend (default 45 s; en el
+  despliegue actual 120 s, ver *Tiempo* más abajo).
 
 ## Levantarlo
 
 ```bash
-cp .env.example .env      # completar DEPOT_LAT, DEPOT_LON, OPENROUTESERVICE_API_KEY (N8N_VERSION ya trae 2.41.6)
+cp .env.example .env      # completar DEPOT_LAT, DEPOT_LON, OPENROUTESERVICE_API_KEY (N8N_VERSION ya trae 2.42.5)
 docker compose up -d
 docker compose ps         # esperar a que el estado sea "healthy"
 ```
@@ -122,9 +123,16 @@ Webhook → Config → Normalizar → ¿Entrada válida? ─no→ 400 entrada_in
   cuadra responde 502 en vez de una ruta parcial.
 - Un `pedido_id` repetido en la entrada se toma una sola vez.
 
-**Tiempo:** el backend espera 45 s. Cada parada sin coordenadas suma ~1,5 s más la latencia de ORS
-(timeout 8 s por llamada) y la optimización tiene timeout de 20 s; el workflow se corta a los
-40 s. Con más de ~15 paradas sin coordenadas en una misma solicitud se arriesga el límite.
+**Tiempo:** el backend espera `N8N_ROUTE_TIMEOUT_SECONDS` (default 45 s). Cada parada sin
+coordenadas suma ~1,5 s más la latencia de ORS (timeout 8 s por llamada) y la optimización tiene
+timeout de 20 s; el workflow se corta a los 40 s. Con más de ~15 paradas sin coordenadas en una
+misma solicitud se arriesga el límite.
+
+En el despliegue actual el backend usa `N8N_ROUTE_TIMEOUT_SECONDS=120` para cubrir el arranque en
+frío de n8n en el plan gratuito de Render. Riesgos: el proxy del Static Site de Render o el panel
+pueden cortar antes de 120 s, y el candado de planificación queda tomado ese tiempo (otra
+planificación recibe 409). Recomendación: mantener n8n despierto y bajar el valor cuando ya no
+duerma. Detalle en [DESPLIEGUE.md](DESPLIEGUE.md), puntos 6 y 7.
 
 ## Qué configurar antes de usarlo
 
@@ -138,7 +146,7 @@ Dockerfile):
 | `OPENROUTESERVICE_API_KEY` | Sí | API key de <https://openrouteservice.org> (nivel gratuito). Va en el header `Authorization` de **Geocodificar (ORS)** y **Optimizar (ORS)**. |
 | `CONFIDENCE_MIN` | No (0.6) | Confianza mínima para aceptar una geocodificación de layer `address`. Un valor no numérico se ignora y se usa 0.6. |
 | `PAIS` | No (CL) | País al que se limita la geocodificación. |
-| `N8N_VERSION` | Sí (compose) | Versión fija de la imagen `n8nio/n8n`: **2.41.6** (la probada), la misma del `Dockerfile`. |
+| `N8N_VERSION` | Sí (compose) | Versión fija de la imagen `n8nio/n8n`: **2.42.5**, la misma del `Dockerfile` y de producción (el workflow se validó en local con 2.41.6). No bajar de versión una base ya migrada. |
 
 Después de importar el workflow en el editor:
 

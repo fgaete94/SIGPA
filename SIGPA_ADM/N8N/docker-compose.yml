@@ -26,7 +26,7 @@ services:
       # Permite usar {{ $env.X }} en los nodos (variables del .env).
       - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
       - N8N_DIAGNOSTICS_ENABLED=false
-      # Corte de 40 s por ejecución (el backend espera 45 s).
+      # Corte de 40 s por ejecución (el backend espera 45 s por defecto; ver DESPLIEGUE.md punto 7).
       - EXECUTIONS_TIMEOUT=40
     volumes:
       - n8n_data:/home/node/.n8n

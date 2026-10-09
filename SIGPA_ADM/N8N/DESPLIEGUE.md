@@ -10,17 +10,27 @@ nodos, payload ni respuesta. Todo lo que varía por entorno se carga como variab
 
 ## 1. Imagen
 
-El servicio se construye con el [`Dockerfile`](Dockerfile) de esta carpeta (`FROM n8nio/n8n:<versión>`).
-
-- **Versión:** el workflow se probó y validó con n8n **2.41.6**. El Dockerfile la fija
-  (`ARG N8N_VERSION=2.41.6`) y el docker-compose local usa la misma (`N8N_VERSION` del `.env`);
-  si se cambia, cambiar ambas y volver a probar. No usar `latest`: una actualización de n8n puede
+- **Versión:** producción corre n8n **2.42.5**. El workflow se validó en local con **2.41.6**
+  y se usa sin cambios en 2.42.5. El Dockerfile (`ARG N8N_VERSION=2.42.5`) y el docker-compose
+  local (`N8N_VERSION` del `.env`) usan la misma versión; si se cambia, cambiar ambas y volver a
+  probar. **No se puede bajar de versión:** la base de datos de producción ya tiene las
+  migraciones de 2.42.5 y n8n no las revierte. No usar `latest`: una actualización de n8n puede
   cambiar el comportamiento de los nodos.
-- En Render: servicio tipo **Web Service**, runtime **Docker**, *Root Directory* `SIGPA_ADM/N8N`,
-  *Dockerfile Path* `./Dockerfile`.
+- En Render: servicio tipo **Web Service**. Dos formas de crearlo:
+  - **A. Imagen oficial (despliegue actual).** *Existing Image* con
+    `docker.io/n8nio/n8n:2.42.5`, sin usar el Dockerfile. En ese caso hay que cargar **a mano**
+    en las variables del servicio las que el Dockerfile trae por defecto: `TZ`,
+    `GENERIC_TIMEZONE`, `EXECUTIONS_TIMEOUT`, `N8N_BLOCK_ENV_ACCESS_IN_NODE` y
+    `N8N_DIAGNOSTICS_ENABLED` (valores en el punto 2). Sin `N8N_BLOCK_ENV_ACCESS_IN_NODE=false`
+    el webhook responde 500 `configuracion_incompleta`.
+  - **B. Dockerfile (alternativa).** Runtime **Docker**, *Root Directory* `SIGPA_ADM/N8N`,
+    *Dockerfile Path* `./Dockerfile` ([`Dockerfile`](Dockerfile) de esta carpeta,
+    `FROM n8nio/n8n:<versión>`). Esas cinco variables ya vienen definidas en la imagen.
 - n8n escucha en el puerto `5678`. Definir `PORT=5678` en el servicio para que Render enrute a
   ese puerto.
-- *Health Check Path*: `/healthz`.
+- *Health Check Path*: **vacío**. En el plan gratuito de Render, con `/healthz` el servicio
+  entraba en reinicios en bucle, así que se dejó sin health check. `/healthz` sigue sirviendo
+  para el ping externo que evita el arranque en frío (punto 6).
 
 ## 2. Variables de entorno
 
@@ -33,10 +43,10 @@ El servicio se construye con el [`Dockerfile`](Dockerfile) de esta carpeta (`FRO
 | `OPENROUTESERVICE_API_KEY` | API key de <https://openrouteservice.org> | La usan los nodos **Geocodificar (ORS)** y **Optimizar (ORS)** en el header `Authorization`. Si falta: 500 `configuracion_incompleta`. |
 | `N8N_ENCRYPTION_KEY` | Cadena aleatoria larga (ej. `openssl rand -hex 32`) | **Fija y guardada** en un gestor de contraseñas. n8n cifra las credenciales con ella: si cambia (o se pierde) la credencial `SIGPA X-Route-Secret` deja de poder leerse y hay que recrearla. |
 | `WEBHOOK_URL` | URL pública HTTPS del servicio, ej. `https://<host>/` | n8n la usa para armar las URLs de los webhooks detrás del proxy de Render. |
-| `N8N_BLOCK_ENV_ACCESS_IN_NODE` | `false` | Sin esto el workflow no puede leer `$env.*` y responde 500 `configuracion_incompleta`. Ya viene en el Dockerfile. |
-| `GENERIC_TIMEZONE` / `TZ` | `America/Santiago` | Hora de Chile, como el resto del proyecto. Ya vienen en el Dockerfile. |
-| `EXECUTIONS_TIMEOUT` | `40` | Corta cada ejecución a los 40 s, antes del timeout de 45 s del backend. Ya viene en el Dockerfile (el workflow además trae su propio corte de 40 s). |
-| `N8N_DIAGNOSTICS_ENABLED` | `false` | Sin telemetría a n8n. Ya viene en el Dockerfile. |
+| `N8N_BLOCK_ENV_ACCESS_IN_NODE` | `false` | Sin esto el workflow no puede leer `$env.*` y responde 500 `configuracion_incompleta`. Ya viene en el Dockerfile; con la imagen oficial, cargarla a mano. |
+| `GENERIC_TIMEZONE` / `TZ` | `America/Santiago` | Hora de Chile, como el resto del proyecto. Ya vienen en el Dockerfile; con la imagen oficial, cargarlas a mano. |
+| `EXECUTIONS_TIMEOUT` | `40` | Corta cada ejecución a los 40 s, antes del timeout del backend (`N8N_ROUTE_TIMEOUT_SECONDS`, default 45 s; ver punto 7). Ya viene en el Dockerfile; con la imagen oficial, cargarla a mano (el workflow además trae su propio corte de 40 s). |
+| `N8N_DIAGNOSTICS_ENABLED` | `false` | Sin telemetría a n8n. Ya viene en el Dockerfile; con la imagen oficial, cargarla a mano. |
 | `PORT` | `5678` | Solo en Render (ver punto 1). |
 | `N8N_PROXY_HOPS` | `1` | En Render, porque n8n queda detrás de su proxy. Evita errores de `X-Forwarded-For` en las rutas con rate limit. Confirmar en los logs del primer arranque que no aparecen esos errores. No va en el Dockerfile ni en el compose local. |
 | `EXECUTIONS_DATA_PRUNE` | `true` | Obligatoria en producción: borra las ejecuciones antiguas. Las ejecuciones guardan las direcciones de los clientes y, si ORS devolviera un error, la API key podría quedar en los datos guardados de esa ejecución. |
@@ -80,7 +90,7 @@ DB_POSTGRESDB_SSL_ENABLED=true         # si el proveedor exige SSL
   (`DB_POSTGRESDB_SCHEMA`), separado de las tablas de SIGPA.
 - Si el Postgres es de **Supabase**: usar la conexión directa o el pooler en modo **session**
   (puerto `5432`), **no** el pooler en modo transaction (puerto `6543`), que puede fallar con las
-  migraciones de n8n. Es una precaución, no verificada con n8n 2.41.6.
+  migraciones de n8n. Es una precaución, no verificada en particular.
 - Si se usa Postgres de **Render en plan gratuito**, revisar los límites de duración de ese plan
   antes de guardar ahí los datos de n8n.
 - No necesita disco: el contenedor puede reiniciarse sin perder nada (siempre que
@@ -167,9 +177,11 @@ cuerpo inválido da 500. Conviene probarlo una vez antes de cargar el depósito.
 ## 6. Arranque en frío
 
 Si el plan del host duerme el servicio por inactividad (en Render, el plan gratuito lo hace tras
-unos minutos sin tráfico), la primera llamada tiene que esperar a que n8n arranque. Eso puede
-consumir los 45 s que espera el backend: el panel recibe un 504 ("no respondió a tiempo") aunque
-n8n después termine bien. Nada se guarda en ese caso y la ejecutiva puede reintentar.
+unos minutos sin tráfico), la primera llamada tiene que esperar a que n8n arranque. Con el
+default de 45 s del backend eso puede no alcanzar: el panel recibe un 504 ("no respondió a
+tiempo") aunque n8n después termine bien. Nada se guarda en ese caso y la ejecutiva puede
+reintentar. Por eso el despliegue actual sube `N8N_ROUTE_TIMEOUT_SECONDS` a 120 s (ver punto 7),
+lo que es un parche: lo recomendado es mantener n8n despierto.
 
 Opciones (elegir una):
 
@@ -192,6 +204,55 @@ En las variables del servicio del backend:
 | `EJECUTIVA_PHONE` | Teléfono (WhatsApp, formato `569XXXXXXXX`) de la ejecutiva que recibe las notificaciones de traspaso. **Obligatoria:** no tiene default; sin ella el sistema deja de notificar a la ejecutiva en producción y solo queda un warning en el log al iniciar. |
 | `CORS_ORIGINS` | Solo si el rewrite `/api/*` del panel no funciona y el panel llama a la URL directa del backend: el origen del sitio del panel (ej. `https://<panel>`), sin `*`. |
 
-El backend espera la respuesta hasta `N8N_ROUTE_TIMEOUT_SECONDS` (default 45 s). Si el secreto
-del backend queda vacío, el backend responde 503 sin llamar a n8n; si no coincide con el de n8n,
-el panel ve un 502 "Servicio de rutas mal configurado o rechazó la solicitud" (código 403).
+| `N8N_ROUTE_TIMEOUT_SECONDS` | Segundos que el backend espera la respuesta de n8n. Default del backend: `45`. En el despliegue actual: `120`, para cubrir el arranque en frío de n8n en el plan gratuito. |
+
+Si el secreto del backend queda vacío, el backend responde 503 sin llamar a n8n; si no coincide
+con el de n8n, el panel ve un 502 "Servicio de rutas mal configurado o rechazó la solicitud"
+(código 403).
+
+**Sobre `N8N_ROUTE_TIMEOUT_SECONDS=120`.** Cubre el arranque en frío, pero tiene riesgos:
+
+- El proxy del Static Site de Render (rewrite `/api/*`) o el propio panel pueden cortar la
+  solicitud antes de 120 s. En ese caso el panel muestra un error aunque el backend siga
+  esperando a n8n, y la ruta igual puede quedar guardada si n8n responde dentro del plazo del
+  backend: revisar el estado de los pedidos antes de reintentar.
+- Mientras el backend espera, el candado de planificación queda tomado: cualquier otra
+  planificación recibe 409 "Ya hay una planificación de ruta en curso" hasta que la primera
+  termine o se cumplan los 120 s.
+
+Recomendación: mantener n8n despierto (punto 6) y, cuando ya no duerma, bajar el valor a uno
+cercano al default (45 s). El workflow se corta a los 40 s de ejecución, así que con n8n
+despierto no hace falta esperar más que eso.
+
+## 8. Verificación posterior al despliegue
+
+Tres pruebas contra la URL de producción. En Windows usar `curl.exe` (no el alias `curl` de
+PowerShell); `-i` muestra el status HTTP. Reemplazar `<host>` y `<SECRETO>`.
+
+```powershell
+# 1. Secreto incorrecto -> 403
+curl.exe -i -X POST "https://<host>/webhook/sigpa-ruta" -H "Content-Type: application/json" -H "X-Route-Secret: incorrecto" -d "{}"
+
+# 2. Cuerpo vacío con el secreto correcto -> 400 {"error": "entrada_invalida", ...}
+curl.exe -i -X POST "https://<host>/webhook/sigpa-ruta" -H "Content-Type: application/json" -H "X-Route-Secret: <SECRETO>" -d "{}"
+
+# 3. Dos paradas con coordenadas -> 200 con "ruta" y "sin_resolver"
+curl.exe -i -X POST "https://<host>/webhook/sigpa-ruta" -H "Content-Type: application/json" -H "X-Route-Secret: <SECRETO>" --data-binary "@paradas.json"
+```
+
+Para la prueba 3, guardar en `paradas.json` (fuera del repo) el cuerpo de ejemplo del punto 5 y
+enviarlo con `--data-binary`: así se evitan los problemas de comillas de PowerShell. Si faltan
+`DEPOT_LAT`/`DEPOT_LON` u `OPENROUTESERVICE_API_KEY`, las pruebas 2 y 3 dan 500
+`configuracion_incompleta`.
+
+> `Invoke-RestMethod` (e `Invoke-WebRequest`) de PowerShell lanza una excepción ante un 4xx y no
+> muestra el status de forma directa: para verificar el 403 y el 400 usar `curl.exe -i`.
+
+Comprobaciones de la instancia:
+
+- `N8N_ENCRYPTION_KEY` y `WEBHOOK_URL` definidas en las variables del servicio (y la clave
+  guardada en un gestor de contraseñas).
+- En el editor, que no existan **workflows duplicados** con el mismo path de webhook
+  (`sigpa-ruta`) ni **credenciales duplicadas** con el mismo nombre (`SIGPA X-Route-Secret`):
+  un duplicado puede tomar el path, o el nodo Webhook puede quedar con la credencial
+  equivocada. Dejar un solo workflow publicado, con la credencial correcta.
