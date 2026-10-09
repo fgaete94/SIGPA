@@ -1,11 +1,9 @@
 # Imagen de n8n para desplegar el workflow de rutas de SIGPA en un host
 # público (Render). Ver DESPLIEGUE.md.
 #
-# La versión debe ser la misma que N8N_VERSION en el .env del docker-compose
-# local. REEMPLAZAR_VERSION_N8N es un placeholder: reemplazarlo por la
-# versión fija (ej. "1.xx.y") o pasar --build-arg N8N_VERSION=... Con el
-# placeholder el build falla a propósito (la imagen no existe).
-ARG N8N_VERSION=REEMPLAZAR_VERSION_N8N
+# Versión probada y validada con el workflow: 2.41.6. Debe ser la misma que
+# N8N_VERSION en el .env del docker-compose local. No usar "latest".
+ARG N8N_VERSION=2.41.6
 FROM n8nio/n8n:${N8N_VERSION}
 
 # Valores no secretos por defecto (se pueden sobrescribir en el entorno).

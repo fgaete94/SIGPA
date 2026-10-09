@@ -53,7 +53,7 @@ Reglas que el backend valida (si no se cumplen, no guarda nada y responde error 
 ## Levantarlo
 
 ```bash
-cp .env.example .env      # completar N8N_VERSION, DEPOT_LAT, DEPOT_LON, OPENROUTESERVICE_API_KEY
+cp .env.example .env      # completar DEPOT_LAT, DEPOT_LON, OPENROUTESERVICE_API_KEY (N8N_VERSION ya trae 2.41.6)
 docker compose up -d
 docker compose ps         # esperar a que el estado sea "healthy"
 ```
@@ -138,20 +138,30 @@ Dockerfile):
 | `OPENROUTESERVICE_API_KEY` | Sí | API key de <https://openrouteservice.org> (nivel gratuito). Va en el header `Authorization` de **Geocodificar (ORS)** y **Optimizar (ORS)**. |
 | `CONFIDENCE_MIN` | No (0.6) | Confianza mínima para aceptar una geocodificación de layer `address`. Un valor no numérico se ignora y se usa 0.6. |
 | `PAIS` | No (CL) | País al que se limita la geocodificación. |
-| `N8N_VERSION` | Sí (compose) | Versión fija de la imagen `n8nio/n8n`, la misma del `Dockerfile`. |
+| `N8N_VERSION` | Sí (compose) | Versión fija de la imagen `n8nio/n8n`: **2.41.6** (la probada), la misma del `Dockerfile`. |
 
 Después de importar el workflow en el editor:
 
-1. **Credencial `SIGPA X-Route-Secret`** (tipo *Header Auth*): Name `X-Route-Secret`, Value = el
-   mismo secreto que `N8N_ROUTE_WEBHOOK_SECRET` en el backend. Asignarla en el nodo **Webhook**.
-   Es la única credencial del workflow (n8n exige credencial para la autenticación del webhook).
-2. **Publicar (activar) el workflow** para que responda en `/webhook/sigpa-ruta`, y en el backend
+1. **Credencial `SIGPA X-Route-Secret`.** Crear la credencial: *Credentials → Add credential → Header Auth*. Tiene **dos campos de
+   nombre distintos**, no confundirlos:
+   - **Título de la credencial** (el nombre con que aparece en n8n): `SIGPA X-Route-Secret`.
+   - Campo **Name** del Header Auth: es el nombre del header HTTP y debe ser **exactamente**
+     `X-Route-Secret`. Con cualquier otro nombre el webhook responde 403 aunque el valor sea
+     correcto.
+   - Campo **Value**: el mismo valor que `N8N_ROUTE_WEBHOOK_SECRET` del backend.
+   Asignarla en el nodo **Webhook**. Es la única credencial del workflow (n8n exige credencial
+   para la autenticación del webhook).
+2. **Publicar (Publish) el workflow** para que responda en `/webhook/sigpa-ruta`, y en el backend
    configurar `N8N_ROUTE_WEBHOOK_URL` con esa URL.
+   En n8n 2.x cualquier cambio en el workflow o en la asignación de credenciales queda en
+   **borrador** hasta pulsar **Publish** de nuevo: la versión publicada es la que responde en
+   `/webhook/sigpa-ruta`. Después de corregir algo (por ejemplo, la credencial), volver a publicar.
 
 Si venías de la versión anterior del workflow (API key en la credencial `OpenRouteService API
 key` y depósito escrito en el nodo Config): copiar la API key a `OPENROUTESERVICE_API_KEY` en el
-`.env`, reiniciar el contenedor (`docker compose up -d`) y reimportar el workflow. La credencial
-vieja ya no se usa y se puede borrar desde el editor.
+`.env`, reiniciar el contenedor (`docker compose up -d`), reimportar el workflow, asignar la
+credencial del Webhook y publicar de nuevo. La credencial vieja ya no se usa y se puede borrar
+desde el editor.
 
 El nodo Webhook trae datos de prueba fijados (4 paradas: dos con coordenadas, una real de Viña
 del Mar sin coordenadas y una inventada) para ejecutarlo desde el editor con **Test workflow**.

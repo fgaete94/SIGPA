@@ -12,10 +12,10 @@ nodos, payload ni respuesta. Todo lo que varía por entorno se carga como variab
 
 El servicio se construye con el [`Dockerfile`](Dockerfile) de esta carpeta (`FROM n8nio/n8n:<versión>`).
 
-- **Fijar la versión antes del primer deploy:** el Dockerfile trae `ARG N8N_VERSION=REEMPLAZAR_VERSION_N8N`.
-  Reemplazar ese placeholder por la versión de n8n con que se probó el workflow (la misma que
-  `N8N_VERSION` del `.env` local) y commitear. Con el placeholder el build falla a propósito.
-  No usar `latest`: una actualización de n8n puede cambiar el comportamiento de los nodos.
+- **Versión:** el workflow se probó y validó con n8n **2.41.6**. El Dockerfile la fija
+  (`ARG N8N_VERSION=2.41.6`) y el docker-compose local usa la misma (`N8N_VERSION` del `.env`);
+  si se cambia, cambiar ambas y volver a probar. No usar `latest`: una actualización de n8n puede
+  cambiar el comportamiento de los nodos.
 - En Render: servicio tipo **Web Service**, runtime **Docker**, *Root Directory* `SIGPA_ADM/N8N`,
   *Dockerfile Path* `./Dockerfile`.
 - n8n escucha en el puerto `5678`. Definir `PORT=5678` en el servicio para que Render enrute a
@@ -38,6 +38,9 @@ El servicio se construye con el [`Dockerfile`](Dockerfile) de esta carpeta (`FRO
 | `EXECUTIONS_TIMEOUT` | `40` | Corta cada ejecución a los 40 s, antes del timeout de 45 s del backend. Ya viene en el Dockerfile (el workflow además trae su propio corte de 40 s). |
 | `N8N_DIAGNOSTICS_ENABLED` | `false` | Sin telemetría a n8n. Ya viene en el Dockerfile. |
 | `PORT` | `5678` | Solo en Render (ver punto 1). |
+| `N8N_PROXY_HOPS` | `1` | En Render, porque n8n queda detrás de su proxy. Evita errores de `X-Forwarded-For` en las rutas con rate limit. Confirmar en los logs del primer arranque que no aparecen esos errores. No va en el Dockerfile ni en el compose local. |
+| `EXECUTIONS_DATA_PRUNE` | `true` | Obligatoria en producción: borra las ejecuciones antiguas. Las ejecuciones guardan las direcciones de los clientes y, si ORS devolviera un error, la API key podría quedar en los datos guardados de esa ejecución. |
+| `EXECUTIONS_DATA_MAX_AGE` | Horas, ej. `168` (7 días) | Antigüedad máxima de las ejecuciones guardadas (junto con `EXECUTIONS_DATA_PRUNE`). |
 
 ### Opcionales
 
@@ -45,8 +48,6 @@ El servicio se construye con el [`Dockerfile`](Dockerfile) de esta carpeta (`FRO
 |---|---|---|
 | `CONFIDENCE_MIN` | `0.6` | Confianza mínima de ORS para aceptar una dirección (además de exigir layer `address`). Un valor no numérico se ignora y se usa 0.6. |
 | `PAIS` | `CL` | País al que se limita la geocodificación. |
-| `N8N_PROXY_HOPS` | — | `1` detrás del proxy de Render, para que n8n tome bien la IP del cliente. |
-| `EXECUTIONS_DATA_PRUNE` / `EXECUTIONS_DATA_MAX_AGE` | — | Ej. `true` / `168` (horas): borra ejecuciones antiguas. Las ejecuciones guardan las direcciones de los pedidos. |
 | `DB_TYPE` y `DB_POSTGRESDB_*` | SQLite en disco | Ver punto 3. |
 
 Nunca escribir estos valores en el repo (Dockerfile, README, JSON del workflow): solo en el panel
@@ -75,8 +76,13 @@ DB_POSTGRESDB_SCHEMA=<schema>          # opcional, default public
 DB_POSTGRESDB_SSL_ENABLED=true         # si el proveedor exige SSL
 ```
 
-- n8n crea sus propias tablas. Usar una base o al menos un schema dedicado a n8n, separado de las
-  tablas de SIGPA.
+- n8n crea sus propias tablas. Usar una base o un schema **dedicado a n8n**
+  (`DB_POSTGRESDB_SCHEMA`), separado de las tablas de SIGPA.
+- Si el Postgres es de **Supabase**: usar la conexión directa o el pooler en modo **session**
+  (puerto `5432`), **no** el pooler en modo transaction (puerto `6543`), que puede fallar con las
+  migraciones de n8n. Es una precaución, no verificada con n8n 2.41.6.
+- Si se usa Postgres de **Render en plan gratuito**, revisar los límites de duración de ese plan
+  antes de guardar ahí los datos de n8n.
 - No necesita disco: el contenedor puede reiniciarse sin perder nada (siempre que
   `N8N_ENCRYPTION_KEY` no cambie).
 
@@ -94,11 +100,18 @@ En cualquiera de las dos, `N8N_ENCRYPTION_KEY` debe estar definida desde el prim
 2. Abrir `https://<host>/` y crear la cuenta **owner** (email + password fuerte; el editor queda
    expuesto en internet). Guardarla en un gestor de contraseñas.
 3. Importar el workflow: menú **⋯ → Import from File** → `workflows/optimizacion-rutas.json`.
-4. Crear la credencial **`SIGPA X-Route-Secret`**: *Credentials → Add credential → Header Auth*,
-   Name `X-Route-Secret`, Value = el mismo valor que `N8N_ROUTE_WEBHOOK_SECRET` del backend.
-   Debe llamarse exactamente así.
+4. Crear la credencial: *Credentials → Add credential → Header Auth*. Tiene **dos campos de
+   nombre distintos**, no confundirlos:
+   - **Título de la credencial** (el nombre con que aparece en n8n): `SIGPA X-Route-Secret`.
+   - Campo **Name** del Header Auth: es el nombre del header HTTP y debe ser **exactamente**
+     `X-Route-Secret`. Con cualquier otro nombre el webhook responde 403 aunque el valor sea
+     correcto.
+   - Campo **Value**: el mismo valor que `N8N_ROUTE_WEBHOOK_SECRET` del backend.
 5. Abrir el nodo **Webhook** del workflow y asignarle esa credencial. Guardar.
-6. **Publicar (activar)** el workflow. Solo activo responde en `/webhook/sigpa-ruta`.
+6. **Publicar (Publish)** el workflow. Solo publicado responde en `/webhook/sigpa-ruta`.
+   En n8n 2.x cualquier cambio en el workflow o en la asignación de credenciales queda en
+   **borrador** hasta pulsar **Publish** de nuevo: la versión publicada es la que responde en
+   `/webhook/sigpa-ruta`. Después de corregir algo (por ejemplo, la credencial), volver a publicar.
 
 No hay otras credenciales: la API key de ORS y el depósito vienen de las variables de entorno.
 
@@ -158,8 +171,15 @@ unos minutos sin tráfico), la primera llamada tiene que esperar a que n8n arran
 consumir los 45 s que espera el backend: el panel recibe un 504 ("no respondió a tiempo") aunque
 n8n después termine bien. Nada se guarda en ese caso y la ejecutiva puede reintentar.
 
-Recomendado: un plan que no duerma, o mantenerlo despierto con un ping periódico a
-`https://<host>/healthz`, o al menos hacer un ping a `/healthz` antes de planificar.
+Opciones (elegir una):
+
+- Un plan que no duerma.
+- Mantenerlo despierto con un ping periódico a `https://<host>/healthz`. Por ejemplo, una tarea
+  programada de GitHub Actions (`on: schedule` con cron `*/10 * * * *`, cada 10 minutos, en UTC)
+  cuyo único paso sea `curl -fsS https://<host>/healthz`. GitHub no garantiza la hora exacta de
+  las tareas programadas (pueden atrasarse unos minutos) y las desactiva en repos sin actividad
+  por un tiempo prolongado. Revisar además que el plan del host permita estar siempre despierto.
+- Al menos hacer un ping a `/healthz` antes de planificar.
 
 ## 7. Valores para el backend (Render)
 
@@ -168,7 +188,9 @@ En las variables del servicio del backend:
 | Variable | Valor |
 |---|---|
 | `N8N_ROUTE_WEBHOOK_URL` | `https://<host>/webhook/sigpa-ruta` |
-| `N8N_ROUTE_WEBHOOK_SECRET` | El mismo valor de la credencial `SIGPA X-Route-Secret` |
+| `N8N_ROUTE_WEBHOOK_SECRET` | El mismo valor (campo *Value*) de la credencial `SIGPA X-Route-Secret` |
+| `EJECUTIVA_PHONE` | Teléfono (WhatsApp, formato `569XXXXXXXX`) de la ejecutiva que recibe las notificaciones de traspaso. **Obligatoria:** no tiene default; sin ella el sistema deja de notificar a la ejecutiva en producción y solo queda un warning en el log al iniciar. |
+| `CORS_ORIGINS` | Solo si el rewrite `/api/*` del panel no funciona y el panel llama a la URL directa del backend: el origen del sitio del panel (ej. `https://<panel>`), sin `*`. |
 
 El backend espera la respuesta hasta `N8N_ROUTE_TIMEOUT_SECONDS` (default 45 s). Si el secreto
 del backend queda vacío, el backend responde 503 sin llamar a n8n; si no coincide con el de n8n,
