@@ -130,6 +130,25 @@ section>.title h2{margin:0}
 .coordenadas label{margin:10px 0}
 .coordenadas input{max-width:320px;font-variant-numeric:tabular-nums}
 .coordenadas .actions{display:flex;gap:10px}
+/* Ruta en curso (#85) */
+a.boton{display:inline-flex;align-items:center;border:1px solid var(--borde);border-radius:10px;background:var(--superficie);padding:10px 16px;color:var(--azul);font-weight:600;text-decoration:none;white-space:nowrap;transition:transform .14s var(--ease-out),background-color .15s ease}
+a.boton:active{transform:scale(.97)}
+a.boton:focus-visible{outline:3px solid var(--azul-2);outline-offset:2px}
+@media (hover:hover) and (pointer:fine){a.boton:hover{background:var(--fondo-2)}}
+.acciones{display:flex;flex-wrap:wrap;gap:8px}
+.acciones-parada{display:flex;align-items:center;gap:6px}
+.acciones-parada a.boton{padding:6px 12px}
+.acciones-parada button{margin:0;padding:6px 12px}
+.title>div>p{margin:2px 0 0}
+button.enlace{border:0;background:none;padding:0;margin-left:4px;color:var(--azul-2);text-decoration:underline;font-weight:600}
+@media (hover:hover) and (pointer:fine){button.enlace:hover:not(:disabled){background:none;color:var(--azul)}}
+/* Reportes: pedidos por comuna (#73) */
+.periodo{flex-wrap:wrap;align-items:flex-end}
+.periodo label{margin:0}
+.periodo select,.periodo input{margin-top:6px}
+.por-comuna caption{text-align:left;padding:0 0 8px}
+.barra{display:inline-block;width:min(220px,30vw);height:10px;margin-right:10px;border-radius:5px;background:var(--fondo-2);vertical-align:middle;overflow:hidden}
+.barra>span{display:block;height:100%;border-radius:5px;background:var(--azul-2)}
 
 /* Ventanas */
 .modal{position:fixed;inset:0;background:rgba(16,21,74,.55);display:grid;place-items:center;padding:20px;z-index:10}
@@ -166,6 +185,8 @@ section>.title h2{margin:0}
   .title{flex-wrap:wrap}
   .filters{flex-wrap:wrap}
   header .brand small{display:none}
+  .print-route .stop{flex-wrap:wrap}
+  .acciones-parada{width:100%;padding-left:44px}
 }
 @media print{
   aside,.workspace>header,.content>.title,.no-print,.modal{display:none!important}

@@ -4,6 +4,8 @@ import { login, logout, onSessionExpired, restoreSession } from './auth';
 import { api } from './api';
 import { cambiosCliente, clienteForm } from './clientes';
 import Landing from './Landing';
+import Reportes from './Reportes';
+import RutaEnCurso from './RutaEnCurso';
 import Rutas from './Rutas';
 import './styles.css';
 
@@ -47,22 +49,31 @@ function Dashboard({ session, onLogout }) {
   const [planning, setPlanning] = useState(false);
   const [detail, setDetail] = useState(null);
   const [editing, setEditing] = useState(null);
+  const [actualizadoEn, setActualizadoEn] = useState(null);
   useEffect(() => {
     const controller = new AbortController(); setBusy(true); setError('');
     Promise.all(['/pedidos', '/clientes', '/rutas/pedidos-pendientes'].map(p => api(p, { signal: controller.signal })))
-      .then(([pedidos, clientes, pendientes]) => { if (![pedidos, clientes, pendientes].every(Array.isArray)) throw new Error('Formato de datos inesperado.'); setData({ pedidos, clientes, pendientes }); })
+      .then(([pedidos, clientes, pendientes]) => { if (![pedidos, clientes, pendientes].every(Array.isArray)) throw new Error('Formato de datos inesperado.'); setData({ pedidos, clientes, pendientes }); setActualizadoEn(new Date()); })
       .catch(e => { if (e.name !== 'AbortError') { setError(e.message); setData(null); } })
       .finally(() => { if (!controller.signal.aborted) setBusy(false); });
     return () => controller.abort();
   }, [revision]);
+  // #73 pide datos casi en tiempo real: con Reportes abierto se recargan cada minuto (no durante una planificación).
+  useEffect(() => {
+    if (tab !== 'Reportes' || planning) return;
+    const timer = setInterval(() => { if (!document.hidden) setRevision(r => r + 1); }, 60000);
+    return () => clearInterval(timer);
+  }, [tab, planning]);
   async function view(id) { setDetail(null); try { setDetail(await api(`/pedidos/${id}`)); } catch(e) { setError(e.message); } }
   const pedidos = (data?.pedidos || []).filter(p => (!status || p.estado === status) && `${p.id} ${p.cliente_nombre || ''} ${p.comuna_nombre || ''}`.toLowerCase().includes(query.toLowerCase()));
   const clientes = (data?.clientes || []).filter(c => `${name(c)} ${c.telefono || ''}`.toLowerCase().includes(query.toLowerCase()));
-  return <div className="shell"><aside><Brand blanco/><div className="nav-label">Operación</div>{['Resumen','Pedidos','Clientes','Rutas'].map(t => <button key={t} className={tab === t ? 'active' : ''} onClick={() => { setTab(t); setQuery(''); setStatus(''); }}>{t}</button>)}<div className="account"><small>{session.user.email}</small><button onClick={async () => { await logout(); onLogout(); }}>Cerrar sesión</button></div></aside><main className="workspace"><header><span>Panel administrativo</span><span className="badge">Agua DM</span></header><div className="content"><div className="title"><div><span className="eyebrow">Centro de operaciones</span><h1>{tab}</h1><p>Consulta y organiza la información de SIGPA.</p></div><button disabled={busy || planning} onClick={() => setRevision(r => r + 1)}>Actualizar datos</button></div>{error && <p role="alert" className="error">{error}</p>}{busy && <p role="status">Cargando información…</p>}{data && <>
+  const navButton = t => <button key={t} className={tab === t ? 'active' : ''} onClick={() => { setTab(t); setQuery(''); setStatus(''); }}>{t}</button>;
+  return <div className="shell"><aside><Brand blanco/><div className="nav-label">Operación</div>{['Resumen','Pedidos','Clientes','Rutas'].map(navButton)}<div className="nav-label">Análisis</div>{navButton('Reportes')}<div className="account"><small>{session.user.email}</small><button onClick={async () => { await logout(); onLogout(); }}>Cerrar sesión</button></div></aside><main className="workspace"><header><span>Panel administrativo</span><span className="badge">Agua DM</span></header><div className="content"><div className="title"><div><span className="eyebrow">Centro de operaciones</span><h1>{tab}</h1><p>Consulta y organiza la información de SIGPA.</p></div><button disabled={busy || planning} onClick={() => setRevision(r => r + 1)}>Actualizar datos</button></div>{error && <p role="alert" className="error">{error}</p>}{busy && <p role="status">Cargando información…</p>}{data && <>
   {tab === 'Resumen' && <><div className="kpis">{[['Pedidos registrados',data.pedidos.length],['Pendientes',data.pedidos.filter(p=>p.estado==='pendiente').length],['Confirmados',data.pedidos.filter(p=>p.estado==='confirmado').length],['Clientes activos',data.clientes.filter(c=>c.activo).length]].map(([label,n]) => <article key={label}><span>{label}</span><strong>{n}</strong></article>)}</div><p className="muted">Totales de todos los registros disponibles, sin filtro de fecha.</p><section><h2>Últimos pedidos</h2><OrderTable rows={data.pedidos.slice(0,8)} view={view}/></section></>}
   {tab === 'Pedidos' && <section><div className="filters"><input aria-label="Buscar pedidos" placeholder="Buscar cliente, comuna o ID…" value={query} onChange={e=>setQuery(e.target.value)}/><select aria-label="Estado del pedido" value={status} onChange={e=>setStatus(e.target.value)}><option value="">Todos los estados</option>{['pendiente','confirmado','en_despacho','entregado','cancelado'].map(s=><option key={s}>{s}</option>)}</select></div><OrderTable rows={pedidos} view={view}/></section>}
   {tab === 'Clientes' && <section><input aria-label="Buscar clientes" placeholder="Buscar nombre o teléfono…" value={query} onChange={e=>setQuery(e.target.value)}/><div className="table"><table><thead><tr><th>Cliente</th><th>Teléfono</th><th>Dirección</th><th>Tipo</th><th>Día de reparto</th><th>Estado</th><th>Acciones</th></tr></thead><tbody>{clientes.map(c=><tr key={c.id}><td>{name(c)}</td><td>{c.telefono || '—'}</td><td>{c.direccion || 'Sin dirección'}</td><td>{c.tipo_cliente_nombre || '—'}</td><td>{c.dia_reparto || 'Sin asignar'}</td><td>{c.activo ? 'Activo' : 'Inactivo'}</td><td><button aria-label={`Editar a ${name(c)}`} onClick={()=>setEditing(c)}>Editar</button></td></tr>)}</tbody></table>{!clientes.length && <p>No se encontraron clientes.</p>}</div></section>}
-  <div hidden={tab !== 'Rutas'}><Rutas pendientes={data.pendientes} busy={busy} onActualizar={() => setRevision(r => r + 1)} onPlanificando={setPlanning}/></div>
+  <div hidden={tab !== 'Reportes'}><Reportes pedidos={data.pedidos} actualizadoEn={actualizadoEn}/></div>
+  <div hidden={tab !== 'Rutas'}><RutaEnCurso pedidos={data.pedidos} clientes={data.clientes}/><Rutas pendientes={data.pendientes} busy={busy} onActualizar={() => setRevision(r => r + 1)} onPlanificando={setPlanning}/></div>
   </>}{detail && <div className="modal" role="dialog" aria-modal="true" aria-label="Detalle del pedido"><section><button autoFocus onClick={()=>setDetail(null)}>Cerrar detalle</button><h2>Pedido #{detail.id}</h2><p>{detail.cliente_nombre} · {detail.estado}</p><p>{detail.direccion_despacho || 'Sin dirección de despacho informada'}</p>{detail.lineas.map((l,i)=><p key={i}>{l.cantidad_solicitada} × {l.producto_nombre} · {money(l.precio_unitario)}</p>)}<strong>Total: {money(detail.total)}</strong></section></div>}{editing && <EditClient client={editing} onClose={()=>setEditing(null)} onSaved={c=>{setData(d=>({...d, clientes:d.clientes.map(x=>x.id===c.id ? c : x)})); setEditing(null); setRevision(r=>r+1);}}/>}</div></main></div>;
 }
 function EditClient({ client, onClose, onSaved }) {

@@ -40,8 +40,10 @@ El frontend no usa Supabase ni necesita sus claves: la autenticación pasa por e
   - "Corregir ubicación" (#113) abre la dirección en Google Maps y recibe las coordenadas tal como las copia Maps (`-33.0458, -71.6197`); valida que estén en Chile y llama a POST `/pedidos/{id}/coordenadas`.
   - La selección se limita a 30 pedidos (`RUTA_MAX_PEDIDOS`, igual al valor por defecto del backend) con un contador.
   - Los errores de POST `/rutas/planificar` se muestran con su detalle (`api()` deja `error.status` y `error.detalle`): pedidos que cambiaron de estado, problemas de la respuesta de n8n, tope y aviso de arranque en frío en el 504.
+  - "Ruta en curso" (#85, `src/RutaEnCurso.jsx`, lógica en `src/reparto.js`): pedidos confirmados o en despacho con `orden_entrega`, en ese orden, con dirección (la del pedido o la del cliente), comuna y teléfono. Se puede imprimir, enviar al repartidor por WhatsApp (`wa.me` sin número: se elige el contacto) o copiar; cada parada tiene "Cómo llegar" en Google Maps. Como cada planificación numera desde 1, un número repetido avisa que hay pedidos de más de una ruta. No hay hora estimada: el backend no la guarda.
+- Pestaña Reportes (`src/Reportes.jsx`, lógica en `src/indicadores.js`): "Pedidos por comuna" (#73) agrupa por la comuna del cliente, sin cancelados, con período (7 días, 30 días, mes, todo o fechas a elección). Con la pestaña abierta los datos se recargan cada minuto. Las fechas de `/pedidos` vienen sin zona (UTC) y se pasan al día de Chile con `src/fechas.js`.
 - Los errores no se sustituyen por datos ficticios. Los indicadores corresponden a todos los registros devueltos, no a una jornada.
-- Los cambios manuales de orden solo afectan la impresión actual. Se indica expresamente en pantalla; no hay endpoint existente para persistirlos. Se pierden al recargar/cerrar sesión.
+- Los cambios manuales de orden (flechas de "Ruta en curso") solo afectan la impresión y el texto enviado. Se indica expresamente en pantalla; no hay endpoint existente para persistirlos. Se pierden al recargar/cerrar sesión.
 
 ## Límites de esta primera entrega
 
@@ -61,4 +63,4 @@ No habilitar CORS universal ni exponer secretos para resolver esto. Las variable
 
 ## Verificación
 
-`npm run build` verifica la compilación. `npm test` comprueba que el reordenamiento conserve todos los pedidos y respete los extremos de la lista, y prueba el módulo de sesión (decodificación del JWT, expiración con margen y un único refresh ante llamadas simultáneas). También prueba la pestaña Rutas: tope de selección, lectura y validación de coordenadas y textos de error.
+`npm run build` verifica la compilación. `npm test` comprueba que el reordenamiento conserve todos los pedidos y respete los extremos de la lista, y prueba el módulo de sesión (decodificación del JWT, expiración con margen y un único refresh ante llamadas simultáneas). También prueba la pestaña Rutas (tope de selección, lectura y validación de coordenadas y textos de error), la ruta en curso (orden, rutas mezcladas, enlaces y texto para WhatsApp) y Reportes (días en hora de Chile, períodos y agrupación por comuna).

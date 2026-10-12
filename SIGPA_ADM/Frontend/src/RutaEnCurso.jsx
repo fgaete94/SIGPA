@@ -1,0 +1,53 @@
+import React, { useEffect, useMemo, useState } from 'react';
+import { fechaCorta } from './fechas';
+import { enlaceComoLlegar, enlaceWhatsApp, rutaEnCurso, textoRuta } from './reparto';
+import { moveStop } from './route';
+
+// Historia #85: la ruta guardada en la base, para coordinar al repartidor (imprimir, WhatsApp o copiar).
+export default function RutaEnCurso({ pedidos, clientes }) {
+  const { paradas: guardadas, repetidos, sinUbicacion } = useMemo(() => rutaEnCurso(pedidos, clientes), [pedidos, clientes]);
+  // Reordenar solo cambia esta vista (impresión y texto); guardar el orden es la historia #87.
+  const [paradas, setParadas] = useState(guardadas);
+  const [copiado, setCopiado] = useState('');
+  useEffect(() => setParadas(guardadas), [guardadas]);
+  const manual = paradas.some((p, i) => p.id !== guardadas[i]?.id);
+  const texto = textoRuta(paradas, fechaCorta(new Date().toISOString()));
+  const mover = (i, delta) => setParadas(ps => moveStop(ps, i, delta));
+
+  async function copiar() {
+    try { await navigator.clipboard.writeText(texto); setCopiado('Ruta copiada. Pégala en el chat del repartidor.'); }
+    catch { setCopiado('No se pudo copiar automáticamente. Usa "Enviar por WhatsApp" o imprime la ruta.'); }
+  }
+
+  return <section className="print-route">
+    <div className="title">
+      <div><h2>Ruta en curso</h2><p className="muted">{paradas.length === 1 ? '1 parada' : `${paradas.length} paradas`} · pedidos confirmados o en despacho, en el orden guardado al planificar</p></div>
+      {paradas.length > 0 && <div className="acciones no-print">
+        <button onClick={() => window.print()}>Imprimir</button>
+        <a className="boton" href={enlaceWhatsApp(texto)} target="_blank" rel="noopener noreferrer">Enviar por WhatsApp</a>
+        <button onClick={copiar}>Copiar ruta</button>
+      </div>}
+    </div>
+    {copiado && <p role="status" className="ok no-print">{copiado}</p>}
+    {repetidos.length > 0 && <p className="notice">Hay pedidos de más de una planificación con el mismo número de parada ({repetidos.join(', ')}). Revisa el orden antes de entregarla al repartidor o vuelve a planificar esos pedidos.</p>}
+    {manual && <p className="notice">Orden cambiado solo para imprimir o enviar. No se guarda en el servidor: al actualizar los datos vuelve al orden planificado. <button className="no-print enlace" onClick={() => setParadas(guardadas)}>Volver al orden planificado</button></p>}
+    {paradas.map((p, i) => {
+      const enlace = enlaceComoLlegar(p);
+      return <div className="stop" key={p.id}>
+        <b className="number">{i + 1}</b>
+        <span>
+          <strong>{p.cliente_nombre || `Cliente ${p.cliente_id}`} · #{p.id}</strong>
+          <span className="etiquetas"><span className={`badge ${p.estado}`}>{p.estado.replaceAll('_', ' ')}</span></span>
+          <small>{p.direccion || 'Sin dirección registrada'}{p.comuna_nombre && !p.direccion?.includes(p.comuna_nombre) && ` · ${p.comuna_nombre}`}{p.cliente_telefono && ` · Tel: ${p.cliente_telefono}`}</small>
+        </span>
+        <div className="no-print acciones-parada">
+          {enlace && <a className="boton" href={enlace} target="_blank" rel="noopener noreferrer">Cómo llegar</a>}
+          <button aria-label={`Subir parada ${i + 1}`} disabled={i === 0} onClick={() => mover(i, -1)}>↑</button>
+          <button aria-label={`Bajar parada ${i + 1}`} disabled={i === paradas.length - 1} onClick={() => mover(i, 1)}>↓</button>
+        </div>
+      </div>;
+    })}
+    {!paradas.length && <p>No hay una ruta en curso. Selecciona pedidos en "Preparar ruta" y planifícala.</p>}
+    {sinUbicacion > 0 && <p className="notice no-print">{sinUbicacion === 1 ? '1 pedido confirmado quedó' : `${sinUbicacion} pedidos confirmados quedaron`} fuera de la ruta por dirección por revisar. Corrige su ubicación más abajo y vuelve a planificar.</p>}
+  </section>;
+}
