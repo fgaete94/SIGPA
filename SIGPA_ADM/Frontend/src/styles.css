@@ -281,3 +281,87 @@ button.despachar{background:#e3e0fb;border-color:#cdc6f5;color:#3b2f9a}
   .print-route .title{margin-bottom:0}
   body,:root{background:white}
 }
+/* Hoja de ruta: vista previa a pantalla completa sobre el panel y planilla para el conductor.
+   La planilla imita papel: fondo blanco, tinta oscura, bordes y tintes suaves, para que salga bien también en blanco y negro. */
+.hoja-capa{position:fixed;inset:0;z-index:20;overflow:auto;overscroll-behavior:contain;background:#4a5070}
+.hoja-barra{position:sticky;top:0;z-index:1;display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px 20px;padding:14px 24px;background:var(--superficie);border-bottom:4px solid var(--verde);box-shadow:0 2px 14px rgba(16,21,74,.25)}
+.hoja-barra-texto{flex:1 1 280px}
+.hoja-barra h2{margin:0}
+.hoja-barra p{margin:4px 0 0}
+.hoja-barra label{margin:0}
+.hoja-barra label input{min-width:170px}
+.hoja-barra>[role=status],.hoja-barra>.error{flex-basis:100%;margin:0}
+.hoja-barra .error button{margin-left:8px;padding:6px 12px}
+.hoja-papel{overflow-x:auto;padding:28px 24px 40px}
+.hoja{width:1060px;margin:0 auto;padding:30px 34px;background:#fff;color:#14182e;box-shadow:0 12px 40px rgba(0,0,0,.35);font:12px/1.35 'Barlow',system-ui,sans-serif;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.hoja-oculto{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.hoja-cabecera{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:28px;padding-bottom:14px;border-bottom:3px solid var(--azul)}
+.hoja-marca{display:flex;align-items:center;gap:12px}
+.hoja-marca img{height:54px;width:auto}
+.hoja-marca strong{display:block;font:700 28px/1 'Barlow Condensed',sans-serif;letter-spacing:.04em;text-transform:uppercase;color:var(--azul)}
+.hoja-marca span{font-size:12px;color:#4c5576}
+.hoja dl{margin:0}
+.hoja dt{font-size:9.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:#4c5576}
+.hoja dd{margin:3px 0 0;min-height:20px;font-size:14px;font-weight:600}
+.hoja-datos{display:grid;grid-template-columns:repeat(4,auto);justify-content:start;gap:4px 28px}
+.hoja-datos dt,.hoja-datos dd{white-space:nowrap}
+.hoja-fecha::first-letter{text-transform:uppercase}
+.hoja-linea{display:inline-block;width:150px;height:18px;border-bottom:1px solid #14182e}
+.hoja-casillas{display:grid;grid-auto-flow:column;grid-auto-columns:112px;border:1.5px solid var(--azul);border-radius:6px;overflow:hidden}
+.hoja-casillas>div{padding:6px 10px 4px;border-left:1px solid #b8c4d8}
+.hoja-casillas>div:first-child{border-left:0}
+.hoja-casillas dd{min-height:26px}
+.hoja h3{margin:18px 0 6px;font:700 14px/1 'Barlow Condensed',sans-serif;letter-spacing:.08em;text-transform:uppercase;color:var(--azul)}
+.hoja table{width:100%;border-collapse:collapse;font-size:12px}
+.hoja th,.hoja td{padding:4px 7px;border:1px solid #a7b2c7;white-space:normal;vertical-align:middle;color:#14182e}
+.hoja thead th{background:#e8eef8;color:var(--azul);font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;text-align:center}
+.hoja tbody th{background:#f4f6fa;color:#4c5576;font-size:9.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;text-align:left;white-space:nowrap}
+.hoja small{display:block;margin-top:1px;font-size:10px;color:#4c5576}
+/* Carga y rendición lado a lado: la rendición queda en la primera hoja aunque la ruta sea corta. */
+.hoja-resumen{display:grid;grid-template-columns:minmax(0,1fr) 250px;gap:28px;align-items:start}
+.hoja .hoja-carga td{height:26px;text-align:center;font-size:15px;font-weight:700}
+.hoja .hoja-rendicion th{width:58%}
+.hoja .hoja-rendicion td{height:24px;text-align:right;font-size:14px;font-weight:700}
+.hoja .hoja-rendicion tr:first-child>*{background:#e8eef8}
+.hoja-paradas tbody{break-inside:avoid}
+.hoja-paradas tbody:nth-of-type(even) td{background:#f7f9fc}
+.hoja-numero{width:36px;text-align:center}
+.hoja-numero b{display:inline-grid;place-items:center;min-width:26px;height:26px;padding:0 4px;border-radius:13px;background:var(--azul);color:#fff;font:700 14px/1 'Barlow Condensed',sans-serif}
+.hoja-cliente{width:140px}
+.hoja-direccion{width:165px}
+.hoja small.hoja-codigos{font-size:9.5px;white-space:nowrap}
+.hoja-cliente strong,.hoja-direccion strong{display:block;font-size:12.5px;line-height:1.25}
+.hoja .hoja-fila{width:46px}
+.hoja-cantidad{width:54px;text-align:center}
+.hoja-cantidad b{font-size:15px}
+.hoja-cantidad small{white-space:nowrap}
+.hoja-entrega td{height:30px}
+.hoja .hoja-monto{width:84px;text-align:right;white-space:nowrap;font-size:13px}
+.hoja .hoja-cobrado{vertical-align:top}
+.hoja-cobrado small{font-size:9px;letter-spacing:.05em;text-transform:uppercase}
+.hoja-pago{width:104px}
+.hoja-pago span{display:flex;align-items:center;gap:6px;font-size:11px;line-height:1.75}
+.hoja-casilla{flex:none;width:11px;height:11px;border:1.3px solid #14182e;border-radius:2px}
+/* Firmas con espacio para escribir sobre la línea; la nota va a la izquierda en la misma fila. */
+.hoja-pie{display:flex;justify-content:space-between;align-items:flex-end;gap:24px;margin-top:34px;break-inside:avoid}
+.hoja-firmas{display:flex;flex:none;gap:40px}
+.hoja-firmas span{width:170px;padding-top:5px;border-top:1px solid #14182e;font-size:10px;text-align:center;color:#4c5576}
+.hoja-generada{max-width:460px;margin:0;font-size:9.5px;line-height:1.4;color:#6b7390}
+@media (max-width:640px){
+  .hoja-barra{gap:10px;padding:12px 16px}
+  .hoja-barra label{flex:1 1 140px}
+  .hoja-barra label input{min-width:0}
+  .hoja-barra .acciones{flex-basis:100%}
+  .hoja-barra .acciones button{flex:1}
+  .hoja-papel{padding:16px}
+}
+/* Al imprimir con la hoja abierta sale solo la planilla, en horizontal. */
+@media print{
+  body:has(>.hoja-capa){overflow:visible!important}
+  body:has(>.hoja-capa)>#root{display:none}
+  .hoja-capa{position:static;overflow:visible;background:none}
+  .hoja-barra{display:none}
+  .hoja-papel{overflow:visible;padding:0}
+  .hoja{width:auto;margin:0;padding:0;box-shadow:none;page:hoja}
+}
+@page hoja{size:landscape;margin:9mm}
