@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api } from './api';
+import { ETIQUETA_ESTADO } from './estados';
 import { fechaCorta as fecha } from './fechas';
 import { RUTA_MAX_PEDIDOS, alternarSeleccion, detallesErrorRuta, enlaceMapa, leerCoordenadas } from './planificacion';
 
@@ -37,7 +38,7 @@ export default function Rutas({ pendientes, busy, onActualizar, onPlanificando }
           <input id={`pedido-${p.pedido_id}`} type="checkbox" disabled={planning || (lleno && !selected.includes(p.pedido_id))} checked={selected.includes(p.pedido_id)} onChange={e => setSelected(ids => alternarSeleccion(ids, p.pedido_id, e.target.checked))}/>
           <label htmlFor={`pedido-${p.pedido_id}`}>
             <strong>#{p.pedido_id} · {p.cliente_nombre}</strong>
-            <span className="etiquetas"><span className={`badge ${p.estado}`}>{p.estado.replaceAll('_', ' ')}</span>{p.motivo_revision_direccion && <span className="badge revisar">Dirección por revisar</span>}</span>
+            <span className="etiquetas"><span className={`badge ${p.estado}`}>{ETIQUETA_ESTADO[p.estado] || p.estado}</span>{p.motivo_revision_direccion && <span className="badge revisar">Dirección por revisar</span>}</span>
             <small>{p.direccion_texto || 'Sin dirección'} · {fecha(p.creado_en)}</small>
             {p.motivo_revision_direccion && <small className="motivo">Motivo: {p.motivo_revision_direccion}</small>}
           </label>

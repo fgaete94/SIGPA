@@ -180,6 +180,15 @@ button.enlace{border:0;background:none;padding:0;margin-left:4px;color:var(--azu
 .modal label.check input{width:18px;height:18px;accent-color:var(--verde)}
 .modal .actions{display:flex;justify-content:flex-end;gap:10px;margin-top:22px}
 .modal .actions button{float:none}
+/* Detalle del pedido: historial de estados (#70) */
+.modal h3{margin:22px 0 6px;font:700 18px/1.1 'Barlow Condensed',sans-serif;color:var(--azul)}
+.historial{list-style:none;margin:0;padding:0 0 0 2px;border-left:2px solid var(--borde)}
+.historial li{position:relative;padding:6px 0 8px 16px}
+.historial li::before{content:"";position:absolute;left:-6px;top:12px;width:10px;height:10px;border-radius:50%;background:var(--azul-2)}
+.historial small{display:block;margin-top:2px;color:var(--gris);font-size:13px}
+/* "Salió a reparto": mismo color que el estado en despacho */
+button.despachar{background:#e3e0fb;border-color:#cdc6f5;color:#3b2f9a}
+@media (hover:hover) and (pointer:fine){button.despachar:hover:not(:disabled){background:#d6d0f8}}
 /* Nuevo pedido: líneas de productos */
 .modal fieldset.lineas{border:1px solid var(--borde);border-radius:12px;padding:6px 14px 14px;margin:16px 0 0}
 .modal fieldset.lineas legend{padding:0 6px;font-weight:600;color:var(--azul)}
@@ -236,6 +245,7 @@ button.enlace{border:0;background:none;padding:0;margin-left:4px;color:var(--azu
   .tabla-movil td[data-label]::before{content:attr(data-label);flex:none;max-width:45%;text-align:left;font-size:13px;font-weight:600;color:var(--gris)}
   .tabla-movil td.celda-acciones{display:block;padding:10px 0}
   .tabla-movil td.celda-acciones button{width:100%}
+  .tabla-movil td.sin-accion{display:none}
   .tabla-movil caption{display:block}
   .table{overflow:visible}
   .por-comuna .barra{width:90px}
