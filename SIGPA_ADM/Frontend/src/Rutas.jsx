@@ -1,16 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { api } from './api';
-import { moveStop } from './route';
+import { fechaCorta as fecha } from './fechas';
 import { RUTA_MAX_PEDIDOS, alternarSeleccion, detallesErrorRuta, enlaceMapa, leerCoordenadas } from './planificacion';
 
-const fecha = iso => new Date(iso).toLocaleDateString('es-CL', { timeZone: 'America/Santiago' });
-
 // Pestaña Rutas: elegir pedidos (máx. RUTA_MAX_PEDIDOS), corregir la ubicación de los que n8n no pudo
-// ubicar (#107, #113) y planificar con POST /rutas/planificar.
+// ubicar (#107, #113) y planificar con POST /rutas/planificar. El orden resultante se ve en RutaEnCurso (#85).
 export default function Rutas({ pendientes, busy, onActualizar, onPlanificando }) {
   const [selected, setSelected] = useState([]);
   const [result, setResult] = useState(null);
-  const [manual, setManual] = useState(false);
   const [planning, setPlanning] = useState(false);
   const [error, setError] = useState(null);
   const [corrigiendo, setCorrigiendo] = useState(null);
@@ -24,7 +21,7 @@ export default function Rutas({ pendientes, busy, onActualizar, onPlanificando }
   async function plan() {
     if (!window.confirm(`Se planificarán y confirmarán ${selected.length} pedidos. El backend guardará el orden obtenido. ¿Continuar?`)) return;
     setPlanning(true); onPlanificando(true); setError(null); setAviso('');
-    try { setResult(await api('/rutas/planificar', { method: 'POST', body: JSON.stringify({ pedido_ids: selected }) })); setManual(false); setSelected([]); onActualizar(); }
+    try { setResult(await api('/rutas/planificar', { method: 'POST', body: JSON.stringify({ pedido_ids: selected }) })); setSelected([]); onActualizar(); }
     catch (e) { setError({ mensaje: e.message, detalles: detallesErrorRuta(e) }); }
     finally { setPlanning(false); onPlanificando(false); }
   }
@@ -53,12 +50,11 @@ export default function Rutas({ pendientes, busy, onActualizar, onPlanificando }
       {error && <div role="alert" className="error"><strong>{error.mensaje}</strong><ul>{error.detalles.map(d => <li key={d}>{d}</li>)}</ul></div>}
       <button className="primary" disabled={!selected.length || planning || busy} onClick={plan}>{planning ? 'Planificando… (puede tardar hasta 2 minutos)' : `Planificar y confirmar (${selected.length})`}</button>
     </section>
-    {result && <section className="print-route">
-      <div className="title"><h2>Orden de reparto</h2><button className="no-print" disabled={!result.ruta.length} onClick={() => window.print()}>Imprimir ruta</button></div>
-      <p className="notice">{manual ? 'Orden modificado para esta impresión. Los cambios manuales NO están guardados en el servidor y se pierden al salir o recargar.' : 'Orden generado y guardado por el backend. Puedes ajustarlo para esta impresión.'}</p>
-      {result.ruta.map((p, i) => <div className="stop" key={p.pedido_id}><b className="number">{i + 1}</b><span><strong>#{p.pedido_id} · {p.cliente_nombre}</strong><small>{p.direccion_texto || 'Sin dirección'}</small></span><div className="no-print"><button aria-label={`Subir pedido ${p.pedido_id}`} disabled={i === 0} onClick={() => { setResult(r => ({ ...r, ruta: moveStop(r.ruta, i, -1) })); setManual(true); }}>↑</button><button aria-label={`Bajar pedido ${p.pedido_id}`} disabled={i === result.ruta.length - 1} onClick={() => { setResult(r => ({ ...r, ruta: moveStop(r.ruta, i, 1) })); setManual(true); }}>↓</button></div></div>)}
-      {result.sin_resolver?.length > 0 && <div className="error no-print"><h3>Pedidos sin ubicación resuelta</h3>{result.sin_resolver.map(p => <p key={p.pedido_id}>#{p.pedido_id} · {p.cliente_nombre}: {p.motivo}</p>)}<p>Quedaron confirmados pero fuera de la ruta. Aparecen arriba como "Dirección por revisar": corrige su ubicación y vuelve a planificar.</p></div>}
-      {result.confirmados_con_orden_fuera_de_solicitud?.length > 0 && <p className="notice">Hay {result.confirmados_con_orden_fuera_de_solicitud.length} pedidos confirmados con orden de otras planificaciones. No se incluyen en esta impresión.</p>}
+    {result && <section className="no-print">
+      <div className="title"><h2>Última planificación</h2><button onClick={() => setResult(null)}>Ocultar</button></div>
+      <p role="status" className="ok">Se confirmaron {result.pedidos_confirmados} pedidos: {result.ruta.length} en la ruta{result.sin_resolver?.length ? ` y ${result.sin_resolver.length} sin ubicación` : ''}. El orden quedó guardado y se ve en "Ruta en curso".</p>
+      {result.sin_resolver?.length > 0 && <div className="error"><h3>Pedidos sin ubicación resuelta</h3>{result.sin_resolver.map(p => <p key={p.pedido_id}>#{p.pedido_id} · {p.cliente_nombre}: {p.motivo}</p>)}<p>Quedaron confirmados pero fuera de la ruta. Aparecen en "Preparar ruta" como "Dirección por revisar": corrige su ubicación y vuelve a planificar.</p></div>}
+      {result.confirmados_con_orden_fuera_de_solicitud?.length > 0 && <p className="notice">Hay {result.confirmados_con_orden_fuera_de_solicitud.length} pedidos confirmados con orden de otras planificaciones: aparecen mezclados en "Ruta en curso".</p>}
     </section>}
   </>;
 }
