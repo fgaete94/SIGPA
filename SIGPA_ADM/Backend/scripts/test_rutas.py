@@ -824,6 +824,128 @@ async def caso_y(ctx: dict, v: Verificador) -> None:
     )
 
 
+async def _ruta_actual(ctx: dict) -> tuple[httpx.Response, dict]:
+    respuesta = await ctx["http"].get("/rutas/actual")
+    print(f"  GET /rutas/actual -> {respuesta.status_code}")
+    return respuesta, respuesta.json()
+
+
+def _paradas_de_prueba(ctx: dict, cuerpo: dict) -> list[dict]:
+    """La BD es compartida: solo se miran las paradas de los pedidos de prueba."""
+    propios = {ctx[k] for k in ("p1", "p2", "p3", "fuera", "cancelado", "entregado", "sin_direccion")}
+    return [p for p in cuerpo["ruta"] if p["pedido_id"] in propios]
+
+
+async def caso_z(ctx: dict, v: Verificador) -> None:
+    ids = [ctx["p1"], ctx["p2"], ctx["p3"]]
+    ctx["n8n"].responder = _ruta_completa
+    await _planificar(ctx, ids)
+    respuesta, cuerpo = await _ruta_actual(ctx)
+    v.check(respuesta.status_code == 200, "200")
+    v.check(set(cuerpo) == {"ruta", "total", "advertencias"}, "con ruta, total y advertencias")
+    v.check(cuerpo["total"] == len(cuerpo["ruta"]), "total = cantidad de paradas")
+    paradas = [p for p in _paradas_de_prueba(ctx, cuerpo) if p["pedido_id"] in ids]
+    v.check([p["pedido_id"] for p in paradas] == list(reversed(ids)), "los 3 planificados en el orden que dio n8n")
+    v.check([p["orden_entrega"] for p in paradas] == [1, 2, 3], "con orden_entrega 1, 2, 3")
+    ordenes = [p["orden_entrega"] for p in cuerpo["ruta"]]
+    v.check(ordenes == sorted(ordenes), "toda la ruta ordenada por orden_entrega asc")
+    p2 = next(p for p in paradas if p["pedido_id"] == ctx["p2"])
+    v.check(
+        set(p2)
+        == {"pedido_id", "orden_entrega", "cliente_id", "cliente_nombre", "cliente_telefono",
+            "direccion_texto", "latitud", "longitud", "estado"}
+        and p2["cliente_id"] == ctx["c2"]
+        and p2["cliente_nombre"] == CLIENTE_SIN_COORDS["nombre"]
+        and p2["cliente_telefono"] == CLIENTE_SIN_COORDS["telefono"]
+        and p2["direccion_texto"] == CLIENTE_SIN_COORDS["direccion"]
+        and p2["latitud"] is not None
+        and p2["estado"] == "confirmado",
+        "cada parada con cliente, teléfono, dirección, coordenadas geocodificadas y estado",
+    )
+    otra_vez = await ctx["http"].get("/rutas/actual")
+    v.check(otra_vez.json() == cuerpo, "leerla de nuevo (recargar) da lo mismo")
+
+
+async def caso_aa(ctx: dict, v: Verificador) -> None:
+    await _ejecutar("update pedido set estado = 'confirmado', orden_entrega = null where id = :id", id=ctx["p1"])
+    await _ejecutar("update pedido set estado = 'confirmado', orden_entrega = 1 where id = :id", id=ctx["p3"])
+    _, cuerpo = await _ruta_actual(ctx)
+    ids = {p["pedido_id"] for p in cuerpo["ruta"]}
+    v.check(ctx["p1"] not in ids, "confirmado sin orden_entrega no aparece")
+    v.check(ctx["p3"] in ids, "el confirmado con orden sí aparece")
+    v.check(ctx["p2"] not in ids, "el pendiente no aparece")
+
+
+async def caso_ab(ctx: dict, v: Verificador) -> None:
+    await _ejecutar("update pedido set estado = 'cancelado', orden_entrega = 1 where id = :id", id=ctx["p1"])
+    await _ejecutar("update pedido set estado = 'entregado', orden_entrega = 2 where id = :id", id=ctx["p2"])
+    await _ejecutar("update pedido set estado = 'en_despacho', orden_entrega = 3 where id = :id", id=ctx["p3"])
+    try:
+        _, cuerpo = await _ruta_actual(ctx)
+        ids = {p["pedido_id"] for p in cuerpo["ruta"]}
+        v.check(ctx["p1"] not in ids, "cancelado con orden no aparece")
+        v.check(ctx["p2"] not in ids, "entregado con orden no aparece")
+        v.check(ctx["p3"] not in ids, "en_despacho con orden no aparece")
+        v.check(all(p["estado"] == "confirmado" for p in cuerpo["ruta"]), "solo hay confirmados")
+    finally:
+        # Que _reiniciar no tenga que deshacer un entregado o cancelado.
+        await _ejecutar(
+            "update pedido set estado = 'pendiente', orden_entrega = null where id = any(:ids)",
+            ids=[ctx["p1"], ctx["p2"], ctx["p3"]],
+        )
+
+
+async def caso_ac(ctx: dict, v: Verificador) -> None:
+    # "fuera" es un confirmado con orden 7 de una ruta anterior: p1 con orden 7
+    # simula una planificación nueva que no lo tocó.
+    await _ejecutar(
+        "update pedido set estado = 'confirmado', orden_entrega = 7, actualizado_en = now() where id = :id", id=ctx["p1"]
+    )
+    _, cuerpo = await _ruta_actual(ctx)
+    advertencia = next(
+        (a for a in cuerpo["advertencias"] if {ctx["p1"], ctx["fuera"]} <= set(a["pedido_ids"])), None
+    )
+    v.check(advertencia is not None, "orden_entrega repetido: advertencia con ambos pedido_id")
+    v.check(
+        advertencia is not None
+        and advertencia["tipo"] == "orden_entrega_duplicado"
+        and advertencia["orden_entrega"] == 7
+        and advertencia["mensaje"],
+        "con tipo, orden_entrega y mensaje",
+    )
+    paradas = [p["pedido_id"] for p in cuerpo["ruta"] if p["orden_entrega"] == 7]
+    v.check(
+        paradas.index(ctx["p1"]) < paradas.index(ctx["fuera"]),
+        "a igual orden va primero el actualizado más recientemente",
+    )
+    ordenes = [p["orden_entrega"] for p in cuerpo["ruta"]]
+    repetidos = {o for o in ordenes if ordenes.count(o) > 1}
+    v.check({a["orden_entrega"] for a in cuerpo["advertencias"]} == repetidos, "una advertencia por cada orden repetido")
+
+
+async def caso_ad(ctx: dict, v: Verificador) -> None:
+    del app.dependency_overrides[get_current_user]
+    try:
+        sin_token = await ctx["http"].get("/rutas/actual")
+        token_malo = await ctx["http"].get("/rutas/actual", headers={"Authorization": "Bearer no-es-un-jwt"})
+    finally:
+        app.dependency_overrides[get_current_user] = _usuario_prueba
+    v.check(sin_token.status_code == 401 and sin_token.json() == {"detail": "No autenticado"}, "sin JWT: 401 'No autenticado'")
+    v.check(
+        token_malo.status_code == 401 and token_malo.json() == {"detail": "Token inválido o expirado"},
+        "JWT inválido: 401 'Token inválido o expirado'",
+    )
+
+
+async def caso_ae(ctx: dict, v: Verificador) -> None:
+    ctx["n8n"].responder = lambda payload: _ruta_completa(payload, sin_resolver={ctx["p2"]})
+    await _planificar(ctx, [ctx["p1"], ctx["p2"], ctx["p3"]])
+    _, cuerpo = await _ruta_actual(ctx)
+    ids = {p["pedido_id"] for p in cuerpo["ruta"]}
+    v.check(ctx["p2"] not in ids, "el sin_resolver (confirmado, orden null) no aparece en la ruta")
+    v.check({ctx["p1"], ctx["p3"]} <= ids, "los que sí entraron a la ruta aparecen")
+
+
 def _usuario_prueba() -> dict:
     return {"user_id": "test", "email": USUARIO_PRUEBA}
 
@@ -854,6 +976,12 @@ CASOS = [
     ("w", "Ruta que omite o repite un pedido, sin_resolver sin motivo: 502", caso_w),
     ("x", "Pedido sin dirección ni coordenadas: sin_resolver", caso_x),
     ("y", "creado_en en ISO 8601 con zona horaria UTC", caso_y),
+    ("z", "GET /rutas/actual tras planificar 3 pedidos los devuelve en orden", caso_z),
+    ("aa", "GET /rutas/actual: confirmado sin orden_entrega no aparece", caso_aa),
+    ("ab", "GET /rutas/actual: cancelado, entregado o en despacho con orden no aparece", caso_ab),
+    ("ac", "GET /rutas/actual: orden_entrega duplicado genera advertencia", caso_ac),
+    ("ad", "GET /rutas/actual sin JWT: 401", caso_ad),
+    ("ae", "GET /rutas/actual: los sin_resolver no aparecen", caso_ae),
 ]
 
 

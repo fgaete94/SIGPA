@@ -35,6 +35,11 @@ motivo_revision_direccion; los que entran a la ruta lo dejan en null.
 GET /rutas/pedidos-pendientes lista los "pendiente" y además los
 "confirmado" con orden_entrega null o motivo_revision_direccion no null,
 para que un sin_resolver con coordenadas corregidas se pueda replanificar.
+
+GET /rutas/actual devuelve la ruta guardada (los "confirmado" con
+orden_entrega) para que el panel la vuelva a ver tras recargar. Sin id de
+ruta ni fecha de entrega en pedido, no distingue rutas: avisa los
+orden_entrega repetidos (ver ruta_actual).
 """
 
 import asyncio
@@ -145,6 +150,58 @@ async def listar_pendientes() -> list[dict]:
         }
         for pedido in pedidos
     ]
+
+
+async def ruta_actual() -> dict:
+    """Ruta guardada: los "confirmado" con orden_entrega, en orden de parada.
+
+    No existe un id de ruta ni una fecha de entrega: cada planificación
+    numera desde 1 y no toca los confirmados que quedan fuera de la
+    solicitud, así que pueden convivir pedidos de rutas distintas. Esos
+    números repetidos se informan en "advertencias" en vez de ocultarse. A
+    igual orden_entrega va primero el planificado o editado más reciente
+    (actualizado_en desc) y luego el id. Los "en_despacho", "entregado" y
+    "cancelado" quedan fuera por el filtro de estado."""
+    async with SessionLocal() as session:
+        result = await session.execute(
+            select(Pedido)
+            .where(Pedido.estado == EstadoPedido.CONFIRMADO, Pedido.orden_entrega.is_not(None))
+            .options(selectinload(Pedido.cliente))
+            .order_by(Pedido.orden_entrega, Pedido.actualizado_en.desc(), Pedido.id)
+        )
+        pedidos = result.scalars().all()
+
+    por_orden: dict[int, list[int]] = {}
+    for pedido in pedidos:
+        por_orden.setdefault(pedido.orden_entrega, []).append(pedido.id)
+    advertencias = [
+        {
+            "tipo": "orden_entrega_duplicado",
+            "mensaje": f"Hay {len(ids)} pedidos con la parada {orden}: la ruta mezcla más de una planificación.",
+            "orden_entrega": orden,
+            "pedido_ids": ids,
+        }
+        for orden, ids in por_orden.items()
+        if len(ids) > 1
+    ]
+    return {
+        "ruta": [
+            {
+                "pedido_id": pedido.id,
+                "orden_entrega": pedido.orden_entrega,
+                "cliente_id": pedido.cliente_id,
+                "cliente_nombre": _nombre_cliente(pedido.cliente),
+                "cliente_telefono": pedido.cliente.telefono if pedido.cliente else None,
+                "direccion_texto": _direccion(pedido),
+                "latitud": _coordenada(pedido.latitud),
+                "longitud": _coordenada(pedido.longitud),
+                "estado": pedido.estado.value,
+            }
+            for pedido in pedidos
+        ],
+        "total": len(pedidos),
+        "advertencias": advertencias,
+    }
 
 
 def _error(estado_http: int, mensaje: str, **extra) -> HTTPException:
