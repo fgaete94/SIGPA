@@ -149,6 +149,22 @@ button.enlace{border:0;background:none;padding:0;margin-left:4px;color:var(--azu
 .por-comuna caption{text-align:left;padding:0 0 8px}
 .barra{display:inline-block;width:min(220px,30vw);height:10px;margin-right:10px;border-radius:5px;background:var(--fondo-2);vertical-align:middle;overflow:hidden}
 .barra>span{display:block;height:100%;border-radius:5px;background:var(--azul-2)}
+.periodo .actualizado{margin-left:auto;align-self:center}
+/* Ventas (#71) */
+.ventas .kpis{margin:4px 0 20px}
+.ventas .kpis strong{font-size:clamp(26px,2.6vw,36px);overflow-wrap:anywhere}
+.kpis small{display:block;margin-top:6px;color:var(--gris);font-size:13px}
+.grafico{margin:0}
+.barras{display:flex;gap:4px;height:240px;padding:8px 4px 0;overflow-x:auto;border-bottom:1px solid var(--borde)}
+.columna{flex:1 1 0;min-width:16px;display:flex;flex-direction:column}
+.columna .area{flex:1;display:flex;align-items:flex-end;justify-content:center}
+.columna .valor{width:100%;max-width:52px;min-height:3px;border-radius:5px 5px 0 0;background:var(--azul-2);transition:background-color .15s ease}
+.columna .valor.vacio{min-height:0}
+.columna small{height:22px;padding-top:6px;font-size:11px;line-height:1;color:var(--gris);white-space:nowrap;text-align:center;overflow:visible}
+@media (hover:hover) and (pointer:fine){.columna:hover .valor{background:var(--azul)}}
+.grafico figcaption{margin-top:10px}
+.grafico details{margin-top:10px}
+.grafico summary{cursor:pointer;color:var(--azul-2);font-weight:600}
 
 /* Ventanas */
 .modal{position:fixed;inset:0;background:rgba(16,21,74,.55);display:grid;place-items:center;padding:20px;z-index:10}
