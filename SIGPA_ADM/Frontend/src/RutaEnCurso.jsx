@@ -2,15 +2,18 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { api } from './api';
 import { ETIQUETA_ESTADO, despachables } from './estados';
 import { fechaCorta } from './fechas';
+import HojaDeRuta from './HojaDeRuta';
 import { enlaceComoLlegar, enlaceWhatsApp, rutaEnCurso, textoRuta } from './reparto';
 import { moveStop } from './route';
 
 // Historia #85: la ruta guardada en la base, para coordinar al repartidor (imprimir, WhatsApp o copiar).
-export default function RutaEnCurso({ pedidos, clientes, onActualizar }) {
+export default function RutaEnCurso({ pedidos, clientes, productos, onActualizar }) {
   const { paradas: guardadas, repetidos, sinUbicacion } = useMemo(() => rutaEnCurso(pedidos, clientes), [pedidos, clientes]);
   // Reordenar solo cambia esta vista (impresión y texto); guardar el orden es la historia #87.
   const [paradas, setParadas] = useState(guardadas);
   const [copiado, setCopiado] = useState('');
+  // Copia de las paradas al abrir la hoja de ruta: una recarga de datos no la cambia mientras está abierta.
+  const [hoja, setHoja] = useState(null);
   useEffect(() => setParadas(guardadas), [guardadas]);
   const manual = paradas.some((p, i) => p.id !== guardadas[i]?.id);
   const texto = textoRuta(paradas, fechaCorta(new Date().toISOString()));
@@ -42,7 +45,7 @@ export default function RutaEnCurso({ pedidos, clientes, onActualizar }) {
     <div className="title">
       <div><h2>Ruta en curso</h2><p className="muted">{paradas.length === 1 ? '1 parada' : `${paradas.length} paradas`} · pedidos confirmados o en despacho, en el orden guardado al planificar</p></div>
       {paradas.length > 0 && <div className="acciones no-print">
-        <button onClick={() => window.print()}>Imprimir</button>
+        <button onClick={() => setHoja(paradas)}>Imprimir hoja de ruta</button>
         <a className="boton" href={enlaceWhatsApp(texto)} target="_blank" rel="noopener noreferrer">Enviar por WhatsApp</a>
         <button onClick={copiar}>Copiar ruta</button>
         {porDespachar.length > 0 && <button className="primary" disabled={despachando} onClick={despacharRuta}>{despachando ? 'Marcando…' : `Salió a reparto (${porDespachar.length})`}</button>}
@@ -72,6 +75,7 @@ export default function RutaEnCurso({ pedidos, clientes, onActualizar }) {
       </div>;
     })}
     {!paradas.length && <p>No hay una ruta en curso. Selecciona pedidos en "Preparar ruta" y planifícala.</p>}
+    {hoja && <HojaDeRuta paradas={hoja} clientes={clientes} productos={productos} onClose={() => setHoja(null)}/>}
     {sinUbicacion > 0 && <p className="notice no-print">{sinUbicacion === 1 ? '1 pedido confirmado quedó' : `${sinUbicacion} pedidos confirmados quedaron`} fuera de la ruta por dirección por revisar. Corrige su ubicación más abajo y vuelve a planificar.</p>}
   </section>;
 }
