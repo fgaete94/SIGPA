@@ -10,6 +10,11 @@ class TipoClienteOut(BaseModel):
     id: int
     nombre: str
 
+class SectorOut(BaseModel):
+    id: int
+    nombre: str
+    comuna_nombre: str
+
 class ClienteOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -50,6 +55,7 @@ class ClienteCreate(BaseModel):
     tipo_cliente_id: int | None = None
     dia_reparto: DiaSemana | None = None
     activo: bool = True
+    opt_out_whatsapp: bool = False
     latitud: float | None = None
     longitud: float | None = None
 
