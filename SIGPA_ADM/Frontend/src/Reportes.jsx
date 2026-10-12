@@ -69,12 +69,12 @@ function GraficoVentas({ serie, unidad }) {
         <small aria-hidden="true">{i % paso === 0 ? s.etiqueta : ''}</small>
       </div>)}
     </div>
-    <figcaption className="muted">Barra más alta: {dinero(maximo)}. Pasa el mouse sobre una barra para ver su detalle.</figcaption>
+    <figcaption className="muted">Barra más alta: {dinero(maximo)}. El detalle de cada barra está en "Ver como tabla".</figcaption>
     <details>
       <summary>Ver como tabla</summary>
-      <div className="table"><table>
+      <div className="table"><table className="tabla-movil">
         <thead><tr><th>Período</th><th>Ventas</th><th>Pedidos</th></tr></thead>
-        <tbody>{serie.map(s => <tr key={s.clave}><td>{s.etiqueta}</td><td>{dinero(s.monto)}</td><td>{s.pedidos}</td></tr>)}</tbody>
+        <tbody>{serie.map(s => <tr key={s.clave}><td data-label="Período">{s.etiqueta}</td><td data-label="Ventas">{dinero(s.monto)}</td><td data-label="Pedidos">{s.pedidos}</td></tr>)}</tbody>
       </table></div>
     </details>
   </figure>;
@@ -86,12 +86,12 @@ function PorComuna({ pedidos, rango }) {
   return <section>
     <div className="title"><h2>Pedidos por comuna</h2></div>
     <p>Dónde se concentra la demanda, según la comuna del cliente. No incluye pedidos cancelados.</p>
-    <div className="table"><table className="por-comuna">
+    <div className="table"><table className="por-comuna tabla-movil">
       <caption className="muted">{total === 1 ? '1 pedido' : `${total} pedidos`} en el período</caption>
       <thead><tr><th>Comuna</th><th>Pedidos</th><th>Clientes</th><th>Participación</th></tr></thead>
       <tbody>{filas.map(f => <tr key={f.comuna}>
-        <td>{f.comuna}</td><td>{f.pedidos}</td><td>{f.clientes}</td>
-        <td><span className="barra" aria-hidden="true"><span style={{ width: `${f.porcentaje * 100}%` }}/></span>{porcentaje.format(f.porcentaje)}</td>
+        <td data-label="Comuna">{f.comuna}</td><td data-label="Pedidos">{f.pedidos}</td><td data-label="Clientes">{f.clientes}</td>
+        <td data-label="Participación"><span className="barra" aria-hidden="true"><span style={{ width: `${f.porcentaje * 100}%` }}/></span>{porcentaje.format(f.porcentaje)}</td>
       </tr>)}</tbody>
     </table>{!filas.length && <p>No hay pedidos en el período elegido.</p>}</div>
   </section>;

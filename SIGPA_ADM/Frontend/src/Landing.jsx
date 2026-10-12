@@ -124,6 +124,8 @@ export default function Landing({ onAdmin }) {
           </article>)}
         </div>
 
+        {/* Si la base no trae ningún producto de un grupo, no se muestra su título vacío. */}
+        {PROMOS.some(p => hay(p.producto)) && <>
         <h3 data-revelar>Promociones <span>incluyen despacho</span></h3>
         <div className="lp-grid lp-grid-2">
           {PROMOS.filter(p => hay(p.producto)).map((p, i) => <article key={p.id} className="lp-card lp-card-pack" data-revelar style={{ '--i': i }}>
@@ -132,7 +134,9 @@ export default function Landing({ onAdmin }) {
             <Pedir producto={p.nombre} onQr={setQr}>Pedir esta promoción →</Pedir>
           </article>)}
         </div>
+        </>}
 
+        {DISPENSADORES.some(d => hay(d.producto)) && <>
         <h3 data-revelar>Dispensadores</h3>
         <div className="lp-grid lp-grid-2">
           {DISPENSADORES.filter(d => hay(d.producto)).map((d, i) => <article key={d.id} className="lp-card lp-card-foto" data-revelar style={{ '--i': i }}>
@@ -141,6 +145,7 @@ export default function Landing({ onAdmin }) {
               <Pedir producto={d.nombre} onQr={setQr}>Pedir {d.nombre} →</Pedir></div>
           </article>)}
         </div>
+        </>}
       </section>
 
       <section className="lp-contacto" id="contacto" aria-labelledby="contacto-titulo">

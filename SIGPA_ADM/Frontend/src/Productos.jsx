@@ -13,9 +13,9 @@ export default function Productos({ productos, onCambio }) {
   return <section>
     <div className="title"><div><h2>Catálogo</h2><p className="muted">{productos.length} productos. El precio se usa en los pedidos nuevos y en la página web.</p></div><button className="primary" onClick={() => { setEditando('nuevo'); setAviso(''); }}>Nuevo producto</button></div>
     {aviso && <p role="status" className="ok">{aviso}</p>}
-    <div className="table"><table>
+    <div className="table"><table className="tabla-movil">
       <thead><tr><th>Producto</th><th>Precio</th><th>Stock</th><th>Capacidad</th><th>Acciones</th></tr></thead>
-      <tbody>{ordenados.map(p => <tr key={p.id}><td>{p.nombre}</td><td>{dinero(Number(p.precio_unitario))}</td><td>{p.stock}</td><td>{litros(p.capacidad_litros)}</td><td><button aria-label={`Editar ${p.nombre}`} onClick={() => { setEditando(p); setAviso(''); }}>Editar</button></td></tr>)}</tbody>
+      <tbody>{ordenados.map(p => <tr key={p.id}><td data-label="Producto">{p.nombre}</td><td data-label="Precio">{dinero(Number(p.precio_unitario))}</td><td data-label="Stock">{p.stock}</td><td data-label="Capacidad">{litros(p.capacidad_litros)}</td><td className="celda-acciones"><button aria-label={`Editar ${p.nombre}`} onClick={() => { setEditando(p); setAviso(''); }}>Editar</button></td></tr>)}</tbody>
     </table>{!productos.length && <p>No hay productos registrados.</p>}</div>
     {editando && <FormProducto producto={editando === 'nuevo' ? null : editando} productos={productos} onClose={() => setEditando(null)} onSaved={p => { setEditando(null); setAviso(`Producto "${p.nombre}" guardado.`); onCambio(); }}/>}
   </section>;

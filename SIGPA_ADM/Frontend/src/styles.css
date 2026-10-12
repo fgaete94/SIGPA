@@ -42,8 +42,8 @@ input::placeholder{color:#8a93ad}
 header{display:flex;align-items:center;justify-content:space-between;padding:12px clamp(16px,5vw,64px);background:rgba(233,240,247,.9);border-bottom:1px solid var(--borde)}
 
 /* Login */
-.login{display:grid;place-items:center;min-height:78vh;padding:24px}
-.login form{width:420px;max-width:100%;padding:32px;background:var(--superficie);border:1px solid var(--borde);border-bottom:6px solid var(--verde);border-radius:20px;box-shadow:0 20px 40px -28px rgba(20,26,99,.45)}
+.login{display:grid;grid-template-columns:minmax(0,1fr);place-items:center;min-height:78vh;padding:24px 16px}
+.login form{width:min(420px,100%);padding:32px;background:var(--superficie);border:1px solid var(--borde);border-bottom:6px solid var(--verde);border-radius:20px;box-shadow:0 20px 40px -28px rgba(20,26,99,.45)}
 .login h1{margin:6px 0 4px}
 .login p{margin:0 0 6px}
 .login button{width:100%;margin-top:8px;padding:12px}
@@ -55,13 +55,14 @@ aside .brand{color:#fff}
 aside .brand img{height:52px}
 aside .brand small{color:#aab3e0}
 .nav-label{font-size:12px;font-weight:600;color:#8f99d0;margin:40px 12px 10px}
-aside>button{position:relative;text-align:left;background:none;color:#c9d1f2;border:0;border-radius:10px;margin:2px 0;padding:12px 14px;font-weight:600}
-aside>button.active{background:var(--azul-3);color:#fff}
-aside>button.active::before{content:"";position:absolute;left:0;top:10px;bottom:10px;width:3px;border-radius:3px;background:var(--verde)}
+.pestanas{display:flex;flex-direction:column}
+.pestanas>button{position:relative;text-align:left;background:none;color:#c9d1f2;border:0;border-radius:10px;margin:2px 0;padding:12px 14px;font-weight:600}
+.pestanas>button.active{background:var(--azul-3);color:#fff}
+.pestanas>button.active::before{content:"";position:absolute;left:0;top:10px;bottom:10px;width:3px;border-radius:3px;background:var(--verde)}
 /* Más específicas que el hover global de button, que si no pintaría celeste el menú azul */
 @media (hover:hover) and (pointer:fine){
-  aside>button:hover:not(:disabled){background:rgba(255,255,255,.07);color:#fff}
-  aside>button.active:hover:not(:disabled){background:var(--azul-3)}
+  .pestanas>button:hover:not(:disabled){background:rgba(255,255,255,.07);color:#fff}
+  .pestanas>button.active:hover:not(:disabled){background:var(--azul-3)}
 }
 .account{margin-top:auto;padding-top:32px;overflow-wrap:anywhere;color:#aab3e0;font-size:13px}
 .account button{margin-top:12px;width:100%;background:transparent;color:#dfe4fb;border-color:#3a4596}
@@ -199,20 +200,65 @@ button.enlace{border:0;background:none;padding:0;margin-left:4px;color:var(--azu
 .loading{padding:50px}
 
 @media (max-width:850px){
-  .shell{grid-template-columns:minmax(0,1fr)} /* sin minmax, la tabla ancha estira la columna más allá de la pantalla */
-  aside{position:static;height:auto;padding:12px;flex-direction:row;gap:6px;flex-wrap:wrap;align-items:center}
+  .shell{grid-template-columns:minmax(0,1fr);grid-template-rows:auto 1fr} /* sin minmax, la tabla ancha estira la columna más allá de la pantalla; sin rows, el menú se estira mientras carga */
+  /* Arriba: marca y "Cerrar sesión"; debajo, las pestañas en una sola fila que se desliza. */
+  aside{position:static;height:auto;padding:10px 12px 0;flex-direction:row;gap:6px;flex-wrap:wrap;align-items:center}
   aside .brand img{height:38px}
   aside .brand small,.nav-label,.account small{display:none}
-  aside>button.active::before{display:none}
+  .pestanas{order:3;flex:1 0 100%;flex-direction:row;gap:4px;overflow-x:auto;margin:6px -12px 0;padding:0 12px 10px;scrollbar-width:none;scroll-snap-type:x proximity}
+  .pestanas::-webkit-scrollbar{display:none}
+  /* Degradado a la derecha: indica que hay más pestañas deslizando. */
+  .pestanas{mask-image:linear-gradient(to right,#000 calc(100% - 28px),transparent)}
+  .pestanas>button{flex:none;white-space:nowrap;margin:0;scroll-snap-align:start}
+  .pestanas>button.active::before{display:none}
   .account{padding:0;margin:0 0 0 auto}
   .account button{margin:0}
-  .content{padding:20px 16px 40px}
+  /* El encabezado "Panel administrativo" y la descripción genérica no aportan en pantalla chica. */
+  .workspace>header,.content>.title .eyebrow,.content>.title p{display:none}
+  .content>.title{margin-bottom:12px}
+  .content{padding:16px 16px 40px}
   .kpis{grid-template-columns:repeat(2,1fr)}
   .title{flex-wrap:wrap}
   .filters{flex-wrap:wrap}
   header .brand small{display:none}
   .print-route .stop{flex-wrap:wrap}
   .acciones-parada{width:100%;padding-left:44px}
+  section{padding:16px}
+  .filters>input{flex:1 1 100%}
+}
+/* Tablas como tarjetas en el celular: una tarjeta por fila, con el nombre de cada dato (data-label). */
+@media screen and (max-width:640px){
+  .tabla-movil thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+  .tabla-movil,.tabla-movil tbody,.tabla-movil tr{display:block;width:100%}
+  .tabla-movil tr{border:1px solid var(--borde);border-radius:12px;padding:4px 14px;margin-bottom:10px;background:var(--superficie)}
+  .tabla-movil td{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:9px 0;border-bottom:1px solid var(--linea);white-space:normal;text-align:right;overflow-wrap:anywhere}
+  .tabla-movil td:last-child{border-bottom:0}
+  .tabla-movil td[data-label]::before{content:attr(data-label);flex:none;max-width:45%;text-align:left;font-size:13px;font-weight:600;color:var(--gris)}
+  .tabla-movil td.celda-acciones{display:block;padding:10px 0}
+  .tabla-movil td.celda-acciones button{width:100%}
+  .tabla-movil caption{display:block}
+  .table{overflow:visible}
+  .por-comuna .barra{width:90px}
+  /* Preparar ruta: etiquetas bajo el nombre y "Corregir ubicación" en su propia línea. */
+  .etiquetas{display:flex;flex-wrap:wrap;margin:6px 0 0}
+  .etiquetas .badge{white-space:nowrap}
+  .parada .stop{flex-wrap:wrap}
+  .parada .stop{gap:12px}
+  .parada .stop>label{flex:1 1 calc(100% - 64px)}
+  .parada .stop>button{margin-left:40px}
+  .coordenadas{margin-left:0}
+  /* Filtros de Reportes de a dos por fila; el primero (período o "ver por") ocupa la fila completa. */
+  .periodo{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+  .periodo>label:first-child,.periodo .actualizado{grid-column:1/-1}
+  .periodo select,.periodo input{width:100%}
+  .periodo .actualizado{margin:0}
+}
+/* Pantallas táctiles: botones y enlaces de al menos 44 px de alto para tocarlos sin errores. */
+@media (pointer:coarse){
+  td button,.acciones-parada button,.acciones-parada a.boton,a.boton,.account button,.coordenadas .actions button{min-height:44px}
+  .stop input[type=checkbox]{width:24px;height:24px}
+  .grafico summary{padding:10px 0}
+  .modal label.check{min-height:44px;margin:4px 0}
 }
 @media print{
   aside,.workspace>header,.content>.title,.no-print,.modal{display:none!important}

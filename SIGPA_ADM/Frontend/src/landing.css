@@ -171,6 +171,12 @@ html:has(.lp){background:#e9f0f7}
   .lp-grid-2,.lp-grid-3{grid-template-columns:1fr}
   .lp-pie{grid-template-columns:1fr}
 }
+/* Pantallas táctiles: enlaces y botones de texto con al menos 44 px de alto para tocarlos sin errores. */
+@media (pointer:coarse){
+  .lp-admin{min-height:44px;padding:10px 8px}
+  .lp-pedir,.lp-card-pack .lp-pedir{padding-top:10px;padding-bottom:10px}
+  .lp-pie a{display:inline-block;padding:10px 0}
+}
 @media (max-width:480px){
   .lp-semana li{grid-template-columns:1fr;border-radius:20px;padding:6px 6px 12px}
   .lp-dia{justify-content:space-between}
