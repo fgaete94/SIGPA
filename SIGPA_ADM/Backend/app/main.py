@@ -3,7 +3,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import auth, clientes, internal, pedidos, productos, rutas, sectores, tipos_cliente, whatsapp
+from app.api.routes import auth, clientes, comunas, internal, pedidos, productos, rutas, sectores, tipos_cliente, whatsapp
 from app.core.config import settings
 
 app = FastAPI(title=settings.PROJECT_NAME)
@@ -22,6 +22,7 @@ app.include_router(whatsapp.router)
 app.include_router(productos.router, prefix="/productos")
 app.include_router(clientes.router, prefix="/clientes")
 app.include_router(tipos_cliente.router, prefix="/tipos-cliente")
+app.include_router(comunas.router, prefix="/comunas")
 app.include_router(sectores.router, prefix="/sectores")
 app.include_router(pedidos.router, prefix="/pedidos")
 app.include_router(internal.router)

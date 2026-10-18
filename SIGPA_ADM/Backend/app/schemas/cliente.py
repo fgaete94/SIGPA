@@ -10,9 +10,16 @@ class TipoClienteOut(BaseModel):
     id: int
     nombre: str
 
+class ComunaOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    nombre: str
+
 class SectorOut(BaseModel):
     id: int
     nombre: str
+    comuna_id: int
     comuna_nombre: str
 
 class ClienteOut(BaseModel):
@@ -25,6 +32,8 @@ class ClienteOut(BaseModel):
     telefono: str | None = None
     direccion: str | None = None
     sector_id: int | None = None
+    comuna_id: int | None = None
+    comuna_nombre: str | None = None
     tipo_cliente_id: int | None = None
     tipo_cliente_nombre: str | None = None
     dia_reparto: DiaSemana | None = None
@@ -52,6 +61,7 @@ class ClienteCreate(BaseModel):
     telefono: str
     direccion: str | None = None
     sector_id: int | None = None
+    comuna_id: int | None = None
     tipo_cliente_id: int | None = None
     dia_reparto: DiaSemana | None = None
     activo: bool = True
@@ -67,6 +77,7 @@ class ClienteUpdate(BaseModel):
     telefono: str | None = None
     direccion: str | None = None
     sector_id: int | None = None
+    comuna_id: int | None = None
     tipo_cliente_id: int | None = None
     dia_reparto: DiaSemana | None = None
     activo: bool | None = None

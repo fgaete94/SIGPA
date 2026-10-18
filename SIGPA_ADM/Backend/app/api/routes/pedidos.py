@@ -5,9 +5,6 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
-from app.models.sector import Sector
-from app.models.comuna import Comuna
-
 from app.core.database import SessionLocal
 from app.core.security import get_current_user
 from app.models.cliente import Cliente
@@ -49,8 +46,8 @@ def _pedido_a_out(pedido: Pedido) -> PedidoOut:
         cliente_nombre=_nombre_completo_cliente(pedido.cliente) if pedido.cliente else None,
         cliente_telefono=pedido.cliente.telefono if pedido.cliente else None,
         comuna_nombre=(
-            pedido.cliente.sector.comuna.nombre
-            if pedido.cliente and pedido.cliente.sector
+            pedido.cliente.comuna.nombre
+            if pedido.cliente and pedido.cliente.comuna
             else None
         ),
         dia_reparto=pedido.cliente.dia_reparto if pedido.cliente else None,
@@ -100,13 +97,7 @@ async def listar_pedidos_despacho(
         query = (
             select(Pedido)
             .join(Cliente, Pedido.cliente_id == Cliente.id)
-            # LEFT JOIN porque sector_id puede ser nulo en Cliente
-            .join(Sector, Cliente.sector_id == Sector.id, isouter=True)
-            .options(
-                selectinload(Pedido.cliente)
-                .selectinload(Cliente.sector)
-                .selectinload(Sector.comuna)
-            )
+            .options(selectinload(Pedido.cliente).selectinload(Cliente.comuna))
             .where(
                 Pedido.estado.in_(
                     [EstadoPedido.CONFIRMADO, EstadoPedido.EN_DESPACHO, EstadoPedido.ENTREGADO]
@@ -115,14 +106,14 @@ async def listar_pedidos_despacho(
         )
 
         if comuna_id is not None:
-            query = query.where(Sector.comuna_id == comuna_id)
+            query = query.where(Cliente.comuna_id == comuna_id)
 
         if dia_reparto is not None:
             query = query.where(Cliente.dia_reparto == dia_reparto)
 
         # Agrupado visualmente por día de reparto y comuna, y dentro de cada
         # grupo, los pedidos más recientes primero
-        query = query.order_by(Cliente.dia_reparto, Sector.comuna_id, Pedido.creado_en.desc())
+        query = query.order_by(Cliente.dia_reparto, Cliente.comuna_id, Pedido.creado_en.desc())
 
         result = await session.execute(query)
         pedidos = result.scalars().all()
@@ -139,7 +130,7 @@ async def listar_pedidos(
 ):
     async with SessionLocal() as session:
         query = select(Pedido).options(
-            selectinload(Pedido.cliente).selectinload(Cliente.sector).selectinload(Sector.comuna)
+            selectinload(Pedido.cliente).selectinload(Cliente.comuna)
             )
 
         if estado is not None:
@@ -168,7 +159,7 @@ async def obtener_pedido(id: int):
             select(Pedido)
             .where(Pedido.id == id)
             .options(
-                selectinload(Pedido.cliente).selectinload(Cliente.sector).selectinload(Sector.comuna),
+                selectinload(Pedido.cliente).selectinload(Cliente.comuna),
                 selectinload(Pedido.detalles).selectinload(DetallePedido.producto),
             )
         )
@@ -237,7 +228,7 @@ async def crear_pedido(datos: PedidoCreate, current_user: dict = Depends(get_cur
             select(Pedido)
             .where(Pedido.id == pedido.id)
             .options(
-                selectinload(Pedido.cliente).selectinload(Cliente.sector).selectinload(Sector.comuna),
+                selectinload(Pedido.cliente).selectinload(Cliente.comuna),
                 selectinload(Pedido.detalles).selectinload(DetallePedido.producto),
             )
         )
@@ -262,7 +253,7 @@ async def actualizar_pedido(
     async with SessionLocal() as session:
         result = await session.execute(
             select(Pedido).where(Pedido.id == id)
-            .options(selectinload(Pedido.cliente).selectinload(Cliente.sector).selectinload(Sector.comuna))
+            .options(selectinload(Pedido.cliente).selectinload(Cliente.comuna))
         )
         pedido = result.scalar_one_or_none()
 
@@ -297,7 +288,7 @@ async def registrar_entrega(id: int, datos: RegistrarEntregaRequest):
             select(Pedido)
             .where(Pedido.id == id)
             .options(
-                selectinload(Pedido.cliente).selectinload(Cliente.sector).selectinload(Sector.comuna),
+                selectinload(Pedido.cliente).selectinload(Cliente.comuna),
                 selectinload(Pedido.detalles).selectinload(DetallePedido.producto),
             )
         )
@@ -340,7 +331,7 @@ async def registrar_entrega(id: int, datos: RegistrarEntregaRequest):
             select(Pedido)
             .where(Pedido.id == pedido.id)
             .options(
-                selectinload(Pedido.cliente).selectinload(Cliente.sector).selectinload(Sector.comuna),
+                selectinload(Pedido.cliente).selectinload(Cliente.comuna),
                 selectinload(Pedido.detalles).selectinload(DetallePedido.producto),
             )
         )
@@ -360,7 +351,7 @@ async def cambiar_estado_pedido(
             select(Pedido)
             .where(Pedido.id == id)
             .options(
-                selectinload(Pedido.cliente).selectinload(Cliente.sector).selectinload(Sector.comuna)
+                selectinload(Pedido.cliente).selectinload(Cliente.comuna)
             )
             .with_for_update(of=Pedido)
         )
@@ -414,7 +405,7 @@ async def corregir_coordenadas_pedido(
             select(Pedido)
             .where(Pedido.id == id)
             .options(
-                selectinload(Pedido.cliente).selectinload(Cliente.sector).selectinload(Sector.comuna)
+                selectinload(Pedido.cliente).selectinload(Cliente.comuna)
             )
             .with_for_update(of=Pedido)
         )
