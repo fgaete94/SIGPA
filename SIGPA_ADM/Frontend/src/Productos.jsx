@@ -1,22 +1,53 @@
 import React, { useState } from 'react';
 import { api } from './api';
 import { datosProducto, productoForm } from './inventario';
+import { useOrden } from './Ordenable';
 
 const dinero = n => new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP' }).format(n);
 const litros = n => n == null ? '—' : `${new Intl.NumberFormat('es-CL').format(Number(n))} L`;
+
+// #137: columnas ordenables del catálogo. Sin clic, los productos van por nombre.
+const COLUMNAS_PRODUCTO = {
+  producto: p => p.nombre,
+  precio: p => Number(p.precio_unitario),
+  stock: p => p.stock,
+  capacidad: p => (p.capacidad_litros == null ? null : Number(p.capacidad_litros)),
+};
 
 // Pestaña Productos: catálogo con precio, stock y capacidad (GET, POST y PATCH /productos).
 export default function Productos({ productos, onCambio }) {
   const [editando, setEditando] = useState(null);
   const [aviso, setAviso] = useState('');
-  const ordenados = [...productos].sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
+  const porNombre = [...productos].sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'));
+  const { filas, encabezado } = useOrden(porNombre, COLUMNAS_PRODUCTO);
   return <section>
     <div className="title"><div><h2>Catálogo</h2><p className="muted">{productos.length} productos. El precio se usa en los pedidos nuevos y en la página web.</p></div><button className="primary" onClick={() => { setEditando('nuevo'); setAviso(''); }}>Nuevo producto</button></div>
     {aviso && <p role="status" className="ok">{aviso}</p>}
-    <div className="table"><table className="tabla-movil">
-      <thead><tr><th>Producto</th><th>Precio</th><th>Stock</th><th>Capacidad</th><th>Acciones</th></tr></thead>
-      <tbody>{ordenados.map(p => <tr key={p.id}><td data-label="Producto">{p.nombre}</td><td data-label="Precio">{dinero(Number(p.precio_unitario))}</td><td data-label="Stock">{p.stock}</td><td data-label="Capacidad">{litros(p.capacidad_litros)}</td><td className="celda-acciones"><button aria-label={`Editar ${p.nombre}`} onClick={() => { setEditando(p); setAviso(''); }}>Editar</button></td></tr>)}</tbody>
-    </table>{!productos.length && <p>No hay productos registrados.</p>}</div>
+    <div className="table">
+      <table className="tabla-movil">
+        <thead>
+          <tr>
+            {encabezado('producto', 'Producto')}
+            {encabezado('precio', 'Precio')}
+            {encabezado('stock', 'Stock')}
+            {encabezado('capacidad', 'Capacidad')}
+            <th>Acciones</th>
+          </tr>
+        </thead>
+        <tbody>
+          {filas.map(p => <tr key={p.id}>
+            <td data-label="Producto">{p.nombre}</td>
+            <td data-label="Precio">{dinero(Number(p.precio_unitario))}</td>
+            <td data-label="Stock">{p.stock}</td>
+            <td data-label="Capacidad">{litros(p.capacidad_litros)}</td>
+            <td className="celda-acciones">
+              <button aria-label={`Editar ${p.nombre}`} onClick={() => { setEditando(p); setAviso(''); }}>Editar</button>
+            </td>
+          </tr>)}
+        </tbody>
+      </table>
+      {!productos.length && <p>No hay productos registrados.</p>}
+    </div>
     {editando && <FormProducto producto={editando === 'nuevo' ? null : editando} productos={productos} onClose={() => setEditando(null)} onSaved={p => { setEditando(null); setAviso(`Producto "${p.nombre}" guardado.`); onCambio(); }}/>}
   </section>;
 }

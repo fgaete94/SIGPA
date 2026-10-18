@@ -1,9 +1,19 @@
 import React, { useMemo, useState } from 'react';
 import { hoyChile, horaCorta } from './fechas';
-import { AGRUPACIONES, PERIODOS, opcionesVentas, pedidosPorComuna, rangoPeriodo, ventasPorPeriodo } from './indicadores';
+import { AGRUPACIONES, PERIODOS, SIN_COMUNA, opcionesVentas, pedidosPorComuna, rangoPeriodo, ventasPorPeriodo } from './indicadores';
+import { useOrden } from './Ordenable';
 
 const porcentaje = new Intl.NumberFormat('es-CL', { style: 'percent', maximumFractionDigits: 1 });
 const dinero = n => new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP' }).format(n);
+
+// #137: columnas ordenables. El período se ordena por fecha (su clave) y "Sin comuna asignada" queda al final.
+const COLUMNAS_VENTAS = { periodo: s => s.clave, ventas: s => s.monto, pedidos: s => s.pedidos };
+const COLUMNAS_COMUNA = {
+  comuna: f => (f.comuna === SIN_COMUNA ? null : f.comuna),
+  pedidos: f => f.pedidos,
+  clientes: f => f.clientes,
+  participacion: f => f.porcentaje,
+};
 
 // Pestaña Reportes: un período común para ventas (#71) y pedidos por comuna (#73). Aquí irá #72.
 export default function Reportes({ pedidos, clientes, actualizadoEn }) {
@@ -59,6 +69,7 @@ function Ventas({ pedidos, clientes, rango }) {
 }
 
 function GraficoVentas({ serie, unidad }) {
+  const { filas, encabezado } = useOrden(serie, COLUMNAS_VENTAS);
   const maximo = Math.max(...serie.map(s => s.monto));
   // Con muchas barras se muestra una etiqueta cada tantas, para que no se monten.
   const paso = Math.ceil(serie.length / 12);
@@ -72,27 +83,56 @@ function GraficoVentas({ serie, unidad }) {
     <figcaption className="muted">Barra más alta: {dinero(maximo)}. El detalle de cada barra está en "Ver como tabla".</figcaption>
     <details>
       <summary>Ver como tabla</summary>
-      <div className="table"><table className="tabla-movil">
-        <thead><tr><th>Período</th><th>Ventas</th><th>Pedidos</th></tr></thead>
-        <tbody>{serie.map(s => <tr key={s.clave}><td data-label="Período">{s.etiqueta}</td><td data-label="Ventas">{dinero(s.monto)}</td><td data-label="Pedidos">{s.pedidos}</td></tr>)}</tbody>
-      </table></div>
+      <div className="table">
+        <table className="tabla-movil">
+          <thead>
+            <tr>
+              {encabezado('periodo', 'Período')}
+              {encabezado('ventas', 'Ventas')}
+              {encabezado('pedidos', 'Pedidos')}
+            </tr>
+          </thead>
+          <tbody>
+            {filas.map(s => <tr key={s.clave}>
+              <td data-label="Período">{s.etiqueta}</td>
+              <td data-label="Ventas">{dinero(s.monto)}</td>
+              <td data-label="Pedidos">{s.pedidos}</td>
+            </tr>)}
+          </tbody>
+        </table>
+      </div>
     </details>
   </figure>;
 }
 
 // Historia #73: dónde se concentra la demanda.
 function PorComuna({ pedidos, rango }) {
-  const { total, filas } = useMemo(() => pedidosPorComuna(pedidos, rango), [pedidos, rango]);
+  const { total, filas: porComuna } = useMemo(() => pedidosPorComuna(pedidos, rango), [pedidos, rango]);
+  const { filas, encabezado } = useOrden(porComuna, COLUMNAS_COMUNA);
   return <section>
     <div className="title"><h2>Pedidos por comuna</h2></div>
     <p>Dónde se concentra la demanda, según la comuna del cliente. No incluye pedidos cancelados.</p>
-    <div className="table"><table className="por-comuna tabla-movil">
-      <caption className="muted">{total === 1 ? '1 pedido' : `${total} pedidos`} en el período</caption>
-      <thead><tr><th>Comuna</th><th>Pedidos</th><th>Clientes</th><th>Participación</th></tr></thead>
-      <tbody>{filas.map(f => <tr key={f.comuna}>
-        <td data-label="Comuna">{f.comuna}</td><td data-label="Pedidos">{f.pedidos}</td><td data-label="Clientes">{f.clientes}</td>
-        <td data-label="Participación"><span className="barra" aria-hidden="true"><span style={{ width: `${f.porcentaje * 100}%` }}/></span>{porcentaje.format(f.porcentaje)}</td>
-      </tr>)}</tbody>
-    </table>{!filas.length && <p>No hay pedidos en el período elegido.</p>}</div>
+    <div className="table">
+      <table className="por-comuna tabla-movil">
+        <caption className="muted">{total === 1 ? '1 pedido' : `${total} pedidos`} en el período</caption>
+        <thead>
+          <tr>
+            {encabezado('comuna', 'Comuna')}
+            {encabezado('pedidos', 'Pedidos')}
+            {encabezado('clientes', 'Clientes')}
+            {encabezado('participacion', 'Participación')}
+          </tr>
+        </thead>
+        <tbody>
+          {filas.map(f => <tr key={f.comuna}>
+            <td data-label="Comuna">{f.comuna}</td>
+            <td data-label="Pedidos">{f.pedidos}</td>
+            <td data-label="Clientes">{f.clientes}</td>
+            <td data-label="Participación"><span className="barra" aria-hidden="true"><span style={{ width: `${f.porcentaje * 100}%` }}/></span>{porcentaje.format(f.porcentaje)}</td>
+          </tr>)}
+        </tbody>
+      </table>
+      {!filas.length && <p>No hay pedidos en el período elegido.</p>}
+    </div>
   </section>;
 }
