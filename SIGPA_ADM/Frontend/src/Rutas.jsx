@@ -3,9 +3,12 @@ import { api } from './api';
 import { ETIQUETA_ESTADO } from './estados';
 import { fechaCorta as fecha } from './fechas';
 import { RUTA_MAX_PEDIDOS, alternarSeleccion, detallesErrorRuta, enlaceMapa, leerCoordenadas } from './planificacion';
+import { datosConfirmar, estadoVistaPrevia } from './vistaPrevia';
+import VistaPreviaRuta from './VistaPreviaRuta';
 
 // Pestaña Rutas: elegir pedidos (máx. RUTA_MAX_PEDIDOS), corregir la ubicación de los que n8n no pudo
-// ubicar (#107, #113) y planificar con POST /rutas/planificar. El orden resultante se ve en RutaEnCurso (#85).
+// ubicar (#107, #113) y calcular la ruta con POST /rutas/planificar en vista previa: se revisa y se guarda con
+// POST /rutas/confirmar (#87). El orden guardado se ve en RutaEnCurso (#85).
 export default function Rutas({ pendientes, busy, onActualizar, onPlanificando }) {
   const [selected, setSelected] = useState([]);
   const [result, setResult] = useState(null);
@@ -13,24 +16,36 @@ export default function Rutas({ pendientes, busy, onActualizar, onPlanificando }
   const [error, setError] = useState(null);
   const [corrigiendo, setCorrigiendo] = useState(null);
   const [aviso, setAviso] = useState('');
+  const [vista, setVista] = useState(null);
+  const [guardando, setGuardando] = useState(false);
+  const [errorVista, setErrorVista] = useState(null);
   // Al actualizar la lista se descartan los pedidos seleccionados que ya no son planificables.
   useEffect(() => { setSelected(ids => ids.filter(id => pendientes.some(p => p.pedido_id === id))); }, [pendientes]);
 
   const lleno = selected.length >= RUTA_MAX_PEDIDOS;
   const porRevisar = pendientes.filter(p => p.motivo_revision_direccion).length;
 
-  async function plan() {
-    if (!window.confirm(`Se planificarán y confirmarán ${selected.length} pedidos. El backend guardará el orden obtenido. ¿Continuar?`)) return;
-    setPlanning(true); onPlanificando(true); setError(null); setAviso('');
-    try { setResult(await api('/rutas/planificar', { method: 'POST', body: JSON.stringify({ pedido_ids: selected }) })); setSelected([]); onActualizar(); }
-    catch (e) { setError({ mensaje: e.message, detalles: detallesErrorRuta(e) }); }
-    finally { setPlanning(false); onPlanificando(false); }
+  // #87: calcular no guarda nada; la ruta se revisa en la vista previa y se guarda al confirmar.
+  async function calcular() {
+    setPlanning(true); onPlanificando(true); setError(null); setAviso(''); setResult(null); setVista(null); setErrorVista(null);
+    try { setVista(estadoVistaPrevia(await api('/rutas/planificar', { method: 'POST', body: JSON.stringify({ pedido_ids: selected, vista_previa: true }) }))); }
+    catch (e) { setError({ mensaje: e.message, detalles: detallesErrorRuta(e) }); onPlanificando(false); }
+    finally { setPlanning(false); }
+  }
+  function cerrarVista() { setVista(null); setErrorVista(null); onPlanificando(false); }
+  async function confirmar() {
+    setGuardando(true); setErrorVista(null);
+    try {
+      setResult(await api('/rutas/confirmar', { method: 'POST', body: JSON.stringify(datosConfirmar(vista)) }));
+      setSelected([]); cerrarVista(); onActualizar();
+    } catch (e) { setErrorVista({ mensaje: e.message, detalles: detallesErrorRuta(e) }); }
+    finally { setGuardando(false); }
   }
 
   return <>
     <section className="no-print">
       <div className="title"><h2>Preparar ruta</h2><span className={`contador${lleno ? ' lleno' : ''}`} aria-live="polite">{selected.length} / {RUTA_MAX_PEDIDOS} pedidos</span></div>
-      <p>Selecciona los pedidos que se incluirán, hasta {RUTA_MAX_PEDIDOS} por ruta. Se muestran todas las fechas: el backend todavía no registra una fecha de entrega.</p>
+      <p>Selecciona los pedidos que se incluirán, hasta {RUTA_MAX_PEDIDOS} por ruta, y calcula la ruta: antes de guardarla podrás revisarla y cambiar el orden. Se muestran todas las fechas: el backend todavía no registra una fecha de entrega.</p>
       {porRevisar > 0 && <p className="notice">{porRevisar === 1 ? 'Hay 1 pedido' : `Hay ${porRevisar} pedidos`} con la dirección por revisar: corrige su ubicación para que entren a la próxima ruta.</p>}
       {aviso && <p role="status" className="ok">{aviso}</p>}
       {pendientes.map(p => <div className="parada" key={p.pedido_id}>
@@ -49,8 +64,9 @@ export default function Rutas({ pendientes, busy, onActualizar, onPlanificando }
       {!pendientes.length && <p>No hay pedidos pendientes.</p>}
       {lleno && <p className="muted">Llegaste al máximo de {RUTA_MAX_PEDIDOS} pedidos por ruta. Desmarca alguno para elegir otro.</p>}
       {error && <div role="alert" className="error"><strong>{error.mensaje}</strong><ul>{error.detalles.map(d => <li key={d}>{d}</li>)}</ul></div>}
-      <button className="primary" disabled={!selected.length || planning || busy} onClick={plan}>{planning ? 'Planificando… (puede tardar hasta 2 minutos)' : `Planificar y confirmar (${selected.length})`}</button>
+      <button className="primary" disabled={!selected.length || planning || busy || !!vista} onClick={calcular}>{planning ? 'Calculando… (puede tardar hasta 2 minutos)' : `Calcular ruta (${selected.length})`}</button>
     </section>
+    {vista && <VistaPreviaRuta estado={vista} onCambiar={setVista} onCancelar={cerrarVista} onConfirmar={confirmar} onRecalcular={calcular} guardando={guardando} error={errorVista}/>}
     {result && <section className="no-print">
       <div className="title"><h2>Última planificación</h2><button onClick={() => setResult(null)}>Ocultar</button></div>
       <p role="status" className="ok">Se confirmaron {result.pedidos_confirmados} pedidos: {result.ruta.length} en la ruta{result.sin_resolver?.length ? ` y ${result.sin_resolver.length} sin ubicación` : ''}. El orden quedó guardado y se ve en "Ruta en curso".</p>
