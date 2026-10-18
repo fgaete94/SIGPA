@@ -33,6 +33,9 @@ TRANSICIONES_DESPACHO = {
     EstadoPedido.EN_DESPACHO: {EstadoPedido.CONFIRMADO},
 }
 
+# Historia #99: estados desde los que se puede registrar la entrega
+ESTADOS_ENTREGABLES = {EstadoPedido.CONFIRMADO, EstadoPedido.EN_DESPACHO}
+
 def _nombre_completo_cliente(cliente: Cliente) -> str:
     apellidos = " ".join(
         parte for parte in (cliente.apellido_paterno, cliente.apellido_materno) if parte
@@ -66,6 +69,7 @@ def _pedido_a_out(pedido: Pedido) -> PedidoOut:
 def _pedido_a_detalle_out(pedido: Pedido) -> PedidoDetalleOut:
     lineas = [
         DetallePedidoLineaOut(
+            id=detalle.id,
             cantidad_solicitada=detalle.cantidad_solicitada,
             cantidad_entregada=detalle.cantidad_entregada,
             precio_unitario=detalle.precio_unitario,
@@ -282,7 +286,16 @@ async def actualizar_pedido(
 
 
 @router.post("/{id}/entrega", response_model=PedidoDetalleOut)
-async def registrar_entrega(id: int, datos: RegistrarEntregaRequest):
+async def registrar_entrega(
+    id: int, datos: RegistrarEntregaRequest, current_user: dict = Depends(get_current_user)
+):
+    """
+    Historia #99: registra lo entregado de cada línea (entregas parciales
+    incluidas), recalcula el total con lo entregado y deja el pedido como
+    "entregado". Solo desde confirmado o en_despacho: un pedido pendiente,
+    cancelado o ya entregado responde 409. Queda en la auditoría para el
+    historial de estados.
+    """
     async with SessionLocal() as session:
         result = await session.execute(
             select(Pedido)
@@ -291,11 +304,23 @@ async def registrar_entrega(id: int, datos: RegistrarEntregaRequest):
                 selectinload(Pedido.cliente).selectinload(Cliente.comuna),
                 selectinload(Pedido.detalles).selectinload(DetallePedido.producto),
             )
+            .with_for_update(of=Pedido)
         )
         pedido = result.scalar_one_or_none()
 
         if pedido is None:
             raise HTTPException(status_code=404, detail="Pedido no encontrado")
+
+        if pedido.estado not in ESTADOS_ENTREGABLES:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"No se puede registrar la entrega de un pedido '{pedido.estado.value}': "
+                    "solo de pedidos confirmados o en despacho"
+                ),
+            )
+
+        snapshot_antes = construir_snapshot(pedido)
 
         detalles_por_id = {detalle.id: detalle for detalle in pedido.detalles}
 
@@ -326,6 +351,16 @@ async def registrar_entrega(id: int, datos: RegistrarEntregaRequest):
                 status_code=status.HTTP_409_CONFLICT,
                 detail="No se pudo registrar la entrega por un conflicto de datos",
             )
+
+        # El snapshot de pedido no incluye las líneas: las cantidades quedan en detalle_pedido.
+        await registrar_auditoria(
+            usuario=current_user.get("email"),
+            entidad="pedido",
+            entidad_id=pedido.id,
+            accion="registrar_entrega",
+            antes=snapshot_antes,
+            despues=construir_snapshot(pedido),
+        )
 
         result = await session.execute(
             select(Pedido)
