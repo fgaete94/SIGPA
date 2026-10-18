@@ -9,7 +9,7 @@ export const ACCION_DESPACHO = {
   en_despacho: { destino: 'confirmado', texto: 'Volver a confirmado' },
 };
 
-const ACCION_HISTORIAL = { crear: 'Creación', cambiar_estado: 'Cambio desde el panel', planificar_ruta: 'Planificación de ruta', actualizar: 'Edición', corregir_coordenadas: 'Corrección de ubicación' };
+const ACCION_HISTORIAL = { crear: 'Creación', cambiar_estado: 'Cambio desde el panel', planificar_ruta: 'Planificación de ruta', actualizar: 'Edición', corregir_coordenadas: 'Corrección de ubicación', registrar_entrega: 'Registro de entrega' };
 
 // Una fila de GET /pedidos/{id}/historial en texto: "Confirmado → En despacho".
 export function textoCambio({ estado_anterior, estado_nuevo }) {

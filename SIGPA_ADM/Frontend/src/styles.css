@@ -199,6 +199,11 @@ button.despachar{background:#e3e0fb;border-color:#cdc6f5;color:#3b2f9a}
 .modal .total strong{font:700 22px/1 'Barlow Condensed',sans-serif;color:var(--azul);margin-left:6px}
 .modal .total small{display:block;color:var(--gris);font-size:13px;margin-top:4px}
 .modal code{font-size:13px}
+/* Registrar entrega (#99): una fila por producto con lo pedido y lo entregado. */
+.modal .entrega .linea{grid-template-columns:minmax(0,1fr) 110px;align-items:center}
+.modal .entrega .linea small{display:block;margin-top:2px;color:var(--gris);font-size:13px}
+.modal .entrega .linea input{font-size:18px;text-align:center;font-variant-numeric:tabular-nums}
+td.celda-acciones button+button{margin-left:6px}
 @media (max-width:520px){.modal .campos{grid-template-columns:minmax(0,1fr)}.modal .linea{grid-template-columns:minmax(0,1fr) 80px}.modal .linea button{grid-column:1/-1;justify-self:start}}
 @media (prefers-reduced-motion:no-preference){
   .modal{animation:p-aparece .18s ease-out}
@@ -245,6 +250,7 @@ button.despachar{background:#e3e0fb;border-color:#cdc6f5;color:#3b2f9a}
   .tabla-movil td[data-label]::before{content:attr(data-label);flex:none;max-width:45%;text-align:left;font-size:13px;font-weight:600;color:var(--gris)}
   .tabla-movil td.celda-acciones{display:block;padding:10px 0}
   .tabla-movil td.celda-acciones button{width:100%}
+  .tabla-movil td.celda-acciones button+button{margin:8px 0 0}
   .tabla-movil td.sin-accion{display:none}
   .tabla-movil caption{display:block}
   .table{overflow:visible}
