@@ -1,7 +1,9 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { api } from './api';
 import { hoyChile, horaCorta } from './fechas';
 import { AGRUPACIONES, PERIODOS, SIN_COMUNA, opcionesVentas, pedidosPorComuna, rangoPeriodo, ventasPorPeriodo } from './indicadores';
 import { useOrden } from './Ordenable';
+import { MODOS, csvRanking, nombreArchivo, parametrosRanking, rankingConParticipacion } from './productosVendidos';
 
 const porcentaje = new Intl.NumberFormat('es-CL', { style: 'percent', maximumFractionDigits: 1 });
 const dinero = n => new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP' }).format(n);
@@ -15,7 +17,7 @@ const COLUMNAS_COMUNA = {
   participacion: f => f.porcentaje,
 };
 
-// Pestaña Reportes: un período común para ventas (#71) y pedidos por comuna (#73). Aquí irá #72.
+// Pestaña Reportes: un período común para ventas (#71), productos más vendidos (#72) y pedidos por comuna (#73).
 export default function Reportes({ pedidos, clientes, actualizadoEn }) {
   const [periodo, setPeriodo] = useState('30');
   const [rango, setRango] = useState(() => rangoPeriodo('30', hoyChile()));
@@ -35,6 +37,7 @@ export default function Reportes({ pedidos, clientes, actualizadoEn }) {
     </section>
     {!invalido && <>
       <Ventas pedidos={pedidos} clientes={clientes} rango={rango}/>
+      <ProductosVendidos rango={rango} actualizadoEn={actualizadoEn}/>
       <PorComuna pedidos={pedidos} rango={rango}/>
     </>}
   </>;
@@ -103,6 +106,53 @@ function GraficoVentas({ serie, unidad }) {
       </div>
     </details>
   </figure>;
+}
+
+// Historia #72: ranking de productos para planificar inventario. Las unidades salen de las líneas de los
+// pedidos, que GET /pedidos no trae: se piden a GET /reportes/productos con el mismo período.
+function ProductosVendidos({ rango, actualizadoEn }) {
+  const [contar, setContar] = useState('entregados');
+  const [datos, setDatos] = useState(null);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    const controller = new AbortController();
+    setError('');
+    api(`/reportes/productos?${parametrosRanking(rango, contar)}`, { signal: controller.signal })
+      .then(filas => setDatos(Array.isArray(filas) ? filas : []))
+      .catch(e => { if (e.name !== 'AbortError') { setError(e.message); setDatos(null); } });
+    return () => controller.abort();
+  }, [rango.desde, rango.hasta, contar, actualizadoEn]);
+  const { total, filas } = useMemo(() => rankingConParticipacion(datos || []), [datos]);
+
+  function descargar() {
+    // BOM para que Excel lea bien las tildes.
+    const url = URL.createObjectURL(new Blob(['﻿' + csvRanking(filas, rango, contar)], { type: 'text/csv;charset=utf-8' }));
+    const enlace = Object.assign(document.createElement('a'), { href: url, download: nombreArchivo(rango) });
+    enlace.click();
+    URL.revokeObjectURL(url);
+  }
+
+  return <section className="productos-vendidos">
+    <div className="title"><h2>Productos más vendidos</h2>{filas.length > 0 && <button onClick={descargar}>Descargar CSV</button>}</div>
+    <p>Ranking por unidades en el período, de mayor a menor.</p>
+    <div className="filters periodo">
+      <label>Contar<select value={contar} onChange={e => setContar(e.target.value)}>{MODOS.map(([valor, texto]) => <option key={valor} value={valor}>{texto}</option>)}</select></label>
+    </div>
+    {error && <p role="alert" className="error">No se pudo cargar el ranking: {error}</p>}
+    {!datos && !error && <p role="status" className="muted">Cargando…</p>}
+    {datos && <>
+      <ol className="ranking" aria-label="Ranking de productos">
+        {filas.map(f => <li key={f.producto_id}>
+          <span className="posicion">{f.posicion}</span>
+          <span className="nombre">{f.producto_nombre}<small>{dinero(f.monto)} · {f.pedidos === 1 ? '1 pedido' : `${f.pedidos} pedidos`} · {porcentaje.format(f.porcentaje)}</small></span>
+          <span className="barra-ranking" aria-hidden="true"><span style={{ width: `${f.relativo * 100}%` }}/></span>
+          <strong>{f.unidades}<small>{f.unidades === 1 ? 'unidad' : 'unidades'}</small></strong>
+        </li>)}
+      </ol>
+      {filas.length > 0 && <p className="muted">{total === 1 ? '1 unidad' : `${total} unidades`} en total.{contar === 'entregados' ? ' Cuenta lo realmente entregado (registro de entrega).' : ' En los pedidos entregados cuenta lo entregado; en el resto, lo pedido.'}</p>}
+      {!filas.length && <p>{contar === 'entregados' ? 'No hay pedidos entregados en el período. Las entregas se registran desde Ruta en curso o Despacho; mientras tanto puedes ver lo pedido.' : 'No hay pedidos en el período elegido.'}</p>}
+    </>}
+  </section>;
 }
 
 // Historia #73: dónde se concentra la demanda.

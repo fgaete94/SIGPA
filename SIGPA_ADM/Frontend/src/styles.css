@@ -158,6 +158,18 @@ button.enlace{border:0;background:none;padding:0;margin-left:4px;color:var(--azu
 .barra>span{display:block;height:100%;border-radius:5px;background:var(--azul-2)}
 .periodo .actualizado{margin-left:auto;align-self:center}
 /* Ventas (#71) */
+/* Productos más vendidos (#72): una fila por producto con barra proporcional a las unidades. */
+.ranking{list-style:none;margin:8px 0 10px;padding:0}
+.ranking li{display:grid;grid-template-columns:32px minmax(160px,1.1fr) minmax(80px,2fr) 92px;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--linea)}
+.ranking .posicion{display:grid;place-items:center;width:28px;height:28px;border-radius:8px;background:var(--fondo-2);color:var(--azul);font:700 16px/1 'Barlow Condensed',sans-serif}
+.ranking li:first-child .posicion{background:var(--amarillo);color:var(--tinta)}
+.ranking .nombre{font-weight:600;color:var(--tinta)}
+.ranking small{display:block;margin-top:2px;color:var(--gris);font-size:13px;font-weight:400}
+.barra-ranking{height:14px;border-radius:7px;background:var(--fondo-2);overflow:hidden}
+.barra-ranking span{display:block;height:100%;border-radius:7px;background:var(--azul-2)}
+.ranking strong{text-align:right;font:700 24px/1 'Barlow Condensed',sans-serif;color:var(--azul);font-variant-numeric:tabular-nums}
+.ranking strong small{font:500 12px/1.2 'Barlow',sans-serif}
+@media (max-width:640px){.ranking li{grid-template-columns:32px minmax(0,1fr) 72px;row-gap:6px}.barra-ranking{grid-column:2/-1;grid-row:2}}
 .ventas .kpis{margin:4px 0 20px}
 .ventas .kpis strong{font-size:clamp(26px,2.6vw,36px);overflow-wrap:anywhere}
 .kpis small{display:block;margin-top:6px;color:var(--gris);font-size:13px}
