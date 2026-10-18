@@ -6,6 +6,7 @@ import { DIAS_REPARTO } from './clientes';
 import { ACCION_DESPACHO, ESTADOS, ETIQUETA_ESTADO, textoAccion, textoCambio } from './estados';
 import { fechaHora } from './fechas';
 import FormCliente from './FormCliente';
+import { vigilarInactividad } from './inactividad';
 import Landing from './Landing';
 import NuevoPedido from './NuevoPedido';
 import Productos from './Productos';
@@ -21,6 +22,7 @@ function App() {
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState('inicio');
+  const [avisoLogin, setAvisoLogin] = useState('');
   useEffect(() => {
     let active = true;
     const unsubscribe = onSessionExpired(() => { setSession(null); setPage('login'); });
@@ -28,11 +30,11 @@ function App() {
     return () => { active = false; unsubscribe(); };
   }, []);
   if (loading) return <p className="loading">Cargando sesión…</p>;
-  if (session) return <Dashboard key={session.user.id} session={session} onLogout={() => { setSession(null); setPage('inicio'); }}/>;
+  if (session) return <Dashboard key={session.user.id} session={session} onLogout={() => { setSession(null); setPage('inicio'); }} onInactividad={() => { setSession(null); setPage('login'); setAvisoLogin('Tu sesión se cerró por inactividad. Vuelve a ingresar.'); }}/>;
   if (page === 'inicio') return <Landing onAdmin={() => { setPage('login'); window.scrollTo(0, 0); }}/>;
-  return <><header><Brand/><button onClick={() => setPage('inicio')}>Volver al inicio</button></header><Login onLogin={user => setSession({ user })}/></>;
+  return <><header><Brand/><button onClick={() => setPage('inicio')}>Volver al inicio</button></header><Login aviso={avisoLogin} onLogin={user => { setAvisoLogin(''); setSession({ user }); }}/></>;
 }
-function Login({ onLogin }) {
+function Login({ aviso, onLogin }) {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   async function submit(e) {
@@ -41,10 +43,12 @@ function Login({ onLogin }) {
     try { onLogin(await login(form.get('email'), form.get('password'))); }
     catch (error) { setError(error.message || 'No se pudo iniciar sesión. Revisa el correo, la contraseña y la conexión.'); setBusy(false); }
   }
-  return <main className="login"><form onSubmit={submit}><span className="eyebrow">Bienvenido a SIGPA</span><h1>Acceso al equipo</h1><p>Ingresa con tu cuenta autorizada.</p><label>Correo electrónico<input autoComplete="username" name="email" type="email" required/></label><label>Contraseña<input autoComplete="current-password" name="password" type="password" required/></label>{error && <p role="alert" className="error">{error}</p>}<button disabled={busy} className="primary">{busy ? 'Ingresando…' : 'Ingresar'}</button></form></main>;
+  return <main className="login"><form onSubmit={submit}><span className="eyebrow">Bienvenido a SIGPA</span><h1>Acceso al equipo</h1><p>Ingresa con tu cuenta autorizada.</p>{aviso && !error && <p role="status" className="notice">{aviso}</p>}<label>Correo electrónico<input autoComplete="username" name="email" type="email" required/></label><label>Contraseña<input autoComplete="current-password" name="password" type="password" required/></label>{error && <p role="alert" className="error">{error}</p>}<button disabled={busy} className="primary">{busy ? 'Ingresando…' : 'Ingresar'}</button></form></main>;
 }
-function Dashboard({ session, onLogout }) {
+function Dashboard({ session, onLogout, onInactividad }) {
   const [tab, setTab] = useState('Resumen');
+  // #134: tras MINUTOS_INACTIVIDAD sin clics, teclado ni desplazamiento se cierra la sesión (también en el backend).
+  useEffect(() => vigilarInactividad({ alExpirar: () => { logout(); onInactividad(); } }).detener, []);
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
