@@ -36,6 +36,13 @@ GET /rutas/pedidos-pendientes lista los "pendiente" y además los
 "confirmado" con orden_entrega null o motivo_revision_direccion no null,
 para que un sin_resolver con coordenadas corregidas se pueda replanificar.
 
+Vista previa (historia #87): POST /rutas/planificar con "vista_previa": true
+hace la validación y la llamada a n8n pero no escribe nada; devuelve la ruta
+propuesta con la "version" (actualizado_en) de cada pedido. La ejecutiva la
+reordena en el panel y la guarda con POST /rutas/confirmar, que aplica la
+misma persistencia en el orden recibido y rechaza (409) los pedidos que
+cambiaron desde la vista previa.
+
 GET /rutas/actual devuelve la ruta guardada (los "confirmado" con
 orden_entrega) para que el panel la vuelva a ver tras recargar. Sin id de
 ruta ni fecha de entrega en pedido, no distingue rutas: avisa los
@@ -360,7 +367,7 @@ def _validar_respuesta(respuesta, enviados: list[int]) -> tuple[list[dict], list
     return ruta, sin_resolver
 
 
-async def planificar_ruta(pedido_ids: list[int], usuario: str | None) -> dict:
+def _verificar_lista(pedido_ids: list[int]) -> None:
     if len(pedido_ids) > settings.RUTA_MAX_PEDIDOS:
         raise _error(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -373,6 +380,13 @@ async def planificar_ruta(pedido_ids: list[int], usuario: str | None) -> dict:
         raise _error(
             status.HTTP_422_UNPROCESSABLE_ENTITY, "La lista de pedidos tiene IDs repetidos.", pedido_ids=repetidos
         )
+
+
+async def planificar_ruta(pedido_ids: list[int], usuario: str | None, vista_previa: bool = False) -> dict:
+    """Con vista_previa=True (historia #87) solo calcula la ruta con n8n y la
+    devuelve, sin escribir nada: la ejecutiva la revisa, la reordena y la
+    guarda con confirmar_ruta."""
+    _verificar_lista(pedido_ids)
     if not settings.N8N_ROUTE_WEBHOOK_URL:
         raise _error(
             status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -387,10 +401,10 @@ async def planificar_ruta(pedido_ids: list[int], usuario: str | None) -> dict:
     if _planificacion_en_curso.locked():
         raise _error(status.HTTP_409_CONFLICT, "Ya hay una planificación de ruta en curso. Espera a que termine.")
     async with _planificacion_en_curso:
-        return await _planificar(pedido_ids, usuario)
+        return await _planificar(pedido_ids, usuario, vista_previa)
 
 
-async def _planificar(pedido_ids: list[int], usuario: str | None) -> dict:
+async def _planificar(pedido_ids: list[int], usuario: str | None, vista_previa: bool = False) -> dict:
     # 1. Paradas armadas solo desde la BD (del panel solo se usan los IDs).
     async with SessionLocal() as session:
         pedidos = await _cargar_pedidos(session, pedido_ids)
@@ -413,20 +427,100 @@ async def _planificar(pedido_ids: list[int], usuario: str | None) -> dict:
     motivos = {item["pedido_id"]: item["motivo"] for item in sin_resolver}
     ruta_por_id = {item["pedido_id"]: item for item in ruta}
 
+    if vista_previa:
+        logger.info(
+            "[rutas] Vista previa para %s: %s en ruta, %s sin resolver", usuario, len(ruta), len(sin_resolver)
+        )
+        return _vista_previa(pedido_ids, pedidos, ruta_por_id, motivos)
+
     # 3. Persistencia en una sola transacción.
+    pedidos, fuera_de_solicitud = await _guardar_ruta(
+        pedido_ids, ruta_por_id, motivos, usuario, leido_en,
+        "El pedido {pid} cambió durante la planificación, reintenta",
+    )
+    logger.info(
+        "[rutas] Ruta generada por %s: %s en ruta, %s sin resolver", usuario, len(ruta), len(sin_resolver)
+    )
+    return _resultado(pedido_ids, pedidos, ruta_por_id, motivos, fuera_de_solicitud)
+
+
+def _vista_previa(pedido_ids, pedidos, ruta_por_id, motivos) -> dict:
+    """Ruta propuesta sin guardar. "version" (actualizado_en del pedido) se
+    devuelve tal cual en POST /rutas/confirmar para detectar pedidos que
+    cambiaron mientras la ejecutiva revisaba la ruta. Las coordenadas son las
+    de n8n, para no volver a geocodificar al confirmar."""
+    return {
+        "vista_previa": True,
+        "ruta": [
+            {
+                "pedido_id": pid,
+                "orden_entrega": ruta_por_id[pid]["orden_entrega"],
+                "cliente_nombre": _nombre_cliente(pedidos[pid].cliente),
+                "direccion_texto": _direccion(pedidos[pid]),
+                "latitud": ruta_por_id[pid]["latitud"],
+                "longitud": ruta_por_id[pid]["longitud"],
+                "version": pedidos[pid].actualizado_en.isoformat(),
+            }
+            for pid in sorted(ruta_por_id, key=lambda p: ruta_por_id[p]["orden_entrega"])
+        ],
+        "sin_resolver": [
+            {
+                "pedido_id": pid,
+                "motivo": motivos[pid],
+                "cliente_nombre": _nombre_cliente(pedidos[pid].cliente),
+                "direccion_texto": _direccion(pedidos[pid]),
+                "version": pedidos[pid].actualizado_en.isoformat(),
+            }
+            for pid in pedido_ids
+            if pid in motivos
+        ],
+    }
+
+
+async def confirmar_ruta(paradas: list[dict], sin_resolver: list[dict], usuario: str | None) -> dict:
+    """Historia #87: guarda la ruta revisada en el panel, en el orden recibido
+    (1 = primera parada), con las mismas reglas que planificar: todos quedan
+    "confirmado", los de sin_resolver con su motivo y sin orden. Los pedidos
+    que la ejecutiva sacó de la ruta no se envían y no se tocan. Si un pedido
+    cambió desde la vista previa (version distinta) no se guarda nada (409)."""
+    pedido_ids = [p["pedido_id"] for p in paradas] + [s["pedido_id"] for s in sin_resolver]
+    if not pedido_ids:
+        raise _error(status.HTTP_422_UNPROCESSABLE_ENTITY, "No hay pedidos para confirmar.")
+    _verificar_lista(pedido_ids)
+    ruta_por_id = {
+        p["pedido_id"]: {"orden_entrega": i, "latitud": p["latitud"], "longitud": p["longitud"]}
+        for i, p in enumerate(paradas, start=1)
+    }
+    motivos = {s["pedido_id"]: s["motivo"] for s in sin_resolver}
+    versiones = {item["pedido_id"]: item["version"] for item in [*paradas, *sin_resolver]}
+    if _planificacion_en_curso.locked():
+        raise _error(status.HTTP_409_CONFLICT, "Ya hay una planificación de ruta en curso. Espera a que termine.")
+    async with _planificacion_en_curso:
+        pedidos, fuera_de_solicitud = await _guardar_ruta(
+            pedido_ids, ruta_por_id, motivos, usuario, versiones,
+            "El pedido {pid} cambió desde que se calculó la ruta. Vuelve a calcularla.",
+        )
+    logger.info(
+        "[rutas] Ruta confirmada por %s desde la vista previa: %s en ruta, %s sin resolver",
+        usuario, len(paradas), len(sin_resolver),
+    )
+    return _resultado(pedido_ids, pedidos, ruta_por_id, motivos, fuera_de_solicitud)
+
+
+async def _guardar_ruta(pedido_ids, ruta_por_id, motivos, usuario, versiones, mensaje_cambio):
+    """Persistencia en una sola transacción (ver docstring del módulo).
+    versiones: actualizado_en esperado de cada pedido; si alguno cambió no se
+    escribe nada. Devuelve (pedidos, confirmados con orden fuera de la solicitud)."""
     ahora = datetime.utcnow()
     async with SessionLocal() as session:
         async with session.begin():
             pedidos = await _cargar_pedidos(session, pedido_ids, bloquear=True)
-            # Pudieron cambiar mientras se esperaba a n8n (ej. un cancelado, o
-            # una dirección o coordenadas corregidas): no se escribe nada.
+            # Pudieron cambiar mientras se esperaba (ej. un cancelado, o una
+            # dirección o coordenadas corregidas): no se escribe nada.
             _verificar_planificables(pedido_ids, pedidos)
             for pid in pedido_ids:
-                if pedidos[pid].actualizado_en != leido_en[pid]:
-                    raise _error(
-                        status.HTTP_409_CONFLICT,
-                        f"El pedido {pid} cambió durante la planificación, reintenta",
-                    )
+                if pedidos[pid].actualizado_en != versiones[pid]:
+                    raise _error(status.HTTP_409_CONFLICT, mensaje_cambio.format(pid=pid))
             for pid in pedido_ids:
                 pedido = pedidos[pid]
                 antes = construir_snapshot(pedido)
@@ -468,10 +562,10 @@ async def _planificar(pedido_ids: list[int], usuario: str | None) -> dict:
                 .order_by(Pedido.id)
             )
             fuera_de_solicitud = [{"pedido_id": fila.id, "orden_entrega": fila.orden_entrega} for fila in result]
+    return pedidos, fuera_de_solicitud
 
-    logger.info(
-        "[rutas] Ruta generada por %s: %s en ruta, %s sin resolver", usuario, len(ruta), len(sin_resolver)
-    )
+
+def _resultado(pedido_ids, pedidos, ruta_por_id, motivos, fuera_de_solicitud) -> dict:
     return {
         "ruta": [
             {

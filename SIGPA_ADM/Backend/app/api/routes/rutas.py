@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from app.core.security import get_current_user
-from app.services.ruta_service import listar_pendientes, planificar_ruta, ruta_actual
+from app.services.ruta_service import confirmar_ruta, listar_pendientes, planificar_ruta, ruta_actual
 
 router = APIRouter(tags=["rutas"], dependencies=[Depends(get_current_user)])
 
@@ -24,6 +24,29 @@ class PedidoPendienteOut(BaseModel):
 
 class PlanificarRutaRequest(BaseModel):
     pedido_ids: list[int] = Field(min_length=1)
+    # Historia #87: solo calcula y devuelve la ruta propuesta, sin guardar nada.
+    vista_previa: bool = False
+
+
+class ParadaConfirmadaIn(BaseModel):
+    pedido_id: int
+    latitud: float = Field(ge=-90, le=90)
+    longitud: float = Field(ge=-180, le=180)
+    # actualizado_en del pedido tal como vino en la vista previa
+    version: datetime
+
+
+class SinResolverConfirmadoIn(BaseModel):
+    pedido_id: int
+    motivo: str = Field(min_length=1, max_length=300)
+    version: datetime
+
+
+class ConfirmarRutaRequest(BaseModel):
+    # En el orden final de visita (la primera es la parada 1). Puede ir vacía si n8n no
+    # ubicó ninguna dirección: igual se confirman los sin_resolver para revisarlos.
+    paradas: list[ParadaConfirmadaIn] = []
+    sin_resolver: list[SinResolverConfirmadoIn] = []
 
 
 class ParadaRutaOut(BaseModel):
@@ -72,4 +95,16 @@ async def actual():
 async def planificar(datos: PlanificarRutaRequest, current_user: dict = Depends(get_current_user)):
     """Genera la ruta con los pedidos indicados (ver ruta_service): llama a
     n8n y, si todo es válido, los confirma con su orden de entrega."""
-    return await planificar_ruta(datos.pedido_ids, current_user.get("email"))
+    return await planificar_ruta(datos.pedido_ids, current_user.get("email"), datos.vista_previa)
+
+
+@router.post("/confirmar")
+async def confirmar(datos: ConfirmarRutaRequest, current_user: dict = Depends(get_current_user)):
+    """Historia #87: guarda la ruta revisada en la vista previa, en el orden
+    recibido. Mismas reglas que planificar; 409 si algún pedido cambió desde
+    que se calculó (hay que volver a calcular)."""
+    return await confirmar_ruta(
+        [p.model_dump() for p in datos.paradas],
+        [s.model_dump() for s in datos.sin_resolver],
+        current_user.get("email"),
+    )
