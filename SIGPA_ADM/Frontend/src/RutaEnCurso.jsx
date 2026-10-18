@@ -7,7 +7,7 @@ import { enlaceComoLlegar, enlaceWhatsApp, rutaEnCurso, textoRuta } from './repa
 import { moveStop } from './route';
 
 // Historia #85: la ruta guardada en la base, para coordinar al repartidor (imprimir, WhatsApp o copiar).
-export default function RutaEnCurso({ pedidos, clientes, productos, onActualizar }) {
+export default function RutaEnCurso({ pedidos, clientes, productos, onActualizar, onEntregar }) {
   const { paradas: guardadas, repetidos, sinUbicacion } = useMemo(() => rutaEnCurso(pedidos, clientes), [pedidos, clientes]);
   // Reordenar solo cambia esta vista (impresión y texto); guardar el orden es la historia #87.
   const [paradas, setParadas] = useState(guardadas);
@@ -69,6 +69,7 @@ export default function RutaEnCurso({ pedidos, clientes, productos, onActualizar
         </span>
         <div className="no-print acciones-parada">
           {enlace && <a className="boton" href={enlace} target="_blank" rel="noopener noreferrer">Cómo llegar</a>}
+          <button aria-label={`Registrar entrega de la parada ${i + 1}`} onClick={() => onEntregar(p.id)}>Entregado</button>
           <button aria-label={`Subir parada ${i + 1}`} disabled={i === 0} onClick={() => mover(i, -1)}>↑</button>
           <button aria-label={`Bajar parada ${i + 1}`} disabled={i === paradas.length - 1} onClick={() => mover(i, 1)}>↓</button>
         </div>

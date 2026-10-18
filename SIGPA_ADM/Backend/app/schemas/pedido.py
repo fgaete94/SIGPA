@@ -28,6 +28,8 @@ class PedidoOut(BaseModel):
 class DetallePedidoLineaOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
+    # Historia #99: id del detalle, que POST /pedidos/{id}/entrega recibe como detalle_id
+    id: int
     cantidad_solicitada: int
     cantidad_entregada: int | None = None
     precio_unitario: float

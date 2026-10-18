@@ -4,6 +4,7 @@ import { login, logout, onSessionExpired, restoreSession } from './auth';
 import { api } from './api';
 import { DIAS_REPARTO } from './clientes';
 import { ACCION_DESPACHO, ESTADOS, ETIQUETA_ESTADO, textoAccion, textoCambio } from './estados';
+import { puedeEntregarse } from './entregas';
 import { fechaHora } from './fechas';
 import FormCliente from './FormCliente';
 import { vigilarInactividad } from './inactividad';
@@ -12,6 +13,7 @@ import NuevoPedido from './NuevoPedido';
 import { useOrden } from './Ordenable';
 import { posicionEn } from './ordenar';
 import Productos from './Productos';
+import RegistrarEntrega from './RegistrarEntrega';
 import Reportes from './Reportes';
 import RutaEnCurso from './RutaEnCurso';
 import Rutas from './Rutas';
@@ -61,6 +63,7 @@ function Dashboard({ session, onLogout, onInactividad }) {
   const [detail, setDetail] = useState(null);
   const [editing, setEditing] = useState(null);
   const [creandoPedido, setCreandoPedido] = useState(false);
+  const [entregando, setEntregando] = useState(null);
   const [aviso, setAviso] = useState('');
   const [actualizadoEn, setActualizadoEn] = useState(null);
   useEffect(() => {
@@ -99,18 +102,27 @@ function Dashboard({ session, onLogout, onInactividad }) {
     } catch(e) { setError(`Pedido #${p.id}: ${e.message}`); }
     finally { setCambiando(null); }
   }
+  // #99: abre el registro de entrega (desde la tabla, el detalle o la ruta en curso).
+  function entregar(id) { setDetail(null); setAviso(''); setError(''); setEntregando(id); }
+  function entregaRegistrada(p) {
+    const { lineas, ...pedido } = p;
+    const parcial = lineas.some(l => (l.cantidad_entregada ?? 0) < l.cantidad_solicitada);
+    setData(d => ({ ...d, pedidos: d.pedidos.map(x => x.id === pedido.id ? pedido : x) }));
+    setAviso(`Pedido #${p.id} entregado${parcial ? ' en forma parcial' : ''} por ${money(p.total)}.`);
+    setEntregando(null); setRevision(r => r + 1);
+  }
   const pedidos = (data?.pedidos || []).filter(p => (!status || p.estado === status) && `${p.id} ${p.cliente_nombre || ''} ${p.comuna_nombre || ''}`.toLowerCase().includes(query.toLowerCase()));
   const clientes = (data?.clientes || []).filter(c => `${name(c)} ${c.telefono || ''}`.toLowerCase().includes(query.toLowerCase()));
   // En el celular las pestañas van en una fila que se desliza: la elegida se trae a la vista.
   const navButton = t => <button key={t} className={tab === t ? 'active' : ''} aria-current={tab === t ? 'page' : undefined} onClick={e => { setTab(t); setQuery(''); setStatus(''); setAviso(''); e.currentTarget.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }}>{t}</button>;
   return <div className="shell"><aside><Brand blanco/><nav className="pestanas" aria-label="Secciones del panel"><div className="nav-label">Operación</div>{['Resumen','Pedidos','Clientes','Productos','Rutas'].map(navButton)}<div className="nav-label">Análisis</div>{navButton('Reportes')}</nav><div className="account"><small>{session.user.email}</small><button onClick={async () => { await logout(); onLogout(); }}>Cerrar sesión</button></div></aside><main className="workspace"><header><span>Panel administrativo</span><span className="badge">Agua DM</span></header><div className="content"><div className="title"><div><span className="eyebrow">Centro de operaciones</span><h1>{tab}</h1><p>Consulta y organiza la información de SIGPA.</p></div><button disabled={busy || planning} onClick={() => setRevision(r => r + 1)}>Actualizar datos</button></div>{error && <p role="alert" className="error">{error}</p>}{aviso && <p role="status" className="ok">{aviso}</p>}{busy && <p role="status">Cargando información…</p>}{data && <>
-  {tab === 'Resumen' && <><div className="kpis">{[['Pedidos registrados',data.pedidos.length],['Pendientes',data.pedidos.filter(p=>p.estado==='pendiente').length],['Confirmados',data.pedidos.filter(p=>p.estado==='confirmado').length],['Clientes activos',data.clientes.filter(c=>c.activo).length]].map(([label,n]) => <article key={label}><span>{label}</span><strong>{n}</strong></article>)}</div><p className="muted">Totales de todos los registros disponibles, sin filtro de fecha.</p><section><h2>Últimos pedidos</h2><OrderTable rows={data.pedidos.slice(0,8)} view={view} cambiarEstado={cambiarEstado} cambiando={cambiando}/></section></>}
-  {tab === 'Pedidos' && <section><div className="filters"><input aria-label="Buscar pedidos" placeholder="Buscar cliente, comuna o ID…" value={query} onChange={e=>setQuery(e.target.value)}/><select aria-label="Estado del pedido" value={status} onChange={e=>setStatus(e.target.value)}><option value="">Todos los estados</option>{ESTADOS.map(s=><option key={s} value={s}>{ETIQUETA_ESTADO[s]} ({data.pedidos.filter(p=>p.estado===s).length})</option>)}</select><button className="primary" onClick={()=>{setCreandoPedido(true); setAviso('');}}>Nuevo pedido</button></div><OrderTable rows={pedidos} view={view} cambiarEstado={cambiarEstado} cambiando={cambiando}/></section>}
+  {tab === 'Resumen' && <><div className="kpis">{[['Pedidos registrados',data.pedidos.length],['Pendientes',data.pedidos.filter(p=>p.estado==='pendiente').length],['Confirmados',data.pedidos.filter(p=>p.estado==='confirmado').length],['Clientes activos',data.clientes.filter(c=>c.activo).length]].map(([label,n]) => <article key={label}><span>{label}</span><strong>{n}</strong></article>)}</div><p className="muted">Totales de todos los registros disponibles, sin filtro de fecha.</p><section><h2>Últimos pedidos</h2><OrderTable rows={data.pedidos.slice(0,8)} view={view} cambiarEstado={cambiarEstado} cambiando={cambiando} entregar={entregar}/></section></>}
+  {tab === 'Pedidos' && <section><div className="filters"><input aria-label="Buscar pedidos" placeholder="Buscar cliente, comuna o ID…" value={query} onChange={e=>setQuery(e.target.value)}/><select aria-label="Estado del pedido" value={status} onChange={e=>setStatus(e.target.value)}><option value="">Todos los estados</option>{ESTADOS.map(s=><option key={s} value={s}>{ETIQUETA_ESTADO[s]} ({data.pedidos.filter(p=>p.estado===s).length})</option>)}</select><button className="primary" onClick={()=>{setCreandoPedido(true); setAviso('');}}>Nuevo pedido</button></div><OrderTable rows={pedidos} view={view} cambiarEstado={cambiarEstado} cambiando={cambiando} entregar={entregar}/></section>}
   {tab === 'Clientes' && <section><div className="filters"><input aria-label="Buscar clientes" placeholder="Buscar nombre o teléfono…" value={query} onChange={e=>setQuery(e.target.value)}/><button className="primary" onClick={()=>{setEditing('nuevo'); setAviso('');}}>Nuevo cliente</button></div><TablaClientes clientes={clientes} onEditar={c => { setEditing(c); setAviso(''); }}/></section>}
   {tab === 'Productos' && <Productos productos={data.productos} onCambio={() => setRevision(r => r + 1)}/>}
   <div hidden={tab !== 'Reportes'}><Reportes pedidos={data.pedidos} clientes={data.clientes} actualizadoEn={actualizadoEn}/></div>
-  <div hidden={tab !== 'Rutas'}><RutaEnCurso pedidos={data.pedidos} clientes={data.clientes} productos={data.productos} onActualizar={() => setRevision(r => r + 1)}/><Rutas pendientes={data.pendientes} busy={busy} onActualizar={() => setRevision(r => r + 1)} onPlanificando={setPlanning}/></div>
-  </>}{detail && <DetallePedido detail={detail} onClose={()=>setDetail(null)}/>}{editing && <FormCliente cliente={editing === 'nuevo' ? null : editing} clientes={data?.clientes || []} onClose={()=>setEditing(null)} onSaved={c=>{setAviso(editing === 'nuevo' ? `Cliente ${name(c)} creado (#${c.id}). Ya puede pedir por WhatsApp desde su número.` : `Cambios de ${name(c)} guardados.`); setEditing(null); setRevision(r=>r+1);}}/>}{creandoPedido && data && <NuevoPedido clientes={data.clientes} productos={data.productos} onClose={()=>setCreandoPedido(false)} onSaved={p=>{setAviso(`Pedido #${p.id} creado para ${p.cliente_nombre || 'el cliente'} por ${money(p.total)}. Quedó pendiente.`); setCreandoPedido(false); setRevision(r=>r+1);}}/>}</div></main></div>;
+  <div hidden={tab !== 'Rutas'}><RutaEnCurso pedidos={data.pedidos} clientes={data.clientes} productos={data.productos} onActualizar={() => setRevision(r => r + 1)} onEntregar={entregar}/><Rutas pendientes={data.pendientes} busy={busy} onActualizar={() => setRevision(r => r + 1)} onPlanificando={setPlanning}/></div>
+  </>}{detail && <DetallePedido detail={detail} onClose={()=>setDetail(null)} onEntregar={entregar}/>}{entregando && <RegistrarEntrega pedidoId={entregando} onClose={()=>setEntregando(null)} onRegistrado={entregaRegistrada}/>}{editing && <FormCliente cliente={editing === 'nuevo' ? null : editing} clientes={data?.clientes || []} onClose={()=>setEditing(null)} onSaved={c=>{setAviso(editing === 'nuevo' ? `Cliente ${name(c)} creado (#${c.id}). Ya puede pedir por WhatsApp desde su número.` : `Cambios de ${name(c)} guardados.`); setEditing(null); setRevision(r=>r+1);}}/>}{creandoPedido && data && <NuevoPedido clientes={data.clientes} productos={data.productos} onClose={()=>setCreandoPedido(false)} onSaved={p=>{setAviso(`Pedido #${p.id} creado para ${p.cliente_nombre || 'el cliente'} por ${money(p.total)}. Quedó pendiente.`); setCreandoPedido(false); setRevision(r=>r+1);}}/>}</div></main></div>;
 }
 
 // #137: columnas ordenables de la tabla de clientes. El día de reparto sigue el orden de la semana.
@@ -160,17 +172,18 @@ function TablaClientes({ clientes, onEditar }) {
   </div>;
 }
 
-function DetallePedido({ detail, onClose }) {
+function DetallePedido({ detail, onClose, onEntregar }) {
   const { historial } = detail;
   return <div className="modal" role="dialog" aria-modal="true" aria-label="Detalle del pedido"><section>
     <button autoFocus onClick={onClose}>Cerrar detalle</button><h2>Pedido #{detail.id}</h2>
     <p>{detail.cliente_nombre} · <span className={`badge ${detail.estado}`}>{ETIQUETA_ESTADO[detail.estado]}</span></p>
     <p>{detail.direccion_despacho || 'Sin dirección de despacho informada'}</p>
-    {detail.lineas.map((l,i)=><p key={i}>{l.cantidad_solicitada} × {l.producto_nombre} · {money(l.precio_unitario)}</p>)}<strong>Total: {money(detail.total)}</strong>
+    {detail.lineas.map((l,i)=><p key={i}>{l.cantidad_solicitada} × {l.producto_nombre} · {money(l.precio_unitario)}{l.cantidad_entregada != null && ` · entregó ${l.cantidad_entregada}`}</p>)}<strong>Total: {money(detail.total)}</strong>
+    {puedeEntregarse(detail.estado) && <p><button className="primary" onClick={() => onEntregar(detail.id)}>Registrar entrega</button></p>}
     <h3>Historial de estados</h3>
     {historial.error ? <p className="error">No se pudo cargar el historial: {historial.error}</p>
       : historial.length ? <ol className="historial">{historial.map((h, i) => <li key={i}><strong>{textoCambio(h)}</strong><small>{fechaHora(h.fecha)} · {textoAccion(h.accion)} · {h.usuario}</small></li>)}</ol>
-      : <p className="muted">Sin cambios de estado registrados. Los pedidos creados por el bot y las entregas todavía no quedan en el historial.</p>}
+      : <p className="muted">Sin cambios de estado registrados. Los pedidos creados por el bot no quedan en el historial.</p>}
   </section></div>;
 }
 // #137: columnas ordenables de la tabla de pedidos (Resumen y Pedidos). El estado sigue el ciclo del pedido.
@@ -182,7 +195,7 @@ const COLUMNAS_PEDIDO = {
   total: p => Number(p.total),
 };
 
-function OrderTable({ rows, view, cambiarEstado, cambiando }) {
+function OrderTable({ rows, view, cambiarEstado, cambiando, entregar }) {
   const { filas, encabezado } = useOrden(rows, COLUMNAS_PEDIDO);
   return <div className="table">
     <table className="tabla-movil">
@@ -212,6 +225,7 @@ function OrderTable({ rows, view, cambiarEstado, cambiando }) {
                     {cambiando === p.id ? 'Guardando…' : accion.texto}
                   </button>
                 : '—'}
+              {p.estado === 'en_despacho' && <button aria-label={`Registrar entrega: pedido ${p.id}`} disabled={cambiando !== null} onClick={() => entregar(p.id)}>Entregado</button>}
             </td>
             <td className="celda-acciones">
               <button aria-label={`Ver pedido ${p.id}`} onClick={() => view(p.id)}>Ver detalle</button>
