@@ -10,6 +10,8 @@ import FormCliente from './FormCliente';
 import { vigilarInactividad } from './inactividad';
 import Landing from './Landing';
 import NuevoPedido from './NuevoPedido';
+import { useOrden } from './Ordenable';
+import { posicionEn } from './ordenar';
 import Productos from './Productos';
 import RegistrarEntrega from './RegistrarEntrega';
 import Reportes from './Reportes';
@@ -113,16 +115,63 @@ function Dashboard({ session, onLogout, onInactividad }) {
   const clientes = (data?.clientes || []).filter(c => `${name(c)} ${c.telefono || ''}`.toLowerCase().includes(query.toLowerCase()));
   // En el celular las pestañas van en una fila que se desliza: la elegida se trae a la vista.
   const navButton = t => <button key={t} className={tab === t ? 'active' : ''} aria-current={tab === t ? 'page' : undefined} onClick={e => { setTab(t); setQuery(''); setStatus(''); setAviso(''); e.currentTarget.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }}>{t}</button>;
-  const dia = valor => DIAS_REPARTO.find(([v]) => v === valor)?.[1] || valor;
   return <div className="shell"><aside><Brand blanco/><nav className="pestanas" aria-label="Secciones del panel"><div className="nav-label">Operación</div>{['Resumen','Pedidos','Clientes','Productos','Rutas'].map(navButton)}<div className="nav-label">Análisis</div>{navButton('Reportes')}</nav><div className="account"><small>{session.user.email}</small><button onClick={async () => { await logout(); onLogout(); }}>Cerrar sesión</button></div></aside><main className="workspace"><header><span>Panel administrativo</span><span className="badge">Agua DM</span></header><div className="content"><div className="title"><div><span className="eyebrow">Centro de operaciones</span><h1>{tab}</h1><p>Consulta y organiza la información de SIGPA.</p></div><button disabled={busy || planning} onClick={() => setRevision(r => r + 1)}>Actualizar datos</button></div>{error && <p role="alert" className="error">{error}</p>}{aviso && <p role="status" className="ok">{aviso}</p>}{busy && <p role="status">Cargando información…</p>}{data && <>
   {tab === 'Resumen' && <><div className="kpis">{[['Pedidos registrados',data.pedidos.length],['Pendientes',data.pedidos.filter(p=>p.estado==='pendiente').length],['Confirmados',data.pedidos.filter(p=>p.estado==='confirmado').length],['Clientes activos',data.clientes.filter(c=>c.activo).length]].map(([label,n]) => <article key={label}><span>{label}</span><strong>{n}</strong></article>)}</div><p className="muted">Totales de todos los registros disponibles, sin filtro de fecha.</p><section><h2>Últimos pedidos</h2><OrderTable rows={data.pedidos.slice(0,8)} view={view} cambiarEstado={cambiarEstado} cambiando={cambiando} entregar={entregar}/></section></>}
   {tab === 'Pedidos' && <section><div className="filters"><input aria-label="Buscar pedidos" placeholder="Buscar cliente, comuna o ID…" value={query} onChange={e=>setQuery(e.target.value)}/><select aria-label="Estado del pedido" value={status} onChange={e=>setStatus(e.target.value)}><option value="">Todos los estados</option>{ESTADOS.map(s=><option key={s} value={s}>{ETIQUETA_ESTADO[s]} ({data.pedidos.filter(p=>p.estado===s).length})</option>)}</select><button className="primary" onClick={()=>{setCreandoPedido(true); setAviso('');}}>Nuevo pedido</button></div><OrderTable rows={pedidos} view={view} cambiarEstado={cambiarEstado} cambiando={cambiando} entregar={entregar}/></section>}
-  {tab === 'Clientes' && <section><div className="filters"><input aria-label="Buscar clientes" placeholder="Buscar nombre o teléfono…" value={query} onChange={e=>setQuery(e.target.value)}/><button className="primary" onClick={()=>{setEditing('nuevo'); setAviso('');}}>Nuevo cliente</button></div><div className="table"><table className="tabla-movil"><thead><tr><th>Cliente</th><th>Teléfono</th><th>Dirección</th><th>Comuna</th><th>Tipo</th><th>Día de reparto</th><th>Estado</th><th>Acciones</th></tr></thead><tbody>{clientes.map(c=><tr key={c.id}><td data-label="Cliente">{name(c)}</td><td data-label="Teléfono">{c.telefono || '—'}</td><td data-label="Dirección">{c.direccion || 'Sin dirección'}</td><td data-label="Comuna">{c.comuna_nombre || 'Sin comuna'}</td><td data-label="Tipo">{c.tipo_cliente_nombre || '—'}</td><td data-label="Día de reparto">{c.dia_reparto ? dia(c.dia_reparto) : 'Sin asignar'}</td><td data-label="Estado">{c.activo ? 'Activo' : 'Inactivo'}</td><td className="celda-acciones"><button aria-label={`Editar a ${name(c)}`} onClick={()=>{setEditing(c); setAviso('');}}>Editar</button></td></tr>)}</tbody></table>{!clientes.length && <p>No se encontraron clientes.</p>}</div></section>}
+  {tab === 'Clientes' && <section><div className="filters"><input aria-label="Buscar clientes" placeholder="Buscar nombre o teléfono…" value={query} onChange={e=>setQuery(e.target.value)}/><button className="primary" onClick={()=>{setEditing('nuevo'); setAviso('');}}>Nuevo cliente</button></div><TablaClientes clientes={clientes} onEditar={c => { setEditing(c); setAviso(''); }}/></section>}
   {tab === 'Productos' && <Productos productos={data.productos} onCambio={() => setRevision(r => r + 1)}/>}
   <div hidden={tab !== 'Reportes'}><Reportes pedidos={data.pedidos} clientes={data.clientes} actualizadoEn={actualizadoEn}/></div>
   <div hidden={tab !== 'Rutas'}><RutaEnCurso pedidos={data.pedidos} clientes={data.clientes} productos={data.productos} onActualizar={() => setRevision(r => r + 1)} onEntregar={entregar}/><Rutas pendientes={data.pendientes} busy={busy} onActualizar={() => setRevision(r => r + 1)} onPlanificando={setPlanning}/></div>
   </>}{detail && <DetallePedido detail={detail} onClose={()=>setDetail(null)} onEntregar={entregar}/>}{entregando && <RegistrarEntrega pedidoId={entregando} onClose={()=>setEntregando(null)} onRegistrado={entregaRegistrada}/>}{editing && <FormCliente cliente={editing === 'nuevo' ? null : editing} clientes={data?.clientes || []} onClose={()=>setEditing(null)} onSaved={c=>{setAviso(editing === 'nuevo' ? `Cliente ${name(c)} creado (#${c.id}). Ya puede pedir por WhatsApp desde su número.` : `Cambios de ${name(c)} guardados.`); setEditing(null); setRevision(r=>r+1);}}/>}{creandoPedido && data && <NuevoPedido clientes={data.clientes} productos={data.productos} onClose={()=>setCreandoPedido(false)} onSaved={p=>{setAviso(`Pedido #${p.id} creado para ${p.cliente_nombre || 'el cliente'} por ${money(p.total)}. Quedó pendiente.`); setCreandoPedido(false); setRevision(r=>r+1);}}/>}</div></main></div>;
 }
+
+// #137: columnas ordenables de la tabla de clientes. El día de reparto sigue el orden de la semana.
+const COLUMNAS_CLIENTE = {
+  cliente: c => name(c),
+  telefono: c => c.telefono,
+  direccion: c => c.direccion,
+  comuna: c => c.comuna_nombre,
+  tipo: c => c.tipo_cliente_nombre,
+  dia: c => posicionEn(DIAS_REPARTO.map(([valor]) => valor))(c.dia_reparto),
+  estado: c => (c.activo ? 'Activo' : 'Inactivo'),
+};
+const dia = valor => DIAS_REPARTO.find(([v]) => v === valor)?.[1] || valor;
+
+function TablaClientes({ clientes, onEditar }) {
+  const { filas, encabezado } = useOrden(clientes, COLUMNAS_CLIENTE);
+  return <div className="table">
+    <table className="tabla-movil">
+      <thead>
+        <tr>
+          {encabezado('cliente', 'Cliente')}
+          {encabezado('telefono', 'Teléfono')}
+          {encabezado('direccion', 'Dirección')}
+          {encabezado('comuna', 'Comuna')}
+          {encabezado('tipo', 'Tipo')}
+          {encabezado('dia', 'Día de reparto')}
+          {encabezado('estado', 'Estado')}
+          <th>Acciones</th>
+        </tr>
+      </thead>
+      <tbody>
+        {filas.map(c => <tr key={c.id}>
+          <td data-label="Cliente">{name(c)}</td>
+          <td data-label="Teléfono">{c.telefono || '—'}</td>
+          <td data-label="Dirección">{c.direccion || 'Sin dirección'}</td>
+          <td data-label="Comuna">{c.comuna_nombre || 'Sin comuna'}</td>
+          <td data-label="Tipo">{c.tipo_cliente_nombre || '—'}</td>
+          <td data-label="Día de reparto">{c.dia_reparto ? dia(c.dia_reparto) : 'Sin asignar'}</td>
+          <td data-label="Estado">{c.activo ? 'Activo' : 'Inactivo'}</td>
+          <td className="celda-acciones">
+            <button aria-label={`Editar a ${name(c)}`} onClick={() => onEditar(c)}>Editar</button>
+          </td>
+        </tr>)}
+      </tbody>
+    </table>
+    {!clientes.length && <p>No se encontraron clientes.</p>}
+  </div>;
+}
+
 function DetallePedido({ detail, onClose, onEntregar }) {
   const { historial } = detail;
   return <div className="modal" role="dialog" aria-modal="true" aria-label="Detalle del pedido"><section>
@@ -137,5 +186,55 @@ function DetallePedido({ detail, onClose, onEntregar }) {
       : <p className="muted">Sin cambios de estado registrados. Los pedidos creados por el bot no quedan en el historial.</p>}
   </section></div>;
 }
-function OrderTable({ rows, view, cambiarEstado, cambiando, entregar }) { return <div className="table"><table className="tabla-movil"><thead><tr><th>Pedido</th><th>Cliente</th><th>Comuna</th><th>Estado</th><th>Total</th><th>Despacho</th><th>Detalle</th></tr></thead><tbody>{rows.map(p=>{ const accion = ACCION_DESPACHO[p.estado]; return <tr key={p.id}><td data-label="Pedido">#{p.id}</td><td data-label="Cliente">{p.cliente_nombre || `Cliente ${p.cliente_id}`}</td><td data-label="Comuna">{p.comuna_nombre || '—'}</td><td data-label="Estado"><span className={`badge ${p.estado}`}>{ETIQUETA_ESTADO[p.estado] || p.estado}</span></td><td data-label="Total">{money(p.total)}</td><td className={accion ? 'celda-acciones' : 'sin-accion'}>{accion ? <button className={p.estado === 'confirmado' ? 'despachar' : ''} disabled={cambiando !== null} aria-label={`${accion.texto}: pedido ${p.id}`} onClick={()=>cambiarEstado(p)}>{cambiando === p.id ? 'Guardando…' : accion.texto}</button> : '—'}{p.estado === 'en_despacho' && <button aria-label={`Registrar entrega: pedido ${p.id}`} disabled={cambiando !== null} onClick={()=>entregar(p.id)}>Entregado</button>}</td><td className="celda-acciones"><button aria-label={`Ver pedido ${p.id}`} onClick={()=>view(p.id)}>Ver detalle</button></td></tr>; })}</tbody></table>{!rows.length && <p>No hay pedidos para mostrar.</p>}</div>; }
+// #137: columnas ordenables de la tabla de pedidos (Resumen y Pedidos). El estado sigue el ciclo del pedido.
+const COLUMNAS_PEDIDO = {
+  pedido: p => p.id,
+  cliente: p => p.cliente_nombre,
+  comuna: p => p.comuna_nombre,
+  estado: p => posicionEn(ESTADOS)(p.estado),
+  total: p => Number(p.total),
+};
+
+function OrderTable({ rows, view, cambiarEstado, cambiando, entregar }) {
+  const { filas, encabezado } = useOrden(rows, COLUMNAS_PEDIDO);
+  return <div className="table">
+    <table className="tabla-movil">
+      <thead>
+        <tr>
+          {encabezado('pedido', 'Pedido')}
+          {encabezado('cliente', 'Cliente')}
+          {encabezado('comuna', 'Comuna')}
+          {encabezado('estado', 'Estado')}
+          {encabezado('total', 'Total')}
+          <th>Despacho</th>
+          <th>Detalle</th>
+        </tr>
+      </thead>
+      <tbody>
+        {filas.map(p => {
+          const accion = ACCION_DESPACHO[p.estado];
+          return <tr key={p.id}>
+            <td data-label="Pedido">#{p.id}</td>
+            <td data-label="Cliente">{p.cliente_nombre || `Cliente ${p.cliente_id}`}</td>
+            <td data-label="Comuna">{p.comuna_nombre || '—'}</td>
+            <td data-label="Estado"><span className={`badge ${p.estado}`}>{ETIQUETA_ESTADO[p.estado] || p.estado}</span></td>
+            <td data-label="Total">{money(p.total)}</td>
+            <td className={accion ? 'celda-acciones' : 'sin-accion'}>
+              {accion
+                ? <button className={p.estado === 'confirmado' ? 'despachar' : ''} disabled={cambiando !== null} aria-label={`${accion.texto}: pedido ${p.id}`} onClick={() => cambiarEstado(p)}>
+                    {cambiando === p.id ? 'Guardando…' : accion.texto}
+                  </button>
+                : '—'}
+              {p.estado === 'en_despacho' && <button aria-label={`Registrar entrega: pedido ${p.id}`} disabled={cambiando !== null} onClick={() => entregar(p.id)}>Entregado</button>}
+            </td>
+            <td className="celda-acciones">
+              <button aria-label={`Ver pedido ${p.id}`} onClick={() => view(p.id)}>Ver detalle</button>
+            </td>
+          </tr>;
+        })}
+      </tbody>
+    </table>
+    {!rows.length && <p>No hay pedidos para mostrar.</p>}
+  </div>;
+}
 createRoot(document.getElementById('root')).render(<App/>);
