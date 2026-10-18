@@ -2,7 +2,7 @@
 // se llama a `alExpirar` una sola vez. Solo cuentan las acciones del usuario: la renovación automática
 // del token no pasa por aquí. Se compara contra la hora de la última actividad, y no se usa un único
 // setTimeout, porque el navegador congela los temporizadores en pestañas de fondo o con el equipo suspendido.
-export const MINUTOS_INACTIVIDAD = 15; // Provisorio: el tiempo definitivo lo define el PO.
+export const MINUTOS_INACTIVIDAD = 15; // Para cambiar el tiempo de inactividad, modificar solo este valor.
 export const EVENTOS_ACTIVIDAD = ['pointerdown', 'keydown', 'wheel', 'touchstart', 'scroll'];
 const INTERVALO_REVISION_MS = 15_000;
 
