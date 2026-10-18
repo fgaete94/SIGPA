@@ -1,6 +1,6 @@
 // Campos de texto que el panel permite editar; los vacíos opcionales se guardan como null.
 const TEXTO = ['nombre', 'apellido_paterno', 'apellido_materno', 'telefono', 'direccion'];
-const IDS = ['tipo_cliente_id', 'sector_id'];
+const IDS = ['tipo_cliente_id','comuna_id', 'sector_id'];
 const OBLIGATORIOS = { nombre: 'El nombre es obligatorio.', telefono: 'El teléfono es obligatorio.' };
 // Valores del enum dia_semana de la base (sin tilde) y cómo se muestran.
 export const DIAS_REPARTO = [['Lunes', 'Lunes'], ['Martes', 'Martes'], ['Miercoles', 'Miércoles'], ['Jueves', 'Jueves'], ['Viernes', 'Viernes']];
@@ -10,6 +10,16 @@ export function normalizarTelefono(telefono) {
   const digitos = String(telefono ?? '').replace(/\D/g, '');
   return digitos.length === 9 ? `56${digitos}` : digitos;
 }
+
+// Historia #136: el sector es opcional y se elige entre los de la comuna del cliente.
+export const sectoresDeComuna = (sectores, comunaId) => sectores.filter(s => String(s.comuna_id) === String(comunaId));
+
+// Al cambiar la comuna se conserva el sector solo si pertenece a la nueva comuna.
+export function elegirComuna(form, comunaId, sectores) {
+  const sigueValido = sectoresDeComuna(sectores, comunaId).some(s => String(s.id) === form.sector_id);
+  return { ...form, comuna_id: comunaId, sector_id: sigueValido ? form.sector_id : '' };
+}
+
 export const telefonoRepetido = (telefono, clientes, exceptoId) => clientes.find(c => c.id !== exceptoId && normalizarTelefono(c.telefono) === telefono);
 
 export function clienteForm(c = {}) {
@@ -42,6 +52,7 @@ const repetido = c => ({ error: `Ya existe un cliente con ese teléfono: ${[c.no
 export function nuevoCliente(form, clientes = []) {
   const { valores, aviso, error } = leerForm(form);
   if (error) return { error };
+  if (!valores.comuna_id) return { error: 'La comuna es obligatoria.' };
   const otro = telefonoRepetido(valores.telefono, clientes);
   if (otro) return repetido(otro);
   return aviso ? { datos: valores, aviso } : { datos: valores };

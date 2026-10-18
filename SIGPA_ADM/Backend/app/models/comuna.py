@@ -13,3 +13,4 @@ class Comuna(Base):
     nombre: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
 
     sectores: Mapped[list["Sector"]] = relationship("Sector", back_populates="comuna")
+    clientes: Mapped[list["Cliente"]] = relationship("Cliente", back_populates="comuna")

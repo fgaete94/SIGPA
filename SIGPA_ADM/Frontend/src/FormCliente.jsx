@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api } from './api';
-import { DIAS_REPARTO, cambiosCliente, clienteForm, nuevoCliente } from './clientes';
+import { DIAS_REPARTO, cambiosCliente, clienteForm, elegirComuna, nuevoCliente, sectoresDeComuna } from './clientes';
 
 const nombreCompleto = c => [c.nombre, c.apellido_paterno, c.apellido_materno].filter(Boolean).join(' ');
 
@@ -10,6 +10,7 @@ export default function FormCliente({ cliente, clientes, onClose, onSaved }) {
   const nuevo = !cliente;
   const [form, setForm] = useState(() => clienteForm(cliente || {}));
   const [tipos, setTipos] = useState([]);
+  const [comunas, setComunas] = useState([]);
   const [sectores, setSectores] = useState([]);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -17,6 +18,7 @@ export default function FormCliente({ cliente, clientes, onClose, onSaved }) {
     const controller = new AbortController();
     const cargar = (ruta, guardar, que) => api(ruta, { signal: controller.signal }).then(guardar).catch(e => { if (e.name !== 'AbortError') setError(`No se pudieron cargar ${que}: ${e.message}`); });
     cargar('/tipos-cliente', setTipos, 'los tipos de cliente');
+    cargar('/comunas', setComunas, 'las comunas');
     cargar('/sectores', setSectores, 'los sectores');
     return () => controller.abort();
   }, []);
@@ -50,10 +52,13 @@ export default function FormCliente({ cliente, clientes, onClose, onSaved }) {
     {resultado.aviso && <p className="notice">{resultado.aviso}</p>}
     {field('direccion', 'Dirección', { placeholder: 'Calle y número, depto o block' })}
     <div className="campos">
-      <label>Sector<select value={form.sector_id} onChange={e => set('sector_id', e.target.value)}><option value="">Sin asignar</option>{actual(sectores, cliente?.sector_id, `Sector ${cliente?.sector_id}`)}{sectores.map(s => <option key={s.id} value={s.id}>{s.comuna_nombre} · {s.nombre}</option>)}</select></label>
-      <label>Día de reparto<select value={form.dia_reparto} onChange={e => set('dia_reparto', e.target.value)}><option value="">Sin asignar</option>{DIAS_REPARTO.map(([valor, texto]) => <option key={valor} value={valor}>{texto}</option>)}</select></label>
+      <label>Comuna<select value={form.comuna_id} required={nuevo} onChange={e => setForm(f => elegirComuna(f, e.target.value, sectores))}><option value="">{nuevo ? 'Elige una comuna' : 'Sin asignar'}</option>{actual(comunas, cliente?.comuna_id, cliente?.comuna_nombre || `Comuna ${cliente?.comuna_id}`)}{comunas.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}</select></label>
+      <label>Sector (opcional)<select value={form.sector_id} disabled={!form.comuna_id} onChange={e => set('sector_id', e.target.value)}><option value="">{form.comuna_id ? 'Sin sector' : 'Elige primero la comuna'}</option>{form.sector_id && !sectoresDeComuna(sectores, form.comuna_id).some(s => String(s.id) === form.sector_id) && <option value={form.sector_id}>{`Sector ${form.sector_id}`}</option>}{sectoresDeComuna(sectores, form.comuna_id).map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}</select></label>
     </div>
-    <label>Tipo de cliente<select value={form.tipo_cliente_id} onChange={e => set('tipo_cliente_id', e.target.value)}><option value="">Sin asignar</option>{actual(tipos, cliente?.tipo_cliente_id, cliente?.tipo_cliente_nombre || `Tipo ${cliente?.tipo_cliente_id}`)}{tipos.map(t => <option key={t.id} value={t.id}>{t.nombre}</option>)}</select></label>
+    <div className="campos">
+      <label>Día de reparto<select value={form.dia_reparto} onChange={e => set('dia_reparto', e.target.value)}><option value="">Sin asignar</option>{DIAS_REPARTO.map(([valor, texto]) => <option key={valor} value={valor}>{texto}</option>)}</select></label>
+      <label>Tipo de cliente<select value={form.tipo_cliente_id} onChange={e => set('tipo_cliente_id', e.target.value)}><option value="">Sin asignar</option>{actual(tipos, cliente?.tipo_cliente_id, cliente?.tipo_cliente_nombre || `Tipo ${cliente?.tipo_cliente_id}`)}{tipos.map(t => <option key={t.id} value={t.id}>{t.nombre}</option>)}</select></label>
+    </div>
     {check('activo', 'Cliente activo')}{check('opt_out_whatsapp', 'No desea recibir recordatorios por WhatsApp')}
     {!form.dia_reparto && form.activo && !form.opt_out_whatsapp && <p className="muted">Sin día de reparto no recibe el recordatorio del día anterior.</p>}
     {!nuevo && form.direccion.trim() !== (cliente.direccion || '') && <p className="notice">Cambiar la dirección no actualiza las coordenadas guardadas del cliente.</p>}

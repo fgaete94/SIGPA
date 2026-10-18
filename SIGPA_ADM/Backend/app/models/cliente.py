@@ -22,6 +22,8 @@ class Cliente(Base):
     telefono: Mapped[str | None] = mapped_column(String(30), nullable=True)
     direccion: Mapped[str | None] = mapped_column(String(255), nullable=True)
     sector_id: Mapped[int | None] = mapped_column(ForeignKey("sector.id"), nullable=True)
+    # Historia #136: la comuna se guarda en el cliente; el sector es opcional y, si existe, es de esta comuna.
+    comuna_id: Mapped[int | None] = mapped_column(ForeignKey("comuna.id"), nullable=True)
     tipo_cliente_id: Mapped[int | None] = mapped_column(ForeignKey("tipo_cliente.id"), nullable=True)
     dia_reparto: Mapped[DiaSemana | None] = mapped_column(
         SAEnum(
@@ -41,6 +43,7 @@ class Cliente(Base):
     longitud: Mapped[float | None] = mapped_column(Numeric(9, 6), nullable=True)
 
     sector: Mapped["Sector"] = relationship("Sector", back_populates="clientes")
+    comuna: Mapped["Comuna"] = relationship("Comuna", back_populates="clientes")
     tipo_cliente: Mapped["TipoCliente"] = relationship("TipoCliente", back_populates="clientes")
     pedidos: Mapped[list["Pedido"]] = relationship("Pedido", back_populates="cliente")
     productos_habituales: Mapped[list["ClienteProductoHabitual"]] = relationship(
