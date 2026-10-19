@@ -205,6 +205,18 @@ button.despachar{background:#e3e0fb;border-color:#cdc6f5;color:#3b2f9a}
 .modal .total strong{font:700 22px/1 'Barlow Condensed',sans-serif;color:var(--azul);margin-left:6px}
 .modal .total small{display:block;color:var(--gris);font-size:13px;margin-top:4px}
 .modal code{font-size:13px}
+/* Ficha del cliente (#102) */
+.modal section.ficha{width:min(720px,100%);max-height:90vh}
+.etiquetas-ficha{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 14px}
+.datos-ficha{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 20px;margin:0 0 16px}
+.datos-ficha dt{color:var(--gris);font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase}
+.datos-ficha dd{margin:2px 0 0;color:var(--tinta);font-weight:600;overflow-wrap:anywhere}
+.kpis.kpis-ficha{grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:0 0 6px}
+.kpis-ficha article{padding:12px 14px;border-radius:12px}
+.kpis-ficha article span{font-size:13px}
+.kpis-ficha strong{margin-top:6px;font-size:clamp(20px,3vw,28px);overflow-wrap:anywhere}
+.ficha h3{margin:18px 0 6px}
+@media (max-width:640px){.datos-ficha{grid-template-columns:minmax(0,1fr)}.kpis.kpis-ficha{grid-template-columns:repeat(2,minmax(0,1fr))}}
 /* Vista previa de la ruta (#87): más ancha que los demás modales, una fila por parada. */
 .modal section.vista-previa{width:min(760px,100%);max-height:90vh}
 .vista-previa h3{margin:18px 0 6px}

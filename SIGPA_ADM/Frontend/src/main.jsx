@@ -4,6 +4,7 @@ import { login, logout, onSessionExpired, restoreSession } from './auth';
 import { api } from './api';
 import { DIAS_REPARTO } from './clientes';
 import Despacho from './Despacho';
+import FichaDelCliente from './FichaDelCliente';
 import { ACCION_DESPACHO, ESTADOS, ETIQUETA_ESTADO, textoAccion, textoCambio } from './estados';
 import { puedeEntregarse } from './entregas';
 import { fechaHora } from './fechas';
@@ -65,6 +66,7 @@ function Dashboard({ session, onLogout, onInactividad }) {
   const [editing, setEditing] = useState(null);
   const [creandoPedido, setCreandoPedido] = useState(false);
   const [entregando, setEntregando] = useState(null);
+  const [ficha, setFicha] = useState(null);
   const [aviso, setAviso] = useState('');
   const [actualizadoEn, setActualizadoEn] = useState(null);
   useEffect(() => {
@@ -120,11 +122,11 @@ function Dashboard({ session, onLogout, onInactividad }) {
   {tab === 'Resumen' && <><div className="kpis">{[['Pedidos registrados',data.pedidos.length],['Pendientes',data.pedidos.filter(p=>p.estado==='pendiente').length],['Confirmados',data.pedidos.filter(p=>p.estado==='confirmado').length],['Clientes activos',data.clientes.filter(c=>c.activo).length]].map(([label,n]) => <article key={label}><span>{label}</span><strong>{n}</strong></article>)}</div><p className="muted">Totales de todos los registros disponibles, sin filtro de fecha.</p><section><h2>Últimos pedidos</h2><OrderTable rows={data.pedidos.slice(0,8)} view={view} cambiarEstado={cambiarEstado} cambiando={cambiando} entregar={entregar}/></section></>}
   {tab === 'Despacho' && <Despacho pedidos={data.pedidos} tabla={filas => <OrderTable rows={filas} view={view} cambiarEstado={cambiarEstado} cambiando={cambiando} entregar={entregar}/>}/>}
   {tab === 'Pedidos' && <section><div className="filters"><input aria-label="Buscar pedidos" placeholder="Buscar cliente, comuna o ID…" value={query} onChange={e=>setQuery(e.target.value)}/><select aria-label="Estado del pedido" value={status} onChange={e=>setStatus(e.target.value)}><option value="">Todos los estados</option>{ESTADOS.map(s=><option key={s} value={s}>{ETIQUETA_ESTADO[s]} ({data.pedidos.filter(p=>p.estado===s).length})</option>)}</select><button className="primary" onClick={()=>{setCreandoPedido(true); setAviso('');}}>Nuevo pedido</button></div><OrderTable rows={pedidos} view={view} cambiarEstado={cambiarEstado} cambiando={cambiando} entregar={entregar}/></section>}
-  {tab === 'Clientes' && <section><div className="filters"><input aria-label="Buscar clientes" placeholder="Buscar nombre o teléfono…" value={query} onChange={e=>setQuery(e.target.value)}/><button className="primary" onClick={()=>{setEditing('nuevo'); setAviso('');}}>Nuevo cliente</button></div><TablaClientes clientes={clientes} onEditar={c => { setEditing(c); setAviso(''); }}/></section>}
+  {tab === 'Clientes' && <section><div className="filters"><input aria-label="Buscar clientes" placeholder="Buscar nombre o teléfono…" value={query} onChange={e=>setQuery(e.target.value)}/><button className="primary" onClick={()=>{setEditing('nuevo'); setAviso('');}}>Nuevo cliente</button></div><TablaClientes clientes={clientes} onEditar={c => { setEditing(c); setAviso(''); }} onVerFicha={id => { setAviso(''); setFicha(id); }}/></section>}
   {tab === 'Productos' && <Productos productos={data.productos} onCambio={() => setRevision(r => r + 1)}/>}
   <div hidden={tab !== 'Reportes'}><Reportes pedidos={data.pedidos} clientes={data.clientes} actualizadoEn={actualizadoEn}/></div>
   <div hidden={tab !== 'Rutas'}><RutaEnCurso pedidos={data.pedidos} clientes={data.clientes} productos={data.productos} onActualizar={() => setRevision(r => r + 1)} onEntregar={entregar}/><Rutas pendientes={data.pendientes} busy={busy} onActualizar={() => setRevision(r => r + 1)} onPlanificando={setPlanning}/></div>
-  </>}{detail && <DetallePedido detail={detail} onClose={()=>setDetail(null)} onEntregar={entregar}/>}{entregando && <RegistrarEntrega pedidoId={entregando} onClose={()=>setEntregando(null)} onRegistrado={entregaRegistrada}/>}{editing && <FormCliente cliente={editing === 'nuevo' ? null : editing} clientes={data?.clientes || []} onClose={()=>setEditing(null)} onSaved={c=>{setAviso(editing === 'nuevo' ? `Cliente ${name(c)} creado (#${c.id}). Ya puede pedir por WhatsApp desde su número.` : `Cambios de ${name(c)} guardados.`); setEditing(null); setRevision(r=>r+1);}}/>}{creandoPedido && data && <NuevoPedido clientes={data.clientes} productos={data.productos} onClose={()=>setCreandoPedido(false)} onSaved={p=>{setAviso(`Pedido #${p.id} creado para ${p.cliente_nombre || 'el cliente'} por ${money(p.total)}. Quedó pendiente.`); setCreandoPedido(false); setRevision(r=>r+1);}}/>}</div></main></div>;
+  </>}{detail && <DetallePedido detail={detail} onClose={()=>setDetail(null)} onEntregar={entregar}/>}{ficha && <FichaDelCliente clienteId={ficha} onClose={()=>setFicha(null)} onVerPedido={id => { setFicha(null); view(id); }} onEditar={c => { setFicha(null); setEditing(data?.clientes.find(x => x.id === c.id) || c); }}/>}{entregando && <RegistrarEntrega pedidoId={entregando} onClose={()=>setEntregando(null)} onRegistrado={entregaRegistrada}/>}{editing && <FormCliente cliente={editing === 'nuevo' ? null : editing} clientes={data?.clientes || []} onClose={()=>setEditing(null)} onSaved={c=>{setAviso(editing === 'nuevo' ? `Cliente ${name(c)} creado (#${c.id}). Ya puede pedir por WhatsApp desde su número.` : `Cambios de ${name(c)} guardados.`); setEditing(null); setRevision(r=>r+1);}}/>}{creandoPedido && data && <NuevoPedido clientes={data.clientes} productos={data.productos} onClose={()=>setCreandoPedido(false)} onSaved={p=>{setAviso(`Pedido #${p.id} creado para ${p.cliente_nombre || 'el cliente'} por ${money(p.total)}. Quedó pendiente.`); setCreandoPedido(false); setRevision(r=>r+1);}}/>}</div></main></div>;
 }
 
 // #137: columnas ordenables de la tabla de clientes. El día de reparto sigue el orden de la semana.
@@ -139,7 +141,7 @@ const COLUMNAS_CLIENTE = {
 };
 const dia = valor => DIAS_REPARTO.find(([v]) => v === valor)?.[1] || valor;
 
-function TablaClientes({ clientes, onEditar }) {
+function TablaClientes({ clientes, onEditar, onVerFicha }) {
   const { filas, encabezado } = useOrden(clientes, COLUMNAS_CLIENTE);
   return <div className="table">
     <table className="tabla-movil">
@@ -165,6 +167,7 @@ function TablaClientes({ clientes, onEditar }) {
           <td data-label="Día de reparto">{c.dia_reparto ? dia(c.dia_reparto) : 'Sin asignar'}</td>
           <td data-label="Estado">{c.activo ? 'Activo' : 'Inactivo'}</td>
           <td className="celda-acciones">
+            <button aria-label={`Ver ficha de ${name(c)}`} onClick={() => onVerFicha(c.id)}>Ver ficha</button>
             <button aria-label={`Editar a ${name(c)}`} onClick={() => onEditar(c)}>Editar</button>
           </td>
         </tr>)}
