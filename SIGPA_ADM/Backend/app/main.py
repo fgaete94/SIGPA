@@ -3,7 +3,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import auth, clientes, comunas, internal, pedidos, productos, rutas, sectores, tipos_cliente, whatsapp
+from app.api.routes import auth, clientes, comunas, internal, pedidos, productos, reportes, rutas, sectores, tipos_cliente, whatsapp
 from app.core.config import settings
 
 app = FastAPI(title=settings.PROJECT_NAME)
@@ -27,6 +27,7 @@ app.include_router(sectores.router, prefix="/sectores")
 app.include_router(pedidos.router, prefix="/pedidos")
 app.include_router(internal.router)
 app.include_router(rutas.router, prefix="/rutas")
+app.include_router(reportes.router, prefix="/reportes")
 
 
 @app.get("/health")
