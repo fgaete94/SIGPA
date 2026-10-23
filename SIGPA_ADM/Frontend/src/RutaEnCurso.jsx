@@ -4,12 +4,13 @@ import { ETIQUETA_ESTADO, despachables } from './estados';
 import { fechaCorta } from './fechas';
 import HojaDeRuta from './HojaDeRuta';
 import { enlaceComoLlegar, enlaceWhatsApp, rutaEnCurso, textoRuta } from './reparto';
-import { moveStop } from './route';
+import { useArrastre } from './Arrastre';
+import { moverA } from './route';
 
 // Historia #85: la ruta guardada en la base, para coordinar al repartidor (imprimir, WhatsApp o copiar).
 export default function RutaEnCurso({ pedidos, clientes, productos, onActualizar, onEntregar }) {
   const { paradas: guardadas, repetidos, sinUbicacion } = useMemo(() => rutaEnCurso(pedidos, clientes), [pedidos, clientes]);
-  // Reordenar solo cambia esta vista (impresión y texto); guardar el orden es la historia #87.
+  // Reordenar (arrastrando) solo cambia esta vista: impresión y texto. Para guardar otro orden se vuelve a calcular la ruta (#87).
   const [paradas, setParadas] = useState(guardadas);
   const [copiado, setCopiado] = useState('');
   // Copia de las paradas al abrir la hoja de ruta: una recarga de datos no la cambia mientras está abierta.
@@ -17,7 +18,7 @@ export default function RutaEnCurso({ pedidos, clientes, productos, onActualizar
   useEffect(() => setParadas(guardadas), [guardadas]);
   const manual = paradas.some((p, i) => p.id !== guardadas[i]?.id);
   const texto = textoRuta(paradas, fechaCorta(new Date().toISOString()));
-  const mover = (i, delta) => setParadas(ps => moveStop(ps, i, delta));
+  const { propsFila, propsManilla } = useArrastre(paradas.length, (desde, hasta) => setParadas(ps => moverA(ps, desde, hasta)));
 
   async function copiar() {
     try { await navigator.clipboard.writeText(texto); setCopiado('Ruta copiada. Pégala en el chat del repartidor.'); }
@@ -60,7 +61,9 @@ export default function RutaEnCurso({ pedidos, clientes, productos, onActualizar
     {manual && <p className="notice">Orden cambiado solo para imprimir o enviar. No se guarda en el servidor: al actualizar los datos vuelve al orden planificado. <button className="no-print enlace" onClick={() => setParadas(guardadas)}>Volver al orden planificado</button></p>}
     {paradas.map((p, i) => {
       const enlace = enlaceComoLlegar(p);
-      return <div className="stop" key={p.id}>
+      const fila = propsFila(i);
+      return <div key={p.id} {...fila} className={`stop ${fila.className}`}>
+        <button {...propsManilla(i, p.cliente_nombre || `pedido ${p.id}`)} className="manilla no-print">⠿</button>
         <b className="number">{i + 1}</b>
         <span>
           <strong>{p.cliente_nombre || `Cliente ${p.cliente_id}`} · #{p.id}</strong>
@@ -70,8 +73,6 @@ export default function RutaEnCurso({ pedidos, clientes, productos, onActualizar
         <div className="no-print acciones-parada">
           {enlace && <a className="boton" href={enlace} target="_blank" rel="noopener noreferrer">Cómo llegar</a>}
           <button aria-label={`Registrar entrega de la parada ${i + 1}`} onClick={() => onEntregar(p.id)}>Entregado</button>
-          <button aria-label={`Subir parada ${i + 1}`} disabled={i === 0} onClick={() => mover(i, -1)}>↑</button>
-          <button aria-label={`Bajar parada ${i + 1}`} disabled={i === paradas.length - 1} onClick={() => mover(i, 1)}>↓</button>
         </div>
       </div>;
     })}

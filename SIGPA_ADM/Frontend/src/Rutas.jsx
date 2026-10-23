@@ -69,7 +69,7 @@ export default function Rutas({ pendientes, busy, onActualizar, onPlanificando }
     {vista && <VistaPreviaRuta estado={vista} onCambiar={setVista} onCancelar={cerrarVista} onConfirmar={confirmar} onRecalcular={calcular} guardando={guardando} error={errorVista}/>}
     {result && <section className="no-print">
       <div className="title"><h2>Última planificación</h2><button onClick={() => setResult(null)}>Ocultar</button></div>
-      <p role="status" className="ok">Se confirmaron {result.pedidos_confirmados} pedidos: {result.ruta.length} en la ruta{result.sin_resolver?.length ? ` y ${result.sin_resolver.length} sin ubicación` : ''}. El orden quedó guardado y se ve en "Ruta en curso".</p>
+      <p role="status" className="ok">Se confirmaron {result.pedidos_confirmados} pedidos: {result.ruta.length} en la ruta{result.sin_resolver?.length ? ` y ${result.sin_resolver.length} sin ubicación` : ''}.{result.ruta.length ? ' El orden quedó guardado y se ve en "Ruta en curso".' : ' Ninguno entró a la ruta: quedaron marcados para revisar su dirección.'}</p>
       {result.sin_resolver?.length > 0 && <div className="error"><h3>Pedidos sin ubicación resuelta</h3>{result.sin_resolver.map(p => <p key={p.pedido_id}>#{p.pedido_id} · {p.cliente_nombre}: {p.motivo}</p>)}<p>Quedaron confirmados pero fuera de la ruta. Aparecen en "Preparar ruta" como "Dirección por revisar": corrige su ubicación y vuelve a planificar.</p></div>}
       {result.confirmados_con_orden_fuera_de_solicitud?.length > 0 && <p className="notice">Hay {result.confirmados_con_orden_fuera_de_solicitud.length} pedidos confirmados con orden de otras planificaciones: aparecen mezclados en "Ruta en curso".</p>}
     </section>}

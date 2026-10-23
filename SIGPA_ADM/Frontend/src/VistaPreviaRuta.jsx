@@ -1,32 +1,35 @@
 import React, { useEffect, useRef } from 'react';
-import { cambiada, enlacePunto, mover, puedeConfirmar, reponer, restablecer, sacar } from './vistaPrevia';
+import { createPortal } from 'react-dom';
+import { useArrastre } from './Arrastre';
+import { cambiada, enlacePunto, moverParada, puedeConfirmar, reponer, restablecer, sacar } from './vistaPrevia';
 
 const paradasTexto = n => (n === 1 ? '1 parada' : `${n} paradas`);
 
 // Historia #87: ruta propuesta por n8n, todavía sin guardar. Se puede reordenar o sacar paradas por
 // factores que el cálculo no conoce (horarios, un accidente, una calle cortada) y recién después confirmar.
+// Las paradas se reordenan arrastrándolas. Se muestra sobre toda la página (portal): cambiar de pestaña no la oculta.
 export default function VistaPreviaRuta({ estado, onCambiar, onCancelar, onConfirmar, onRecalcular, guardando, error }) {
   const titulo = useRef(null);
   useEffect(() => { titulo.current?.focus(); }, []);
   const modificada = cambiada(estado);
   const { paradas, fuera, sinResolver } = estado;
+  const { propsFila, propsManilla } = useArrastre(paradas.length, (desde, hasta) => onCambiar(moverParada(estado, desde, hasta)), { deshabilitado: guardando });
 
-  return <div className="modal" role="dialog" aria-modal="true" aria-labelledby="vista-previa-titulo"><section className="vista-previa">
+  return createPortal(<div className="modal" role="dialog" aria-modal="true" aria-labelledby="vista-previa-titulo"><section className="vista-previa">
     <span className="eyebrow">Vista previa · todavía no se guarda nada</span>
     <h2 id="vista-previa-titulo" tabIndex={-1} ref={titulo}>Ruta propuesta</h2>
-    <p>Orden calculado por el servicio de rutas. Ajústalo si hay algo que el cálculo no considera, como horarios del cliente, un accidente o una calle cortada, y confirma para guardarlo.</p>
+    <p>Orden calculado por el servicio de rutas. Ajústalo si hay algo que el cálculo no considera, como horarios del cliente, un accidente o una calle cortada: <strong>mantén presionada una parada y arrástrala</strong> a su nuevo lugar. Después confirma para guardarlo.</p>
     {modificada && <p className="notice">Cambiaste la ruta propuesta. <button type="button" className="enlace" onClick={() => onCambiar(restablecer(estado))}>Volver al orden propuesto</button></p>}
 
     <h3>{paradasTexto(paradas.length)}</h3>
     {!paradas.length && <p className="muted">No queda ninguna parada en la ruta.</p>}
     <ol className="paradas-previa">
-      {paradas.map((p, i) => <li key={p.pedido_id}>
+      {paradas.map((p, i) => <li key={p.pedido_id} {...propsFila(i)}>
+        <button {...propsManilla(i, p.cliente_nombre || `pedido ${p.pedido_id}`)}>⠿</button>
         <b className="number">{i + 1}</b>
         <span><strong>{p.cliente_nombre || `Pedido #${p.pedido_id}`} · #{p.pedido_id}</strong><small>{p.direccion_texto || 'Sin dirección registrada'}</small></span>
         <span className="acciones-parada">
           <a className="boton" href={enlacePunto(p)} target="_blank" rel="noopener noreferrer" aria-label={`Ver en el mapa la parada ${i + 1}`}>Mapa</a>
-          <button type="button" aria-label={`Subir parada ${i + 1}`} disabled={i === 0 || guardando} onClick={() => onCambiar(mover(estado, i, -1))}>↑</button>
-          <button type="button" aria-label={`Bajar parada ${i + 1}`} disabled={i === paradas.length - 1 || guardando} onClick={() => onCambiar(mover(estado, i, 1))}>↓</button>
           <button type="button" aria-label={`Sacar de la ruta el pedido ${p.pedido_id}`} disabled={guardando} onClick={() => onCambiar(sacar(estado, p.pedido_id))}>Sacar</button>
         </span>
       </li>)}
@@ -57,5 +60,5 @@ export default function VistaPreviaRuta({ estado, onCambiar, onCancelar, onConfi
         {guardando ? 'Guardando…' : paradas.length ? `Confirmar ruta (${paradasTexto(paradas.length)})` : 'Confirmar y marcar para revisión'}
       </button>
     </div>
-  </section></div>;
+  </section></div>, document.body);
 }

@@ -240,6 +240,15 @@ button.despachar{background:#e3e0fb;border-color:#cdc6f5;color:#3b2f9a}
 .paradas-previa.fuera li{opacity:.8}
 .paradas-previa .number{font-size:16px;padding:5px 9px}
 @media (max-width:640px){.paradas-previa li{flex-wrap:wrap}.paradas-previa .acciones-parada{width:100%;padding-left:40px}.paradas-previa.fuera .acciones-parada{padding-left:0}}
+/* Ordenar arrastrando (vista previa y ruta en curso): la fila sigue al puntero y las demás se corren. */
+.ordenable{position:relative;background:var(--superficie);transition:transform .18s var(--ease-out),box-shadow .18s ease}
+.ordenable.arrastrada{z-index:2;transition:none;border-radius:10px;box-shadow:0 10px 28px rgba(16,21,74,.22);outline:2px solid var(--azul-2);cursor:grabbing}
+@media (hover:hover) and (pointer:fine){.ordenable:not(.arrastrada){cursor:grab}.ordenable:not(.arrastrada):hover{background:var(--fondo)}}
+body.arrastrando-lista{user-select:none;-webkit-user-select:none;cursor:grabbing}
+button.manilla{flex:none;padding:6px 4px;border:0;background:none;color:var(--gris);font-size:20px;line-height:1;cursor:grab;touch-action:none}
+button.manilla:disabled{visibility:hidden}
+@media (pointer:coarse){button.manilla{min-width:40px;min-height:44px;font-size:24px}}
+@media (prefers-reduced-motion:reduce){.ordenable{transition:none}}
 /* Despacho (#67): un bloque por día de reparto y, dentro, una tabla por comuna. */
 .filtros-despacho select{flex:1 1 180px}
 .resumen-despacho{margin:0 0 4px;font-weight:600;color:var(--tinta)}

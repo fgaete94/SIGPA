@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cambiada, datosConfirmar, enlacePunto, estadoVistaPrevia, mover, puedeConfirmar, reponer, restablecer, sacar } from './vistaPrevia.js';
+import { cambiada, datosConfirmar, enlacePunto, estadoVistaPrevia, mover, moverParada, puedeConfirmar, reponer, restablecer, sacar } from './vistaPrevia.js';
 
 const parada = (pedido_id, orden_entrega) => ({ pedido_id, orden_entrega, cliente_nombre: `C${pedido_id}`, direccion_texto: `Calle ${pedido_id}`, latitud: -33 - pedido_id / 100, longitud: -71.5, version: '2026-10-18T12:00:00.123456' });
 const respuesta = {
@@ -55,4 +55,11 @@ test('sin direcciones ubicadas se puede confirmar para marcarlas; sin nada, no',
 
 test('enlace al punto que ubicó n8n', () => {
   assert.equal(enlacePunto({ latitud: -33.05, longitud: -71.6 }), 'https://www.google.com/maps/search/?api=1&query=-33.05,-71.6');
+});
+
+test('arrastrar una parada a otra posición cambia la ruta propuesta', () => {
+  const e = moverParada(estadoVistaPrevia(respuesta), 2, 0);
+  assert.deepEqual(ids(e), [30, 10, 20]);
+  assert.equal(cambiada(e), true);
+  assert.equal(cambiada(moverParada(e, 0, 2)), false);
 });
