@@ -32,11 +32,12 @@ def _a_hora_chile(fecha: datetime) -> datetime:
     return fecha.astimezone(ZONA_HORARIA_CHILE)
 
 
-async def marcar_activa(phone: str) -> None:
-    """Deja la conversación de este teléfono como activa. La usará el futuro
-    cron del recordatorio (aún no existe) para "abrir" la conversación antes
-    de que el cliente escriba."""
-    ahora = datetime.utcnow()
+async def marcar_activa(phone: str, ahora: datetime | None = None) -> None:
+    """Deja la conversación de este teléfono como activa. La usa el cron del
+    recordatorio (internal.py) para "abrir" la conversación antes de que el
+    cliente escriba. ahora (UTC naive) permite que el recordatorio use el
+    mismo reloj con el que evalúa su idempotencia; por defecto, utcnow()."""
+    ahora = ahora or datetime.utcnow()
     stmt = pg_insert(ConversacionBot).values(
         telefono=phone,
         activa=True,

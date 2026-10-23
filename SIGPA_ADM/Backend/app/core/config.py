@@ -32,6 +32,14 @@ class Settings(BaseSettings):
 
     INTERNAL_CRON_SECRET: str = ""
 
+    # Recordatorio diario (POST /internal/recordatorio-diario): plantilla
+    # Utility aprobada por Meta. Sin nombre de plantilla no se envía nada.
+    WHATSAPP_TEMPLATE_RECORDATORIO_NAME: str = ""
+    WHATSAPP_TEMPLATE_RECORDATORIO_LANG: str = "es_CL"
+    # MODO PRUEBA del recordatorio: teléfonos separados por coma. Si no está
+    # vacío, solo se envía a esos teléfonos y se ignora el día de reparto.
+    RECORDATORIO_TELEFONOS_PRUEBA: str = ""
+
     # Asistente virtual y horario de atención de las ejecutivas (hora de
     # Chile), ver app/services/horario_atencion.py. DIAS_ATENCION: días
     # separados por coma o un rango, ej. "lunes-viernes".
@@ -55,10 +63,24 @@ class Settings(BaseSettings):
         # Convierte el string de la variable de entorno en una lista
         return [origen.strip() for origen in self.CORS_ORIGINS.split(",") if origen.strip()]
 
+    @property
+    def recordatorio_telefonos_prueba_list(self) -> list[str]:
+        # Import diferido: cliente_lookup importa los modelos, que dependen
+        # de este módulo.
+        from app.services.cliente_lookup import normalizar_telefono
+
+        telefonos = (normalizar_telefono(t) for t in self.RECORDATORIO_TELEFONOS_PRUEBA.split(","))
+        return [t for t in telefonos if t]
+
 
 settings = Settings()
 
 if not settings.EJECUTIVA_PHONE:
     logging.getLogger(__name__).warning(
         "EJECUTIVA_PHONE está vacío: las derivaciones a la ejecutiva no se podrán enviar"
+    )
+
+if settings.RECORDATORIO_TELEFONOS_PRUEBA.strip():
+    logging.getLogger(__name__).warning(
+        "Recordatorio en MODO PRUEBA: solo se envía a los teléfonos de prueba y se ignora el día de reparto"
     )

@@ -5,14 +5,29 @@ on:
     - cron: '30,45 17 * * *'
     - cron: '0,15,30,45 18 * * *'
     - cron: '0,15 19 * * *'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      forzar:
+        description: 'Saltar ventana horaria e idempotencia (solo funciona con modo prueba activo en el backend)'
+        type: boolean
+        default: false
 
 jobs:
   llamar-recordatorio:
     runs-on: ubuntu-latest
     steps:
       - name: Llamar endpoint de recordatorio
+        env:
+          CRON_SECRET: ${{ secrets.INTERNAL_CRON_SECRET }}
+          # En las ejecuciones programadas inputs.forzar viene vacío.
+          FORZAR: ${{ inputs.forzar }}
+        # Sin reintentos a propósito: un reintento durante un arranque en
+        # frío de Render podría duplicar envíos.
         run: |
-          curl -X POST https://sigpa-34sy.onrender.com/internal/recordatorio-diario \
-            -H "X-Cron-Secret: ${{ secrets.INTERNAL_CRON_SECRET }}" \
-            -f
+          URL="https://sigpa-34sy.onrender.com/internal/recordatorio-diario"
+          if [ "$FORZAR" = "true" ]; then
+            URL="$URL?forzar=true"
+          fi
+          curl -sS --fail-with-body --max-time 120 -X POST "$URL" \
+            -H "X-Cron-Secret: $CRON_SECRET"
+          echo
