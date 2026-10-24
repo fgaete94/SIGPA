@@ -80,6 +80,8 @@ async def recordatorio_diario(
 
     telefonos_prueba = settings.recordatorio_telefonos_prueba_list
     modo_prueba = bool(telefonos_prueba)
+    # Solo tiene efecto en modo prueba; en producción el día siempre se respeta.
+    prueba_respeta_dia = modo_prueba and settings.RECORDATORIO_PRUEBA_RESPETAR_DIA
 
     # forzar salta la ventana horaria y la idempotencia: en producción nunca
     # debe poder usarse (duplicaría envíos a clientes reales).
@@ -102,6 +104,7 @@ async def recordatorio_diario(
             "razon": "fuera de la ventana horaria",
             "hora_actual_chile": ahora_chile.isoformat(),
             "modo_prueba": modo_prueba,
+            "prueba_respeta_dia": prueba_respeta_dia,
             "forzar": forzar,
         }
 
@@ -119,6 +122,7 @@ async def recordatorio_diario(
                 "error": "plantilla_no_configurada",
                 "detalle": "Defina WHATSAPP_TEMPLATE_RECORDATORIO_NAME para enviar el recordatorio",
                 "modo_prueba": modo_prueba,
+                "prueba_respeta_dia": prueba_respeta_dia,
                 "forzar": forzar,
             },
         )
@@ -129,24 +133,26 @@ async def recordatorio_diario(
     ahora_utc = ahora_chile.astimezone(UTC).replace(tzinfo=None)
 
     clientes: list[Cliente] = []
-    if modo_prueba:
-        # Modo prueba: ignora dia_reparto, pero mantiene activo y opt-out.
+    if modo_prueba and not (prueba_respeta_dia and dia_enum_manana is None):
+        # Modo prueba: mantiene activo y opt-out; ignora dia_reparto salvo con
+        # RECORDATORIO_PRUEBA_RESPETAR_DIA (mañana sábado/domingo: nadie).
+        filtros = [
+            Cliente.activo.is_(True),
+            Cliente.opt_out_whatsapp.is_(False),
+            Cliente.telefono.is_not(None),
+        ]
+        if prueba_respeta_dia:
+            filtros.append(Cliente.dia_reparto == dia_enum_manana)
         async with SessionLocal() as session:
             result = await session.execute(
-                select(Cliente)
-                .where(
-                    Cliente.activo.is_(True),
-                    Cliente.opt_out_whatsapp.is_(False),
-                    Cliente.telefono.is_not(None),
-                )
-                .order_by(Cliente.id)
+                select(Cliente).where(*filtros).order_by(Cliente.id)
             )
             clientes = [
                 cliente
                 for cliente in result.scalars().all()
                 if normalizar_telefono(cliente.telefono) in telefonos_prueba
             ]
-    elif dia_enum_manana is not None:
+    elif not modo_prueba and dia_enum_manana is not None:
         async with SessionLocal() as session:
             result = await session.execute(
                 select(Cliente).where(
@@ -218,5 +224,6 @@ async def recordatorio_diario(
         "telefonos_ya_enviados_hoy": telefonos_ya_enviados_hoy,
         "errores": errores,
         "modo_prueba": modo_prueba,
+        "prueba_respeta_dia": prueba_respeta_dia,
         "forzar": forzar,
     }

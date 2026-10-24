@@ -61,6 +61,9 @@ TEL_FALLA = "56933300307"
 TEL_SIN_DIA_GUARDADO = "+56 9 3330 0308"
 TEL_SIN_DIA = "56933300308"
 TEL_PAYLOAD = "56933300399"
+# Clientes de prueba con un día distinto cada uno (filtro de día en modo prueba).
+TEL_MARTES = "56933300309"
+TEL_MIERCOLES = "56933300310"
 
 # Miércoles 21/10/2026 (mañana jueves), viernes 23 (mañana sábado) y
 # sábado 24 (mañana domingo), siempre a las 15:05 hora Chile.
@@ -70,6 +73,10 @@ MIERCOLES_14 = datetime(2026, 10, 21, 14, 59, tzinfo=CHILE)
 VIERNES_15 = datetime(2026, 10, 23, 15, 5, tzinfo=CHILE)
 VIERNES_10 = datetime(2026, 10, 23, 10, 0, tzinfo=CHILE)
 SABADO_15 = datetime(2026, 10, 24, 15, 5, tzinfo=CHILE)
+# Lunes 19 (mañana martes) y martes 20 (mañana miércoles).
+LUNES_15 = datetime(2026, 10, 19, 15, 5, tzinfo=CHILE)
+LUNES_10 = datetime(2026, 10, 19, 10, 0, tzinfo=CHILE)
+MARTES_15 = datetime(2026, 10, 20, 15, 5, tzinfo=CHILE)
 
 
 def _texto(nombre: str) -> str:
@@ -92,12 +99,13 @@ def _config(**valores):
             setattr(settings, clave, valor)
 
 
-def _config_base(telefonos_prueba: str = "", plantilla: str = PLANTILLA):
+def _config_base(telefonos_prueba: str = "", plantilla: str = PLANTILLA, respetar_dia: bool = False):
     return _config(
         INTERNAL_CRON_SECRET=SECRETO,
         WHATSAPP_TEMPLATE_RECORDATORIO_NAME=plantilla,
         WHATSAPP_TEMPLATE_RECORDATORIO_LANG=LANG_POR_DEFECTO,
         RECORDATORIO_TELEFONOS_PRUEBA=telefonos_prueba,
+        RECORDATORIO_PRUEBA_RESPETAR_DIA=respetar_dia,
     )
 
 
@@ -210,6 +218,8 @@ async def _crear_clientes() -> None:
         ("  Juan\n  Pérez \r\n", TEL_NOMBRE_MULTILINEA, DiaSemana.JUEVES, True, False),
         ("Fabio", TEL_FALLA, DiaSemana.JUEVES, True, False),
         ("Sofia", TEL_SIN_DIA_GUARDADO, None, True, False),
+        ("Marta", TEL_MARTES, DiaSemana.MARTES, True, False),
+        ("Mirna", TEL_MIERCOLES, DiaSemana.MIERCOLES, True, False),
     ]
     async with SessionLocal() as session:
         for nombre, telefono, dia, activo, opt_out in datos:
@@ -551,6 +561,156 @@ async def caso_i(v: Verificador) -> None:
     )
 
 
+# --------------------------------------------------------------------------
+# Modo prueba con RECORDATORIO_PRUEBA_RESPETAR_DIA
+# --------------------------------------------------------------------------
+
+# Un cliente de prueba por día (Martes, Miercoles, Jueves) más uno con Lunes.
+LISTA_DIAS = f"{TEL_MARTES},{TEL_MIERCOLES},{TEL_JUEVES},{TEL_LUNES}"
+
+
+def _enviados_de_prueba(r: dict) -> list[str]:
+    return sorted(t for t in r["telefonos_enviados"] if _es_de_prueba(t))
+
+
+async def caso_j(v: Verificador) -> None:
+    fake = FakeEnvio()
+    with _config_base(telefonos_prueba=LISTA_DIAS), _hora(LUNES_15), _fake_envio(fake):
+        _, r = await _llamar()
+    print(f"    respuesta: {json.dumps(r, ensure_ascii=False)}")
+    v.check(r["modo_prueba"] is True and r["prueba_respeta_dia"] is False, "modo_prueba true, prueba_respeta_dia false")
+    v.check(r["dia_manana"] == "Martes", "dia_manana = Martes")
+    v.check(
+        sorted(e["to"] for e in fake.envios) == sorted([TEL_MARTES, TEL_MIERCOLES, TEL_JUEVES, TEL_LUNES]),
+        "se envía a toda la lista sin importar su dia_reparto",
+    )
+    v.check(r["clientes_evaluados"] == 4 and r["mensajes_enviados"] == 4, "evaluados 4, enviados 4")
+
+
+async def caso_k(v: Verificador) -> None:
+    for ahora, dia, esperado in (
+        (LUNES_15, "Martes", TEL_MARTES),
+        (MARTES_15, "Miercoles", TEL_MIERCOLES),
+        (MIERCOLES_15, "Jueves", TEL_JUEVES),
+    ):
+        await _limpiar_estado()
+        fake = FakeEnvio()
+        with _config_base(telefonos_prueba=LISTA_DIAS, respetar_dia=True), _hora(ahora), _fake_envio(fake):
+            _, r = await _llamar()
+        if dia == "Martes":
+            print(f"    respuesta: {json.dumps(r, ensure_ascii=False)}")
+        else:
+            print(f"    mañana {dia}: telefonos_enviados={r['telefonos_enviados']}")
+        v.check(r["dia_manana"] == dia, f"dia_manana = {dia}")
+        v.check(r["prueba_respeta_dia"] is True, f"mañana {dia}: prueba_respeta_dia true")
+        v.check(
+            [e["to"] for e in fake.envios] == [esperado] and r["telefonos_enviados"] == [esperado],
+            f"mañana {dia}: recibe exactamente uno ({esperado})",
+        )
+        v.check(r["clientes_evaluados"] == 1 and not r["errores"], f"mañana {dia}: evaluados 1, sin errores")
+        conv = await _conversacion(esperado)
+        v.check(conv is not None and conv.activa, f"mañana {dia}: conversación marcada")
+
+
+async def caso_l(v: Verificador) -> None:
+    for ahora, dia in ((VIERNES_15, "Sabado"), (SABADO_15, "Domingo")):
+        fake = FakeEnvio()
+        with _config_base(telefonos_prueba=LISTA_DIAS, respetar_dia=True), _hora(ahora), _fake_envio(fake):
+            status, r = await _llamar()
+        print(f"    mañana {dia}: {json.dumps(r, ensure_ascii=False)}")
+        v.check(status == 200 and "status" not in r and not r["errores"], f"mañana {dia}: respuesta normal, sin error")
+        v.check(
+            r["dia_manana"] == dia and r["prueba_respeta_dia"] is True,
+            f"dia_manana = {dia}, prueba_respeta_dia true",
+        )
+        v.check(
+            r["clientes_evaluados"] == 0 and r["mensajes_enviados"] == 0 and not fake.envios,
+            f"mañana {dia}: evaluados 0, enviados 0",
+        )
+
+
+async def caso_m(v: Verificador) -> None:
+    # Mañana jueves: TEL_JUEVES, TEL_NOMBRE_VACIO, TEL_NOMBRE_MULTILINEA y
+    # TEL_FALLA tienen reparto Jueves, pero solo cuentan los de la lista.
+    fake = FakeEnvio()
+    lista = f"{TEL_MARTES},{TEL_MIERCOLES}"
+    with _config_base(telefonos_prueba=lista, respetar_dia=True), _hora(MIERCOLES_15), _fake_envio(fake):
+        _, r = await _llamar()
+    v.check(r["clientes_evaluados"] == 0 and not fake.envios, "lista sin clientes del día -> nadie recibe")
+
+    fake = FakeEnvio()
+    lista = f"{TEL_JUEVES},{TEL_MARTES}"
+    with _config_base(telefonos_prueba=lista, respetar_dia=True), _hora(MIERCOLES_15), _fake_envio(fake):
+        _, r = await _llamar()
+    v.check([e["to"] for e in fake.envios] == [TEL_JUEVES], "solo el de la lista con reparto mañana recibe")
+    for telefono in (TEL_NOMBRE_VACIO, TEL_NOMBRE_MULTILINEA, TEL_FALLA):
+        v.check(not fake.a(telefono), f"{telefono} (Jueves, fuera de la lista) no recibe")
+
+
+async def caso_n(v: Verificador) -> None:
+    fake = FakeEnvio()
+    with _config_base(telefonos_prueba=LISTA_DIAS, respetar_dia=True), _fake_envio(fake):
+        with _hora(LUNES_10):
+            _, r0 = await _llamar()
+            _, r1 = await _llamar(forzar=True)
+            _, r2 = await _llamar(forzar=True)
+        with _hora(VIERNES_10):
+            _, r3 = await _llamar(forzar=True)
+    v.check(
+        r0.get("status") == "skipped" and r0["prueba_respeta_dia"] is True,
+        "sin forzar, a las 10:00 -> skipped (con prueba_respeta_dia true)",
+    )
+    v.check(r1["telefonos_enviados"] == [TEL_MARTES], "forzar salta la hora pero solo envía al de reparto mañana")
+    v.check(
+        r2["telefonos_enviados"] == [TEL_MARTES] and len(fake.a(TEL_MARTES)) == 2,
+        "forzar salta la idempotencia (reenvía el mismo día)",
+    )
+    v.check(
+        not fake.a(TEL_MIERCOLES) and not fake.a(TEL_JUEVES) and not fake.a(TEL_LUNES),
+        "forzar no salta el filtro de día",
+    )
+    v.check(r3["clientes_evaluados"] == 0 and r3["dia_manana"] == "Sabado", "forzar un viernes: evaluados 0")
+    v.check(len(fake.envios) == 2, "en total solo 2 envíos")
+
+
+async def caso_o(v: Verificador) -> None:
+    resultados = {}
+    for respetar in (False, True):
+        await _limpiar_estado()
+        fake = FakeEnvio()
+        with _config_base(respetar_dia=respetar), _hora(MIERCOLES_15), _fake_envio(fake):
+            _, r = await _llamar()
+        resultados[respetar] = r
+        v.check(
+            r["modo_prueba"] is False and r["prueba_respeta_dia"] is False,
+            f"producción (respetar_dia={respetar}): prueba_respeta_dia false",
+        )
+    print(f"    enviados de prueba: {_enviados_de_prueba(resultados[True])}")
+    v.check(
+        _enviados_de_prueba(resultados[False])
+        == _enviados_de_prueba(resultados[True])
+        == sorted([TEL_JUEVES, TEL_NOMBRE_VACIO, TEL_NOMBRE_MULTILINEA, TEL_FALLA]),
+        "mismos envíos con respetar_dia false y true (los Jueves activos sin opt-out)",
+    )
+    v.check(
+        resultados[False]["clientes_evaluados"] == resultados[True]["clientes_evaluados"],
+        "mismos clientes evaluados",
+    )
+
+    fake = FakeEnvio()
+    with _config_base(respetar_dia=True), _hora(MIERCOLES_15), _fake_envio(fake):
+        try:
+            await _llamar(forzar=True)
+            v.check(False, "producción con respetar_dia: forzar sigue respondiendo 403")
+        except HTTPException as exc:
+            v.check(exc.status_code == 403, "producción con respetar_dia: forzar sigue respondiendo 403")
+    v.check(not fake.envios, "sin envíos con el 403")
+
+    with _config_base(plantilla=" ", respetar_dia=True), _hora(MIERCOLES_15), _fake_envio(FakeEnvio()):
+        status, r = await _llamar()
+    v.check(status == 500 and r["prueba_respeta_dia"] is False, "plantilla_no_configurada incluye prueba_respeta_dia")
+
+
 CASOS = [
     ("a", "Payload de send_whatsapp_template y registro", caso_a),
     ("b", "Producción: filtro por día de reparto, activo y opt-out", caso_b),
@@ -561,6 +721,12 @@ CASOS = [
     ("g", "forzar: con modo prueba salta hora e idempotencia; sin él 403", caso_g),
     ("h", "Plantilla sin configurar -> plantilla_no_configurada", caso_h),
     ("i", "Nombre vacío/None -> 'cliente'; multilínea -> una línea", caso_i),
+    ("j", "Modo prueba, respetar_dia=false: toda la lista, ignora día", caso_j),
+    ("k", "Modo prueba, respetar_dia=true: lunes/martes/miércoles, uno por día", caso_k),
+    ("l", "Modo prueba, respetar_dia=true: mañana sábado/domingo -> 0, sin error", caso_l),
+    ("m", "Modo prueba, respetar_dia=true: fuera de la lista no recibe", caso_m),
+    ("n", "forzar con respetar_dia=true: salta hora e idempotencia, no el día", caso_n),
+    ("o", "Producción: respetar_dia no cambia nada", caso_o),
 ]
 
 

@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     # MODO PRUEBA del recordatorio: teléfonos separados por coma. Si no está
     # vacío, solo se envía a esos teléfonos y se ignora el día de reparto.
     RECORDATORIO_TELEFONOS_PRUEBA: str = ""
+    # Solo con modo prueba: si es true, a los teléfonos de prueba también se
+    # les exige dia_reparto == mañana (como en producción).
+    RECORDATORIO_PRUEBA_RESPETAR_DIA: bool = False
 
     # Asistente virtual y horario de atención de las ejecutivas (hora de
     # Chile), ver app/services/horario_atencion.py. DIAS_ATENCION: días
@@ -81,6 +84,11 @@ if not settings.EJECUTIVA_PHONE:
     )
 
 if settings.RECORDATORIO_TELEFONOS_PRUEBA.strip():
-    logging.getLogger(__name__).warning(
-        "Recordatorio en MODO PRUEBA: solo se envía a los teléfonos de prueba y se ignora el día de reparto"
-    )
+    if settings.RECORDATORIO_PRUEBA_RESPETAR_DIA:
+        logging.getLogger(__name__).warning(
+            "Recordatorio en MODO PRUEBA: solo se envía a los teléfonos de prueba cuyo día de reparto sea mañana"
+        )
+    else:
+        logging.getLogger(__name__).warning(
+            "Recordatorio en MODO PRUEBA: solo se envía a los teléfonos de prueba y se ignora el día de reparto"
+        )
