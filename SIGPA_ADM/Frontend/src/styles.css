@@ -82,6 +82,8 @@ section{background:var(--superficie);border:1px solid var(--borde);border-radius
 .kpis article span{color:var(--gris);font-size:14px;font-weight:600}
 .kpis strong{display:block;font:700 42px/1 'Barlow Condensed',sans-serif;margin-top:10px;color:var(--azul);font-variant-numeric:tabular-nums}
 .muted{font-size:13px}
+.sugerencia-dia{display:flex;flex-wrap:wrap;align-items:center;gap:8px;font-size:13px;font-weight:400}
+.sugerencia-dia button{padding:4px 10px;font-size:13px}
 
 /* Tablas */
 .table{overflow-x:auto}

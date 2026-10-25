@@ -1,5 +1,7 @@
 from datetime import datetime
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict
 
 from app.models.enums import DiaSemana, EstadoPedido
@@ -84,3 +86,15 @@ class ClienteUpdate(BaseModel):
     opt_out_whatsapp: bool | None = None
     latitud: float | None = None
     longitud: float | None = None
+
+
+
+# Historia #93: día de reparto sugerido para un cliente según su sector o,
+# si no tiene sector, según su comuna. "base" indica de dónde salió.
+class SugerenciaDiaOut(BaseModel):
+    base: Literal["sector", "comuna"]
+    base_id: int
+    base_nombre: str
+    dia_reparto: DiaSemana | None
+    clientes_con_ese_dia: int
+    clientes_con_dia: int
