@@ -25,6 +25,7 @@ from app.schemas.pedido import (
     RegistrarEntregaRequest,
 )
 from app.services.auditoria_service import construir_snapshot, registrar_auditoria
+from app.services.coordenadas_cliente import copiar_coordenadas_al_cliente, usa_direccion_del_cliente
 
 router = APIRouter(tags=["pedidos"], dependencies=[Depends(get_current_user)])
 
@@ -217,7 +218,16 @@ async def crear_pedido(datos: PedidoCreate, current_user: dict = Depends(get_cur
             longitud=datos.longitud,
             detalles=detalles,
         )
+        pedido.cliente = cliente 
 
+        # Historia #159: sin coordenadas propias, el pedido que va a la
+        # dirección del cliente toma las del cliente (igual que los pedidos
+        # del bot), para no volver a geocodificar ni corregir la dirección.
+
+        if (pedido.latitud is None or pedido.longitud is None) and usa_direccion_del_cliente(pedido):
+            pedido.latitud = cliente.latitud
+            pedido.longitud = cliente.longitud
+            
         session.add(pedido)
         try:
             await session.commit()
@@ -434,6 +444,10 @@ async def corregir_coordenadas_pedido(
     Historia #113: corrige a mano las coordenadas de un pedido con dirección
     por revisar. Limpia la marca de revisión, y como el pedido ya trae
     latitud y longitud, n8n no lo vuelve a geocodificar en la próxima ruta.
+
+    Historia #159: si el pedido va a la dirección del cliente, las
+    coordenadas también se guardan en el cliente, para que su próximo
+    pedido ya las traiga.
     """
     async with SessionLocal() as session:
         result = await session.execute(
@@ -456,11 +470,16 @@ async def corregir_coordenadas_pedido(
             )
 
         snapshot_antes = construir_snapshot(pedido)
+        snapshot_cliente_antes = construir_snapshot(pedido.cliente) if pedido.cliente else None
 
         pedido.latitud = datos.latitud
         pedido.longitud = datos.longitud
         pedido.motivo_revision_direccion = None
         pedido.actualizado_en = datetime.utcnow()
+
+        # Historia #159: la corrección manual reemplaza las coordenadas que
+        # tenga el cliente.
+        cliente_actualizado = copiar_coordenadas_al_cliente(pedido, sobrescribir=True)
 
         await session.commit()
 
@@ -472,6 +491,16 @@ async def corregir_coordenadas_pedido(
             antes=snapshot_antes,
             despues=construir_snapshot(pedido),
         )
+
+        if cliente_actualizado:
+            await registrar_auditoria(
+                usuario=current_user.get("email"),
+                entidad="cliente",
+                entidad_id=pedido.cliente.id,
+                accion="corregir_coordenadas",
+                antes=snapshot_cliente_antes,
+                despues=construir_snapshot(pedido.cliente),
+            )
 
         return _pedido_a_out(pedido)
 

@@ -66,6 +66,7 @@ from app.models.cliente import Cliente
 from app.models.enums import EstadoPedido
 from app.models.pedido import Pedido
 from app.services.auditoria_service import construir_snapshot
+from app.services.coordenadas_cliente import copiar_coordenadas_al_cliente
 
 logger = logging.getLogger(__name__)
 
@@ -524,6 +525,7 @@ async def _guardar_ruta(pedido_ids, ruta_por_id, motivos, usuario, versiones, me
             for pid in pedido_ids:
                 pedido = pedidos[pid]
                 antes = construir_snapshot(pedido)
+                cliente_antes = construir_snapshot(pedido.cliente) if pedido.cliente else None
                 pedido.estado = EstadoPedido.CONFIRMADO
                 parada = ruta_por_id.get(pid)
                 pedido.orden_entrega = parada["orden_entrega"] if parada else None
@@ -535,9 +537,18 @@ async def _guardar_ruta(pedido_ids, ruta_por_id, motivos, usuario, versiones, me
                 if parada and not _tiene_coordenadas(pedido):
                     # Solo se completan las coordenadas del pedido que llegó
                     # sin ellas (o con el par a medias, que se sobrescribe
-                    # entero); las del cliente nunca se tocan.
+                    # entero).
                     pedido.latitud = parada["latitud"]
                     pedido.longitud = parada["longitud"]
+
+                # Historia #159: si el pedido entró a la ruta y va a la
+                # dirección del cliente, sus coordenadas completan al cliente
+                # que no tenga. No reemplazan las que ya tenga, que pueden
+                # venir de una corrección manual.
+                cliente_actualizado = bool(parada) and copiar_coordenadas_al_cliente(
+                    pedido, sobrescribir=False
+                )
+
                 pedido.actualizado_en = ahora
                 await session.flush()
                 session.add(
@@ -550,6 +561,17 @@ async def _guardar_ruta(pedido_ids, ruta_por_id, motivos, usuario, versiones, me
                         despues=construir_snapshot(pedido),
                     )
                 )
+                if cliente_actualizado:
+                    session.add(
+                        Auditoria(
+                            usuario=usuario or "desconocido",
+                            entidad="cliente",
+                            entidad_id=pedido.cliente.id,
+                            accion=ACCION_AUDITORIA,
+                            antes=cliente_antes,
+                            despues=construir_snapshot(pedido.cliente),
+                        )
+                    )
             # Rutas anteriores que pueden haber quedado viejas: se informan,
             # no se tocan.
             result = await session.execute(

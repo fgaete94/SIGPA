@@ -178,6 +178,16 @@ async def actualizar_cliente(
                 comuna_id = None if sector_id is not None else cliente.comuna_id
             cambios["comuna_id"] = await _validar_comuna_y_sector(session, comuna_id, sector_id)
 
+        # Historia #159: si cambia la dirección y no vienen coordenadas nuevas,
+        # se borran las anteriores para que la dirección nueva se geocodifique.
+        cambia_direccion = (
+            "direccion" in cambios
+            and (cambios["direccion"] or "").strip() != (cliente.direccion or "").strip()
+        )
+        if cambia_direccion and "latitud" not in cambios and "longitud" not in cambios:
+            cambios["latitud"] = None
+            cambios["longitud"] = None
+
         snapshot_antes = construir_snapshot(cliente)
 
         for campo, valor in cambios.items():

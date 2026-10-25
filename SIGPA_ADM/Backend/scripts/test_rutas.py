@@ -78,6 +78,12 @@ async def _limpiar() -> None:
         usuario=USUARIO_PRUEBA,
         rango=RANGO_TELEFONOS_SQL,
     )
+    # Historia #159: planificar y corregir coordenadas también auditan al cliente.
+    await _ejecutar(
+        f"delete from auditoria where entidad = 'cliente' and usuario = :usuario and entidad_id in ({ids_clientes})",
+        usuario=USUARIO_PRUEBA,
+        rango=RANGO_TELEFONOS_SQL,
+    )
     await _ejecutar(f"delete from detalle_pedido where pedido_id in ({ids_pedidos})", rango=RANGO_TELEFONOS_SQL)
     await _ejecutar(f"delete from pedido where cliente_id in ({ids_clientes})", rango=RANGO_TELEFONOS_SQL)
     await _ejecutar(f"delete from cliente where id in ({ids_clientes})", rango=RANGO_TELEFONOS_SQL)
@@ -386,8 +392,11 @@ async def caso_h(ctx: dict, v: Verificador) -> None:
 
 async def caso_i(ctx: dict, v: Verificador) -> None:
     v.check(await _cliente(ctx["c1"]) == ctx["cliente_antes"][ctx["c1"]], "cliente con coordenadas: dirección y coordenadas intactas")
-    v.check(await _cliente(ctx["c2"]) == ctx["cliente_antes"][ctx["c2"]], "cliente sin coordenadas: sigue sin coordenadas (no se le copian las del pedido)")
-
+    # Historia #159: el cliente sin coordenadas recibe las de su pedido al
+    # entrar a la ruta (el detalle se prueba en scripts/test_coordenadas_cliente.py).
+    c2 = await _cliente(ctx["c2"])
+    v.check(c2["direccion"] == ctx["cliente_antes"][ctx["c2"]]["direccion"], "cliente sin coordenadas: dirección intacta")
+    v.check(c2["latitud"] is not None and c2["longitud"] is not None, "cliente sin coordenadas: recibe las de su pedido (#159)")
 
 async def caso_j(ctx: dict, v: Verificador) -> None:
     ctx["n8n"].responder = _ruta_completa
@@ -959,7 +968,7 @@ CASOS = [
     ("f", "Cancelado, entregado o inexistente: 409 con los IDs, sin llamar a n8n", caso_f),
     ("g", "Lista vacía o IDs repetidos: error de validación", caso_g),
     ("h", "Segunda llamada simultánea: 409", caso_h),
-    ("i", "Dirección y coordenadas del cliente nunca cambian", caso_i),
+    ("i", "Coordenadas del cliente: solo se completan si no tenía (#159)", caso_i),
     ("j", "Regenerar la ruta con pedidos ya confirmados", caso_j),
     ("k", "GET /rutas/pedidos-pendientes devuelve solo planificables", caso_k),
     ("l", "Sin URL de n8n: 503; sin JWT: 401", caso_l),
