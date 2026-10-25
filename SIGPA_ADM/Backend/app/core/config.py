@@ -18,6 +18,12 @@ class Settings(BaseSettings):
     META_API_URL: str = ""
 
     DATABASE_URL: str = ""
+    # Historia #78: conexiones máximas del backend a la BD (pool_size +
+    # max_overflow), por debajo del límite de 15 del pooler de Supabase en
+    # modo sesión, que se comparte con n8n. Ver app/core/database.py.
+    DB_POOL_SIZE: int = 5
+    DB_MAX_OVERFLOW: int = 0
+    DB_POOL_TIMEOUT: float = 30
 
     OPENAI_API_KEY: str = ""
 
