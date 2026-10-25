@@ -1,5 +1,12 @@
 begin;
 
+-- En producción estas columnas se agregaron directo en Supabase antes de
+-- esta migración y ninguna migración anterior las crea. Se agregan aquí
+-- (sin efecto si ya existen) para que el historial funcione en una base
+-- nueva, por ejemplo un proyecto de pruebas.
+alter table public.cliente add column if not exists apellido_paterno varchar(100);
+alter table public.cliente add column if not exists apellido_materno varchar(100);
+
 alter table public.cliente_producto_habitual drop constraint cliente_producto_habitual_cliente_id_fkey;
 alter table public.mensaje_whatsapp drop constraint mensaje_whatsapp_cliente_id_fkey;
 alter table public.pedido drop constraint pedido_cliente_id_fkey;
