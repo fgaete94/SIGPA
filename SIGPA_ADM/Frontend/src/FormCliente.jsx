@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { api } from './api';
 import { DIAS_REPARTO, cambiosCliente, clienteForm, elegirComuna, nuevoCliente, sectoresDeComuna } from './clientes';
+import { rutaSugerencia, textoSugerencia } from './sugerenciaDia';
 
 const nombreCompleto = c => [c.nombre, c.apellido_paterno, c.apellido_materno].filter(Boolean).join(' ');
 
@@ -14,6 +15,7 @@ export default function FormCliente({ cliente, clientes, onClose, onSaved }) {
   const [sectores, setSectores] = useState([]);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [sugerencia, setSugerencia] = useState(null);
   useEffect(() => {
     const controller = new AbortController();
     const cargar = (ruta, guardar, que) => api(ruta, { signal: controller.signal }).then(guardar).catch(e => { if (e.name !== 'AbortError') setError(`No se pudieron cargar ${que}: ${e.message}`); });
@@ -22,6 +24,18 @@ export default function FormCliente({ cliente, clientes, onClose, onSaved }) {
     cargar('/sectores', setSectores, 'los sectores');
     return () => controller.abort();
   }, []);
+  // Historia #93: al elegir comuna o sector se pide el día sugerido. Si falla, simplemente no se muestra.
+  const rutaDia = rutaSugerencia(form, cliente?.id);
+  useEffect(() => {
+    setSugerencia(null);
+    if (!rutaDia) return;
+    const controller = new AbortController();
+    api(rutaDia, { signal: controller.signal })
+      .then(setSugerencia)
+      .catch(() => {});
+    return () => controller.abort();
+  }, [rutaDia]);
+
   const resultado = nuevo ? nuevoCliente(form, clientes) : cambiosCliente(cliente, form, clientes);
   const set = (key, value) => setForm(f => ({ ...f, [key]: value }));
   const field = (key, label, props) => <label>{label}<input value={form[key]} onChange={e => set(key, e.target.value)} {...props}/></label>;
@@ -56,12 +70,19 @@ export default function FormCliente({ cliente, clientes, onClose, onSaved }) {
       <label>Sector (opcional)<select value={form.sector_id} disabled={!form.comuna_id} onChange={e => set('sector_id', e.target.value)}><option value="">{form.comuna_id ? 'Sin sector' : 'Elige primero la comuna'}</option>{form.sector_id && !sectoresDeComuna(sectores, form.comuna_id).some(s => String(s.id) === form.sector_id) && <option value={form.sector_id}>{`Sector ${form.sector_id}`}</option>}{sectoresDeComuna(sectores, form.comuna_id).map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}</select></label>
     </div>
     <div className="campos">
-      <label>Día de reparto<select value={form.dia_reparto} onChange={e => set('dia_reparto', e.target.value)}><option value="">Sin asignar</option>{DIAS_REPARTO.map(([valor, texto]) => <option key={valor} value={valor}>{texto}</option>)}</select></label>
+      <label>Día de reparto<select value={form.dia_reparto} onChange={e => set('dia_reparto', e.target.value)}><option value="">Sin asignar</option>{DIAS_REPARTO.map(([valor, texto]) => <option key={valor} value={valor}>{texto}</option>)}</select>
+        {sugerencia && <span className="sugerencia-dia" role="status">
+          {textoSugerencia(sugerencia)}
+          {sugerencia.dia_reparto && sugerencia.dia_reparto !== form.dia_reparto && (
+            <button type="button" onClick={() => set('dia_reparto', sugerencia.dia_reparto)}>Usar</button>
+          )}
+        </span>}
+      </label>
       <label>Tipo de cliente<select value={form.tipo_cliente_id} onChange={e => set('tipo_cliente_id', e.target.value)}><option value="">Sin asignar</option>{actual(tipos, cliente?.tipo_cliente_id, cliente?.tipo_cliente_nombre || `Tipo ${cliente?.tipo_cliente_id}`)}{tipos.map(t => <option key={t.id} value={t.id}>{t.nombre}</option>)}</select></label>
     </div>
     {check('activo', 'Cliente activo')}{check('opt_out_whatsapp', 'No desea recibir recordatorios por WhatsApp')}
     {!form.dia_reparto && form.activo && !form.opt_out_whatsapp && <p className="muted">Sin día de reparto no recibe el recordatorio del día anterior.</p>}
-    {!nuevo && form.direccion.trim() !== (cliente.direccion || '') && <p className="notice">Cambiar la dirección no actualiza las coordenadas guardadas del cliente.</p>}
+    {!nuevo && form.direccion.trim() !== (cliente.direccion || '') && <p className="notice">Al cambiar la dirección se borran las coordenadas guardadas del cliente: se volverá a ubicar en la próxima ruta.</p>}
     {error && <p role="alert" className="error">{error}</p>}
     <div className="actions"><button type="button" onClick={onClose} disabled={busy}>Cancelar</button><button className="primary" disabled={busy}>{busy ? 'Guardando…' : nuevo ? 'Crear cliente' : 'Guardar cambios'}</button></div>
   </form></section></div>;

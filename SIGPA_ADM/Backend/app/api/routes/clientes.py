@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import or_,select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import selectinload
 
 from app.core.database import SessionLocal
@@ -7,7 +7,7 @@ from app.core.security import get_current_user
 from app.models.cliente import Cliente
 from app.models.comuna import Comuna
 from app.models.sector import Sector
-from app.schemas.cliente import ClienteCreate, ClienteDetalleOut, ClienteOut, ClienteUpdate
+from app.schemas.cliente import ClienteCreate, ClienteDetalleOut, ClienteOut, ClienteUpdate, SugerenciaDiaOut
 from app.services.auditoria_service import construir_snapshot, registrar_auditoria
 
 router = APIRouter(tags=["clientes"], dependencies=[Depends(get_current_user)])
@@ -76,6 +76,80 @@ async def listar_clientes(
         result = await session.execute(query)
         return [_cliente_a_out(cliente) for cliente in result.scalars().all()]
 
+# Historia #93: por comuna solo se sugiere el día si es claramente dominante
+# (en Viña del Mar, por ejemplo, cada sector tiene su propio día).
+PORCENTAJE_MINIMO_COMUNA = 0.8
+
+
+# Va antes de GET /{id}: si no, FastAPI intentaría leer "sugerencia-dia" como id.
+@router.get("/sugerencia-dia", response_model=SugerenciaDiaOut)
+async def sugerir_dia_reparto(
+    sector_id: int | None = Query(None),
+    comuna_id: int | None = Query(None),
+    excluir_cliente_id: int | None = Query(None),
+):
+    """
+    Historia #93: sugiere el día de reparto de un cliente, como el día más
+    común entre los clientes activos que ya tienen día:
+    - Con sector_id, entre los clientes de ese sector.
+    - Sin sector_id, entre los clientes de la comuna, y solo si ese día
+      reúne al menos el PORCENTAJE_MINIMO_COMUNA de ellos.
+    Si nadie tiene día, si hay empate entre los días más comunes o si en
+    la comuna ningún día es dominante, no hay sugerencia (dia_reparto null)
+    y el administrador lo asigna a mano.
+
+    excluir_cliente_id deja fuera al cliente que se está editando, para que
+    su propio día no cuente en la sugerencia.
+    """
+    if sector_id is None and comuna_id is None:
+        raise HTTPException(status_code=422, detail="Indica sector_id o comuna_id")
+
+    async with SessionLocal() as session:
+        if sector_id is not None:
+            sector = await session.get(Sector, sector_id)
+            if sector is None:
+                raise HTTPException(status_code=404, detail="Sector no encontrado")
+            base, base_id, base_nombre = "sector", sector.id, sector.nombre
+            filtro = Cliente.sector_id == sector_id
+        else:
+            comuna = await session.get(Comuna, comuna_id)
+            if comuna is None:
+                raise HTTPException(status_code=404, detail="Comuna no encontrada")
+            base, base_id, base_nombre = "comuna", comuna.id, comuna.nombre
+            filtro = Cliente.comuna_id == comuna_id
+
+        query = (
+            select(Cliente.dia_reparto, func.count())
+            .where(
+                filtro,
+                Cliente.activo.is_(True),
+                Cliente.dia_reparto.is_not(None),
+            )
+            .group_by(Cliente.dia_reparto)
+            .order_by(func.count().desc())
+        )
+        if excluir_cliente_id is not None:
+            query = query.where(Cliente.id != excluir_cliente_id)
+
+        conteos = (await session.execute(query)).all()
+
+    total = sum(cantidad for _, cantidad in conteos)
+    dia, clientes_con_ese_dia = None, 0
+
+    if conteos and (len(conteos) == 1 or conteos[0][1] > conteos[1][1]):
+        dia, clientes_con_ese_dia = conteos[0]
+
+        if base == "comuna" and clientes_con_ese_dia < PORCENTAJE_MINIMO_COMUNA * total:
+            dia, clientes_con_ese_dia = None, 0
+
+    return SugerenciaDiaOut(
+        base=base,
+        base_id=base_id,
+        base_nombre=base_nombre,
+        dia_reparto=dia,
+        clientes_con_ese_dia=clientes_con_ese_dia,
+        clientes_con_dia=total,
+    )
 
 @router.post("", response_model=ClienteOut, status_code=status.HTTP_201_CREATED)
 async def crear_cliente(datos: ClienteCreate, current_user: dict = Depends(get_current_user)):
