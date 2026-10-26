@@ -37,6 +37,39 @@ TRANSICIONES_DESPACHO = {
 # Historia #99: estados desde los que se puede registrar la entrega
 ESTADOS_ENTREGABLES = {EstadoPedido.CONFIRMADO, EstadoPedido.EN_DESPACHO}
 
+# Historia #68: un pedido entregado o cancelado ya no se edita (cambiaría ventas ya cerradas)
+ESTADOS_EDITABLES = {EstadoPedido.PENDIENTE, EstadoPedido.CONFIRMADO, EstadoPedido.EN_DESPACHO}
+
+
+def _lineas_snapshot(pedido: Pedido) -> list[dict]:
+    """Productos del pedido para la auditoría (construir_snapshot solo guarda las columnas del pedido)."""
+    return [
+        {
+            "producto": detalle.producto.nombre,
+            "cantidad": detalle.cantidad_solicitada,
+            "precio_unitario": float(detalle.precio_unitario),
+        }
+        for detalle in sorted(pedido.detalles, key=lambda d: d.producto_id)
+    ]
+
+
+def _normalizar_direccion(direccion: str | None) -> str:
+    return " ".join((direccion or "").split()).casefold()
+
+
+def _resumen_edicion(antes: dict, despues: dict) -> str | None:
+    """Historia #68: qué cambió en una edición, para el historial del pedido."""
+    texto = lambda lineas: ", ".join(f"{l['cantidad']}× {l['producto']}" for l in lineas) or "sin productos"
+    partes = []
+    lineas_antes, lineas_despues = antes.get("lineas"), despues.get("lineas")
+    clave = lambda lineas: [(l["producto"], l["cantidad"]) for l in lineas]
+    if lineas_antes is not None and lineas_despues is not None and clave(lineas_antes) != clave(lineas_despues):
+        partes.append(f"Productos: {texto(lineas_antes)} → {texto(lineas_despues)}")
+    dir_antes, dir_despues = antes.get("direccion_despacho") or None, despues.get("direccion_despacho") or None
+    if _normalizar_direccion(dir_antes) != _normalizar_direccion(dir_despues):
+        partes.append(f"Dirección: {dir_antes or 'la del cliente'} → {dir_despues or 'la del cliente'}")
+    return "; ".join(partes) or None
+
 def _nombre_completo_cliente(cliente: Cliente) -> str:
     apellidos = " ".join(
         parte for parte in (cliente.apellido_paterno, cliente.apellido_materno) if parte
@@ -71,6 +104,7 @@ def _pedido_a_detalle_out(pedido: Pedido) -> PedidoDetalleOut:
     lineas = [
         DetallePedidoLineaOut(
             id=detalle.id,
+            producto_id=detalle.producto_id,
             cantidad_solicitada=detalle.cantidad_solicitada,
             cantidad_entregada=detalle.cantidad_entregada,
             precio_unitario=detalle.precio_unitario,
@@ -260,39 +294,123 @@ async def crear_pedido(datos: PedidoCreate, current_user: dict = Depends(get_cur
         return _pedido_a_detalle_out(pedido_completo)
 
 
-@router.patch("/{id}", response_model=PedidoOut)
+@router.patch("/{id}", response_model=PedidoDetalleOut)
 async def actualizar_pedido(
     id: int, datos: PedidoUpdate, current_user: dict = Depends(get_current_user)
 ):
+    """
+    Edita un pedido. Historia #68: además de la dirección y las coordenadas,
+    "lineas" reemplaza los productos y cantidades (agregar, quitar o cambiar).
+
+    - Solo pedidos pendientes, confirmados o en despacho (409 si no).
+    - Los productos que ya estaban conservan su precio unitario; los nuevos
+      toman el precio vigente. El total se recalcula.
+    - Si cambia la dirección y no vienen coordenadas nuevas, se toman las del
+      cliente cuando vuelve a su dirección, o quedan vacías para ubicarla de
+      nuevo; se limpia la marca de dirección por revisar y un pedido
+      confirmado sale de la ruta guardada (vuelve a "Preparar ruta").
+    - La auditoría guarda los productos antes y después (quién y cuándo).
+    """
+    cambios = datos.model_dump(exclude_unset=True)
     async with SessionLocal() as session:
         result = await session.execute(
             select(Pedido).where(Pedido.id == id)
-            .options(selectinload(Pedido.cliente).selectinload(Cliente.comuna))
+            .options(
+                selectinload(Pedido.cliente).selectinload(Cliente.comuna),
+                selectinload(Pedido.detalles).selectinload(DetallePedido.producto),
+            )
+            .with_for_update(of=Pedido)
         )
         pedido = result.scalar_one_or_none()
 
         if pedido is None:
             raise HTTPException(status_code=404, detail="Pedido no encontrado")
 
-        snapshot_antes = construir_snapshot(pedido)
+        if pedido.estado not in ESTADOS_EDITABLES:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"No se puede editar un pedido '{pedido.estado.value}': "
+                    "solo pedidos pendientes, confirmados o en despacho"
+                ),
+            )
 
-        for campo, valor in datos.model_dump(exclude_unset=True).items():
-            setattr(pedido, campo, valor)
+        snapshot_antes = {**construir_snapshot(pedido), "lineas": _lineas_snapshot(pedido)}
+
+        if "lineas" in cambios:
+            producto_ids = [linea.producto_id for linea in datos.lineas]
+            repetidos = sorted({pid for pid in producto_ids if producto_ids.count(pid) > 1})
+            if repetidos:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Producto(s) repetido(s) en el pedido: {repetidos}. Deja una línea por producto.",
+                )
+            result = await session.execute(select(Producto).where(Producto.id.in_(producto_ids)))
+            productos_por_id = {producto.id: producto for producto in result.scalars().all()}
+            faltantes = [pid for pid in producto_ids if pid not in productos_por_id]
+            if faltantes:
+                raise HTTPException(status_code=404, detail=f"Producto(s) no encontrado(s): {faltantes}")
+
+            precio_pactado = {detalle.producto_id: float(detalle.precio_unitario) for detalle in pedido.detalles}
+            pedido.detalles = [
+                DetallePedido(
+                    producto_id=linea.producto_id,
+                    cantidad_solicitada=linea.cantidad_solicitada,
+                    precio_unitario=precio_pactado.get(
+                        linea.producto_id, float(productos_por_id[linea.producto_id].precio_unitario)
+                    ),
+                )
+                for linea in datos.lineas
+            ]
+            pedido.total = sum(d.cantidad_solicitada * float(d.precio_unitario) for d in pedido.detalles)
+
+        direccion_cambia = "direccion_despacho" in cambios and (
+            _normalizar_direccion(cambios["direccion_despacho"]) != _normalizar_direccion(pedido.direccion_despacho)
+        )
+        for campo in ("direccion_despacho", "latitud", "longitud"):
+            if campo in cambios:
+                setattr(pedido, campo, cambios[campo])
+
+        if direccion_cambia:
+            if not ("latitud" in cambios and "longitud" in cambios):
+                vuelve_al_cliente = usa_direccion_del_cliente(pedido)
+                pedido.latitud = pedido.cliente.latitud if vuelve_al_cliente else None
+                pedido.longitud = pedido.cliente.longitud if vuelve_al_cliente else None
+            pedido.motivo_revision_direccion = None
+            if pedido.estado == EstadoPedido.CONFIRMADO:
+                pedido.orden_entrega = None
 
         pedido.actualizado_en = datetime.utcnow()
 
-        await session.commit()
+        try:
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="No se pudo editar el pedido por un conflicto de datos",
+            )
+
+        result = await session.execute(
+            select(Pedido)
+            .where(Pedido.id == pedido.id)
+            .options(
+                selectinload(Pedido.cliente).selectinload(Cliente.comuna),
+                selectinload(Pedido.detalles).selectinload(DetallePedido.producto),
+            )
+        )
+        pedido_actualizado = result.scalar_one()
 
         await registrar_auditoria(
             usuario=current_user.get("email"),
             entidad="pedido",
-            entidad_id=pedido.id,
+            entidad_id=pedido_actualizado.id,
             accion="actualizar",
             antes=snapshot_antes,
-            despues=construir_snapshot(pedido),
+            despues={**construir_snapshot(pedido_actualizado), "lineas": _lineas_snapshot(pedido_actualizado)},
         )
 
-        return _pedido_a_out(pedido)
+        return _pedido_a_detalle_out(pedido_actualizado)
 
 
 @router.post("/{id}/entrega", response_model=PedidoDetalleOut)
@@ -528,9 +646,23 @@ async def historial_estados_pedido(id: int):
         estado_anterior = (registro.antes or {}).get("estado")
         estado_nuevo = (registro.despues or {}).get("estado")
 
-        # Se omiten los registros donde el estado no cambió
-        # (por ejemplo, un PATCH que solo modificó la dirección)
-        if estado_nuevo is None or estado_anterior == estado_nuevo:
+        # Historia #68: una edición (productos o dirección) aparece con su detalle
+        # aunque el estado no cambie. Los demás registros sin cambio de estado se omiten.
+        if estado_nuevo is not None and estado_anterior == estado_nuevo:
+            detalle = _resumen_edicion(registro.antes or {}, registro.despues or {}) if registro.accion == "actualizar" else None
+            if detalle:
+                historial.append(
+                    HistorialEstadoOut(
+                        estado_anterior=estado_anterior,
+                        estado_nuevo=estado_nuevo,
+                        usuario=registro.usuario,
+                        accion=registro.accion,
+                        fecha=registro.creado_en,
+                        detalle=detalle,
+                    )
+                )
+            continue
+        if estado_nuevo is None:
             continue
 
         historial.append(
