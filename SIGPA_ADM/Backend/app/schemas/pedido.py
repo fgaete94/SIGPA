@@ -30,6 +30,8 @@ class DetallePedidoLineaOut(BaseModel):
 
     # Historia #99: id del detalle, que POST /pedidos/{id}/entrega recibe como detalle_id
     id: int
+    # Historia #68: para editar las líneas del pedido desde el panel
+    producto_id: int
     cantidad_solicitada: int
     cantidad_entregada: int | None = None
     precio_unitario: float
@@ -45,11 +47,16 @@ class PedidoUpdate(BaseModel):
     direccion_despacho: str | None = None
     latitud: float | None = None
     longitud: float | None = None
+    # Historia #68: reemplaza los productos del pedido (al menos uno, sin repetir producto)
+    lineas: "list[LineaPedidoCreate] | None" = Field(default=None, min_length=1)
 
 
 class LineaPedidoCreate(BaseModel):
     producto_id: int
     cantidad_solicitada: int = Field(gt=0)
+
+
+PedidoUpdate.model_rebuild()
 
 
 class PedidoCreate(BaseModel):
@@ -87,3 +94,5 @@ class HistorialEstadoOut(BaseModel):
     usuario: str
     accion: str  # crear, cambiar_estado, actualizar, planificar_ruta
     fecha: datetime
+    # Historia #68: qué cambió en una edición (productos o dirección); en los cambios de estado, None
+    detalle: str | None = None
