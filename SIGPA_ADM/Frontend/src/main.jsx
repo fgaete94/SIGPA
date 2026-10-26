@@ -4,6 +4,7 @@ import { login, logout, onSessionExpired, restoreSession } from './auth';
 import { api } from './api';
 import { DIAS_REPARTO } from './clientes';
 import Despacho from './Despacho';
+import EditarPedido from './EditarPedido';
 import FichaDelCliente from './FichaDelCliente';
 import { ACCION_DESPACHO, ESTADOS, ETIQUETA_ESTADO, textoAccion, textoCambio } from './estados';
 import { puedeEntregarse } from './entregas';
@@ -12,6 +13,7 @@ import FormCliente from './FormCliente';
 import { vigilarInactividad } from './inactividad';
 import Landing from './Landing';
 import NuevoPedido from './NuevoPedido';
+import { puedeEditarse } from './pedidos';
 import { useOrden } from './Ordenable';
 import { posicionEn } from './ordenar';
 import Productos from './Productos';
@@ -67,6 +69,7 @@ function Dashboard({ session, onLogout, onInactividad }) {
   const [creandoPedido, setCreandoPedido] = useState(false);
   const [entregando, setEntregando] = useState(null);
   const [ficha, setFicha] = useState(null);
+  const [editandoPedido, setEditandoPedido] = useState(null);
   const [aviso, setAviso] = useState('');
   const [actualizadoEn, setActualizadoEn] = useState(null);
   useEffect(() => {
@@ -126,7 +129,7 @@ function Dashboard({ session, onLogout, onInactividad }) {
   {tab === 'Productos' && <Productos productos={data.productos} onCambio={() => setRevision(r => r + 1)}/>}
   <div hidden={tab !== 'Reportes'}><Reportes pedidos={data.pedidos} clientes={data.clientes} actualizadoEn={actualizadoEn}/></div>
   <div hidden={tab !== 'Rutas'}><RutaEnCurso pedidos={data.pedidos} clientes={data.clientes} productos={data.productos} onActualizar={() => setRevision(r => r + 1)} onEntregar={entregar}/><Rutas pendientes={data.pendientes} busy={busy} onActualizar={() => setRevision(r => r + 1)} onPlanificando={setPlanning}/></div>
-  </>}{detail && <DetallePedido detail={detail} onClose={()=>setDetail(null)} onEntregar={entregar}/>}{ficha && <FichaDelCliente clienteId={ficha} onClose={()=>setFicha(null)} onVerPedido={id => { setFicha(null); view(id); }} onEditar={c => { setFicha(null); setEditing(data?.clientes.find(x => x.id === c.id) || c); }}/>}{entregando && <RegistrarEntrega pedidoId={entregando} onClose={()=>setEntregando(null)} onRegistrado={entregaRegistrada}/>}{editing && <FormCliente cliente={editing === 'nuevo' ? null : editing} clientes={data?.clientes || []} onClose={()=>setEditing(null)} onSaved={c=>{setAviso(editing === 'nuevo' ? `Cliente ${name(c)} creado (#${c.id}). Ya puede pedir por WhatsApp desde su número.` : `Cambios de ${name(c)} guardados.`); setEditing(null); setRevision(r=>r+1);}}/>}{creandoPedido && data && <NuevoPedido clientes={data.clientes} productos={data.productos} onClose={()=>setCreandoPedido(false)} onSaved={p=>{setAviso(`Pedido #${p.id} creado para ${p.cliente_nombre || 'el cliente'} por ${money(p.total)}. Quedó pendiente.`); setCreandoPedido(false); setRevision(r=>r+1);}}/>}</div></main></div>;
+  </>}{detail && <DetallePedido detail={detail} onClose={()=>setDetail(null)} onEntregar={entregar} onEditar={p => { setDetail(null); setAviso(''); setEditandoPedido(p); }}/>}{editandoPedido && data && <EditarPedido pedido={editandoPedido} cliente={data.clientes.find(c => c.id === editandoPedido.cliente_id)} productos={data.productos} onClose={()=>setEditandoPedido(null)} onSaved={p => { const { lineas, ...pedido } = p; setData(d => ({ ...d, pedidos: d.pedidos.map(x => x.id === pedido.id ? pedido : x) })); setAviso(`Pedido #${p.id} actualizado: ${lineas.map(l => `${l.cantidad_solicitada} × ${l.producto_nombre}`).join(', ')} · ${money(p.total)}.`); setEditandoPedido(null); setRevision(r => r + 1); }}/>}{ficha && <FichaDelCliente clienteId={ficha} onClose={()=>setFicha(null)} onVerPedido={id => { setFicha(null); view(id); }} onEditar={c => { setFicha(null); setEditing(data?.clientes.find(x => x.id === c.id) || c); }}/>}{entregando && <RegistrarEntrega pedidoId={entregando} onClose={()=>setEntregando(null)} onRegistrado={entregaRegistrada}/>}{editing && <FormCliente cliente={editing === 'nuevo' ? null : editing} clientes={data?.clientes || []} onClose={()=>setEditing(null)} onSaved={c=>{setAviso(editing === 'nuevo' ? `Cliente ${name(c)} creado (#${c.id}). Ya puede pedir por WhatsApp desde su número.` : `Cambios de ${name(c)} guardados.`); setEditing(null); setRevision(r=>r+1);}}/>}{creandoPedido && data && <NuevoPedido clientes={data.clientes} productos={data.productos} onClose={()=>setCreandoPedido(false)} onSaved={p=>{setAviso(`Pedido #${p.id} creado para ${p.cliente_nombre || 'el cliente'} por ${money(p.total)}. Quedó pendiente.`); setCreandoPedido(false); setRevision(r=>r+1);}}/>}</div></main></div>;
 }
 
 // #137: columnas ordenables de la tabla de clientes. El día de reparto sigue el orden de la semana.
@@ -177,17 +180,20 @@ function TablaClientes({ clientes, onEditar, onVerFicha }) {
   </div>;
 }
 
-function DetallePedido({ detail, onClose, onEntregar }) {
+function DetallePedido({ detail, onClose, onEntregar, onEditar }) {
   const { historial } = detail;
   return <div className="modal" role="dialog" aria-modal="true" aria-label="Detalle del pedido"><section>
     <button autoFocus onClick={onClose}>Cerrar detalle</button><h2>Pedido #{detail.id}</h2>
     <p>{detail.cliente_nombre} · <span className={`badge ${detail.estado}`}>{ETIQUETA_ESTADO[detail.estado]}</span></p>
     <p>{detail.direccion_despacho || 'Sin dirección de despacho informada'}</p>
     {detail.lineas.map((l,i)=><p key={i}>{l.cantidad_solicitada} × {l.producto_nombre} · {money(l.precio_unitario)}{l.cantidad_entregada != null && ` · entregó ${l.cantidad_entregada}`}</p>)}<strong>Total: {money(detail.total)}</strong>
-    {puedeEntregarse(detail.estado) && <p><button className="primary" onClick={() => onEntregar(detail.id)}>Registrar entrega</button></p>}
-    <h3>Historial de estados</h3>
+    {(puedeEntregarse(detail.estado) || puedeEditarse(detail.estado)) && <p className="acciones">
+      {puedeEntregarse(detail.estado) && <button className="primary" onClick={() => onEntregar(detail.id)}>Registrar entrega</button>}
+      {puedeEditarse(detail.estado) && <button onClick={() => onEditar(detail)}>Editar pedido</button>}
+    </p>}
+    <h3>Historial</h3>
     {historial.error ? <p className="error">No se pudo cargar el historial: {historial.error}</p>
-      : historial.length ? <ol className="historial">{historial.map((h, i) => <li key={i}><strong>{textoCambio(h)}</strong><small>{fechaHora(h.fecha)} · {textoAccion(h.accion)} · {h.usuario}</small></li>)}</ol>
+      : historial.length ? <ol className="historial">{historial.map((h, i) => <li key={i}><strong>{textoCambio(h)}</strong>{h.detalle && <span className="detalle-cambio">{h.detalle}</span>}<small>{fechaHora(h.fecha)} · {textoAccion(h.accion)} · {h.usuario}</small></li>)}</ol>
       : <p className="muted">Sin cambios de estado registrados. Los pedidos creados por el bot no quedan en el historial.</p>}
   </section></div>;
 }

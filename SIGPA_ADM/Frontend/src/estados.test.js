@@ -13,6 +13,7 @@ test('despacho: solo confirmado ↔ en despacho, como el backend', () => {
 test('historial en texto, con la hora de Chile', () => {
   assert.equal(textoCambio({ estado_anterior: 'confirmado', estado_nuevo: 'en_despacho' }), 'Confirmado → En despacho');
   assert.equal(textoCambio({ estado_anterior: null, estado_nuevo: 'pendiente' }), 'Creado como pendiente');
+  assert.equal(textoCambio({ estado_anterior: 'confirmado', estado_nuevo: 'confirmado', detalle: 'Productos: 2× A → 3× A' }), 'Pedido editado');
   assert.equal(textoAccion('planificar_ruta'), 'Planificación de ruta');
   assert.equal(textoAccion('otra_accion'), 'otra_accion');
   // 23:36 UTC del 5 de octubre = 20:36 en Chile (UTC-3).

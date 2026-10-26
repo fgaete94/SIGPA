@@ -12,7 +12,9 @@ export const ACCION_DESPACHO = {
 const ACCION_HISTORIAL = { crear: 'Creación', cambiar_estado: 'Cambio desde el panel', planificar_ruta: 'Planificación de ruta', actualizar: 'Edición', corregir_coordenadas: 'Corrección de ubicación', registrar_entrega: 'Registro de entrega' };
 
 // Una fila de GET /pedidos/{id}/historial en texto: "Confirmado → En despacho".
-export function textoCambio({ estado_anterior, estado_nuevo }) {
+export function textoCambio({ estado_anterior, estado_nuevo, detalle }) {
+  // #68: una edición (productos o dirección) no cambia el estado; el detalle se muestra aparte.
+  if (detalle) return 'Pedido editado';
   const nuevo = ETIQUETA_ESTADO[estado_nuevo] || estado_nuevo;
   return estado_anterior ? `${ETIQUETA_ESTADO[estado_anterior] || estado_anterior} → ${nuevo}` : `Creado como ${nuevo.toLowerCase()}`;
 }
