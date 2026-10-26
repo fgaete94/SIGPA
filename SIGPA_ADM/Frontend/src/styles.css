@@ -130,6 +130,10 @@ section>.title h2{margin:0}
 .etiquetas{display:inline-flex;gap:6px;margin-left:10px;vertical-align:2px}
 .etiquetas .badge{font-size:12px;padding:2px 8px}
 .badge.revisar{background:#ffe1cc;color:#8a3a12}
+.badge.sin-ubicacion{background:var(--fondo-2);color:var(--gris)}
+/* Preparar ruta por día y comuna (#81) */
+.filtros-ruta{flex-wrap:wrap;align-items:center}
+.filtros-ruta select{flex:1 1 180px}
 .stop small.motivo{color:#8a3a12}
 .ok{padding:12px 14px;border-radius:10px;background:#e3f3da;color:var(--verde-osc);font-size:14px;font-weight:600}
 .error ul{margin:6px 0 0;padding-left:20px}

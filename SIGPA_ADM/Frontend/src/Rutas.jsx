@@ -1,15 +1,27 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import { DIAS_REPARTO } from './clientes';
+import { SIN_DIA, diaHoy } from './agrupacionDespacho';
 import { api } from './api';
 import { ETIQUETA_ESTADO } from './estados';
 import { fechaCorta as fecha } from './fechas';
 import { RUTA_MAX_PEDIDOS, alternarSeleccion, detallesErrorRuta, enlaceMapa, leerCoordenadas } from './planificacion';
 import { datosConfirmar, estadoVistaPrevia } from './vistaPrevia';
+import { LIMITE_SIN_UBICACION, desmarcarVisibles, enriquecerPendientes, filtrarPendientes, marcarVisibles, opcionesSeleccion, sinUbicacionEn } from './seleccionRuta';
 import VistaPreviaRuta from './VistaPreviaRuta';
 
 // Pestaña Rutas: elegir pedidos (máx. RUTA_MAX_PEDIDOS), corregir la ubicación de los que n8n no pudo
 // ubicar (#107, #113) y calcular la ruta con POST /rutas/planificar en vista previa: se revisa y se guarda con
 // POST /rutas/confirmar (#87). El orden guardado se ve en RutaEnCurso (#85).
-export default function Rutas({ pendientes, busy, onActualizar, onPlanificando }) {
+const nombreDia = d => (d === SIN_DIA ? 'Sin día de reparto' : DIAS_REPARTO.find(([v]) => v === d)?.[1] || d);
+
+export default function Rutas({ pendientes, clientes = [], busy, onActualizar, onPlanificando }) {
+  // #81: armar la ruta por día de reparto y comuna del cliente.
+  const [dia, setDia] = useState('');
+  const [comuna, setComuna] = useState('');
+  const lista = useMemo(() => enriquecerPendientes(pendientes, clientes), [pendientes, clientes]);
+  const { dias, comunas } = opcionesSeleccion(lista, dia);
+  const visibles = filtrarPendientes(lista, { dia, comuna });
+  const hoy = diaHoy();
   const [selected, setSelected] = useState([]);
   const [result, setResult] = useState(null);
   const [planning, setPlanning] = useState(false);
@@ -24,6 +36,16 @@ export default function Rutas({ pendientes, busy, onActualizar, onPlanificando }
 
   const lleno = selected.length >= RUTA_MAX_PEDIDOS;
   const porRevisar = pendientes.filter(p => p.motivo_revision_direccion).length;
+  const sinUbicacionElegidos = sinUbicacionEn(lista, selected);
+  function marcar() {
+    const r = marcarVisibles(selected, visibles, RUTA_MAX_PEDIDOS);
+    setSelected(r.ids);
+    setAviso([
+      r.agregados === 1 ? 'Se marcó 1 pedido.' : `Se marcaron ${r.agregados} pedidos.`,
+      r.sinCupo ? `${r.sinCupo} no caben: el máximo por ruta es ${RUTA_MAX_PEDIDOS}.` : '',
+      r.porRevisar ? `${r.porRevisar} con la dirección por revisar quedaron fuera: corrige su ubicación primero.` : '',
+    ].filter(Boolean).join(' '));
+  }
 
   // #87: calcular no guarda nada; la ruta se revisa en la vista previa y se guarda al confirmar.
   async function calcular() {
@@ -47,14 +69,27 @@ export default function Rutas({ pendientes, busy, onActualizar, onPlanificando }
       <div className="title"><h2>Preparar ruta</h2><span className={`contador${lleno ? ' lleno' : ''}`} aria-live="polite">{selected.length} / {RUTA_MAX_PEDIDOS} pedidos</span></div>
       <p>Selecciona los pedidos que se incluirán, hasta {RUTA_MAX_PEDIDOS} por ruta, y calcula la ruta: antes de guardarla podrás revisarla y cambiar el orden. Se muestran todas las fechas: el backend todavía no registra una fecha de entrega.</p>
       {porRevisar > 0 && <p className="notice">{porRevisar === 1 ? 'Hay 1 pedido' : `Hay ${porRevisar} pedidos`} con la dirección por revisar: corrige su ubicación para que entren a la próxima ruta.</p>}
+      <div className="filters filtros-ruta">
+        <select aria-label="Día de reparto" value={dia} onChange={e => { setDia(e.target.value); setComuna(''); }}>
+          <option value="">Todos los días ({lista.length})</option>
+          {dias.map(([d, n]) => <option key={d} value={d}>{nombreDia(d)}{d === hoy ? ' · hoy' : ''} ({n})</option>)}
+        </select>
+        <select aria-label="Comuna" value={comuna} onChange={e => setComuna(e.target.value)}>
+          <option value="">Todas las comunas{dia ? ' del día' : ''}</option>
+          {comunas.map(([c, n]) => <option key={c} value={c}>{c} ({n})</option>)}
+        </select>
+        <button disabled={planning || !visibles.length} onClick={marcar}>Marcar los {visibles.length} visibles</button>
+        <button disabled={planning || !visibles.some(p => selected.includes(p.pedido_id))} onClick={() => { setSelected(ids => desmarcarVisibles(ids, visibles)); setAviso(''); }}>Desmarcar visibles</button>
+      </div>
       {aviso && <p role="status" className="ok">{aviso}</p>}
-      {pendientes.map(p => <div className="parada" key={p.pedido_id}>
+      {sinUbicacionElegidos > LIMITE_SIN_UBICACION && <p className="notice">{sinUbicacionElegidos} de los pedidos marcados no tienen ubicación: el servicio de rutas tendría que buscarlos todos y podría no alcanzar a responder. Calcula en dos tandas o corrige primero algunas ubicaciones.</p>}
+      {visibles.map(p => <div className="parada" key={p.pedido_id}>
         <div className="stop">
           <input id={`pedido-${p.pedido_id}`} type="checkbox" disabled={planning || (lleno && !selected.includes(p.pedido_id))} checked={selected.includes(p.pedido_id)} onChange={e => setSelected(ids => alternarSeleccion(ids, p.pedido_id, e.target.checked))}/>
           <label htmlFor={`pedido-${p.pedido_id}`}>
             <strong>#{p.pedido_id} · {p.cliente_nombre}</strong>
-            <span className="etiquetas"><span className={`badge ${p.estado}`}>{ETIQUETA_ESTADO[p.estado] || p.estado}</span>{p.motivo_revision_direccion && <span className="badge revisar">Dirección por revisar</span>}</span>
-            <small>{p.direccion_texto || 'Sin dirección'} · {fecha(p.creado_en)}</small>
+            <span className="etiquetas"><span className={`badge ${p.estado}`}>{ETIQUETA_ESTADO[p.estado] || p.estado}</span>{p.motivo_revision_direccion ? <span className="badge revisar">Dirección por revisar</span> : p.sinUbicacion && <span className="badge sin-ubicacion" title="Al calcular, el servicio de rutas buscará la dirección en el mapa">Sin ubicación</span>}</span>
+            <small>{p.direccion_texto || 'Sin dirección'} · {p.comuna} · {nombreDia(p.dia)} · {fecha(p.creado_en)}</small>
             {p.motivo_revision_direccion && <small className="motivo">Motivo: {p.motivo_revision_direccion}</small>}
           </label>
           {p.motivo_revision_direccion && corrigiendo !== p.pedido_id && <button onClick={() => { setCorrigiendo(p.pedido_id); setAviso(''); }}>Corregir ubicación</button>}
@@ -62,6 +97,7 @@ export default function Rutas({ pendientes, busy, onActualizar, onPlanificando }
         {corrigiendo === p.pedido_id && <CorregirUbicacion pedido={p} onCancelar={() => setCorrigiendo(null)} onGuardado={() => { setCorrigiendo(null); setAviso(`Ubicación del pedido #${p.pedido_id} guardada. Ya puede entrar en la próxima ruta.`); onActualizar(); }}/>}
       </div>)}
       {!pendientes.length && <p>No hay pedidos pendientes.</p>}
+      {pendientes.length > 0 && !visibles.length && <p>No hay pedidos pendientes con estos filtros.</p>}
       {lleno && <p className="muted">Llegaste al máximo de {RUTA_MAX_PEDIDOS} pedidos por ruta. Desmarca alguno para elegir otro.</p>}
       {error && <div role="alert" className="error"><strong>{error.mensaje}</strong><ul>{error.detalles.map(d => <li key={d}>{d}</li>)}</ul></div>}
       <button className="primary" disabled={!selected.length || planning || busy || !!vista} onClick={calcular}>{planning ? 'Calculando… (puede tardar hasta 2 minutos)' : `Calcular ruta (${selected.length})`}</button>
