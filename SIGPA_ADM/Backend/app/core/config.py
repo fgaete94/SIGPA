@@ -64,6 +64,12 @@ class Settings(BaseSettings):
     N8N_ROUTE_TIMEOUT_SECONDS: float = 45
     # Máximo de pedidos por POST /rutas/planificar.
     RUTA_MAX_PEDIDOS: int = 30
+    # Restricción de peso por viaje (ver ruta_service): capacidad del camión,
+    # peso desde el cual el último viaje ya no termina en la casa del
+    # despachador y máximo de viajes por planificación.
+    RUTA_CAPACIDAD_KG: int = 1100
+    RUTA_UMBRAL_CASA_KG: int = 800
+    RUTA_MAX_VIAJES: int = 3
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

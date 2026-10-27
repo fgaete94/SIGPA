@@ -53,6 +53,24 @@
               "name": "PAIS",
               "value": "={{ String($env.PAIS || '').trim() || 'CL' }}",
               "type": "string"
+            },
+            {
+              "id": "c5",
+              "name": "CAPACIDAD_KG",
+              "value": "={{ String($env.CAPACIDAD_KG || '').trim() !== '' && isFinite($env.CAPACIDAD_KG) ? Number($env.CAPACIDAD_KG) : null }}",
+              "type": "number"
+            },
+            {
+              "id": "c6",
+              "name": "UMBRAL_CASA_KG",
+              "value": "={{ String($env.UMBRAL_CASA_KG || '').trim() !== '' && isFinite($env.UMBRAL_CASA_KG) ? Number($env.UMBRAL_CASA_KG) : null }}",
+              "type": "number"
+            },
+            {
+              "id": "c7",
+              "name": "MAX_VIAJES",
+              "value": "={{ String($env.MAX_VIAJES || '').trim() !== '' && isFinite($env.MAX_VIAJES) ? Number($env.MAX_VIAJES) : null }}",
+              "type": "number"
             }
           ]
         },
@@ -68,13 +86,13 @@
         220,
         300
       ],
-      "notes": "Lee DEPOT_LAT, DEPOT_LON, CONFIDENCE_MIN (default 0.6) y PAIS (default CL) de las variables de entorno. Sin depósito válido el workflow responde 500 configuracion_incompleta.",
+      "notes": "Lee DEPOT_LAT, DEPOT_LON, CONFIDENCE_MIN (default 0.6), PAIS (default CL) y, como respaldo si el backend no envía 'reglas', CAPACIDAD_KG (1100), UMBRAL_CASA_KG (800) y MAX_VIAJES (3). Sin depósito válido el workflow responde 500 configuracion_incompleta. CASA_LAT/CASA_LON no se leen aquí: solo se usan en Evaluar reparto y en Optimizar a casa (ORS).",
       "notesInFlow": true,
       "onError": "continueRegularOutput"
     },
     {
       "parameters": {
-        "jsCode": "// Valida la entrada y separa paradas con coordenadas de las que hay que geocodificar.\n// Nunca lanza errores: si algo está mal devuelve valido=false para que se responda.\nconst cfg = $('Config').first().json;\nconst body = $('Webhook').first().json.body;\n\nconst enRango = (lat, lon) =>\n  Number.isFinite(lat) && Number.isFinite(lon) &&\n  lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180;\nconst aNumero = (v) => (v === null || v === undefined || v === '' ? NaN : Number(v));\nconst invalido = (status, error, detalle) =>\n  [{ json: { valido: false, status, error, detalle } }];\n\nconst depotLat = aNumero(cfg.DEPOT_LAT);\nconst depotLon = aNumero(cfg.DEPOT_LON);\nif (!enRango(depotLat, depotLon) || (depotLat === 0 && depotLon === 0)) {\n  return invalido(500, 'configuracion_incompleta', 'Definir DEPOT_LAT y DEPOT_LON (variables de entorno de n8n)');\n}\n// La API key de ORS se lee del entorno en los nodos HTTP; aquí solo se\n// verifica que exista (nunca se copia a los datos de la ejecución).\nlet orsKey = '';\ntry {\n  orsKey = String($env.OPENROUTESERVICE_API_KEY || '').trim();\n} catch (e) {\n  orsKey = '';\n}\nif (!orsKey) {\n  return invalido(500, 'configuracion_incompleta', 'Definir OPENROUTESERVICE_API_KEY (variable de entorno de n8n)');\n}\n\nif (!body || !Array.isArray(body.paradas)) {\n  return invalido(400, 'entrada_invalida', 'Se esperaba {\"paradas\": [...]}');\n}\n\nconst resueltas = [];\nconst pendientes = [];\nconst sin_resolver = [];\nconst ids_recibidos = [];\nconst vistos = new Set();\n\nfor (const p of body.paradas) {\n  let id = p ? p.pedido_id : undefined;\n  if (typeof id === 'string' && /^\\d+$/.test(id)) id = Number(id);\n  if (!Number.isInteger(id)) {\n    return invalido(400, 'entrada_invalida', 'pedido_id debe ser entero: ' + JSON.stringify(p));\n  }\n  // Un pedido_id repetido se considera una sola parada (la primera).\n  if (vistos.has(id)) continue;\n  vistos.add(id);\n  ids_recibidos.push(id);\n\n  const lat = aNumero(p.latitud);\n  const lon = aNumero(p.longitud);\n  const direccion = typeof p.direccion_texto === 'string' ? p.direccion_texto.trim() : '';\n\n  if (enRango(lat, lon)) {\n    resueltas.push({ pedido_id: id, latitud: lat, longitud: lon });\n  } else if (direccion) {\n    pendientes.push({ pedido_id: id, direccion_texto: direccion });\n  } else {\n    sin_resolver.push({ pedido_id: id, motivo: 'dirección no encontrada' });\n  }\n}\n\nreturn [{ json: { valido: true, ids_recibidos, resueltas, pendientes, sin_resolver } }];"
+        "jsCode": "// Valida la entrada y separa paradas con coordenadas de las que hay que geocodificar.\n// Nunca lanza errores: si algo está mal devuelve valido=false para que se responda.\nconst cfg = $('Config').first().json;\nconst body = $('Webhook').first().json.body;\nconst inicio_ms = Date.now(); // para repartir el tiempo de las llamadas de optimización (ver README)\n\nconst enRango = (lat, lon) =>\n  Number.isFinite(lat) && Number.isFinite(lon) &&\n  lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180;\nconst aNumero = (v) => (v === null || v === undefined || v === '' ? NaN : Number(v));\nconst enteroPositivo = (v) => {\n  const n = aNumero(v);\n  return Number.isInteger(n) && n >= 1 ? n : NaN;\n};\nconst invalido = (status, error, detalle) =>\n  [{ json: { valido: false, status, error, detalle } }];\n\nconst depotLat = aNumero(cfg.DEPOT_LAT);\nconst depotLon = aNumero(cfg.DEPOT_LON);\nif (!enRango(depotLat, depotLon) || (depotLat === 0 && depotLon === 0)) {\n  return invalido(500, 'configuracion_incompleta', 'Definir DEPOT_LAT y DEPOT_LON (variables de entorno de n8n)');\n}\n// La API key de ORS se lee del entorno en los nodos HTTP; aquí solo se\n// verifica que exista (nunca se copia a los datos de la ejecución).\nlet orsKey = '';\ntry {\n  orsKey = String($env.OPENROUTESERVICE_API_KEY || '').trim();\n} catch (e) {\n  orsKey = '';\n}\nif (!orsKey) {\n  return invalido(500, 'configuracion_incompleta', 'Definir OPENROUTESERVICE_API_KEY (variable de entorno de n8n)');\n}\n\nif (!body || !Array.isArray(body.paradas)) {\n  return invalido(400, 'entrada_invalida', 'Se esperaba {\"paradas\": [...], \"reglas\": {...}}');\n}\n\n// Reglas de peso: primero las del backend (\"reglas\" del payload), luego las\n// variables de entorno (CAPACIDAD_KG, UMBRAL_CASA_KG, MAX_VIAJES) y por último\n// los defaults. Una regla presente pero inválida es un 400.\nconst DEFAULTS = { capacidad_kg: 1100, umbral_casa_kg: 800, max_viajes: 3 };\nconst ENTORNO = { capacidad_kg: 'CAPACIDAD_KG', umbral_casa_kg: 'UMBRAL_CASA_KG', max_viajes: 'MAX_VIAJES' };\nconst enviadas = body.reglas;\nif (enviadas !== undefined && enviadas !== null && (typeof enviadas !== 'object' || Array.isArray(enviadas))) {\n  return invalido(400, 'entrada_invalida', '\"reglas\" debe ser un objeto');\n}\nconst reglas = {};\nfor (const clave of Object.keys(DEFAULTS)) {\n  const dePayload = enviadas ? enviadas[clave] : undefined;\n  if (dePayload !== undefined && dePayload !== null) {\n    const n = enteroPositivo(dePayload);\n    if (Number.isNaN(n)) {\n      return invalido(400, 'entrada_invalida', 'reglas.' + clave + ' debe ser un entero >= 1');\n    }\n    reglas[clave] = n;\n  } else {\n    const deEntorno = enteroPositivo(cfg[ENTORNO[clave]]);\n    reglas[clave] = Number.isNaN(deEntorno) ? DEFAULTS[clave] : deEntorno;\n  }\n}\n\nconst resueltas = [];\nconst pendientes = [];\nconst sin_resolver = [];\nconst ids_recibidos = [];\nconst vistos = new Set();\n\nfor (const p of body.paradas) {\n  let id = p ? p.pedido_id : undefined;\n  if (typeof id === 'string' && /^\\d+$/.test(id)) id = Number(id);\n  if (!Number.isInteger(id)) {\n    return invalido(400, 'entrada_invalida', 'pedido_id debe ser entero: ' + JSON.stringify(p));\n  }\n  // peso_kg es obligatorio en toda parada: entero >= 1.\n  const peso = enteroPositivo(p.peso_kg);\n  if (Number.isNaN(peso)) {\n    return invalido(400, 'entrada_invalida', 'peso_kg debe ser un entero >= 1 (pedido_id ' + id + ')');\n  }\n  // Un pedido_id repetido se considera una sola parada (la primera).\n  if (vistos.has(id)) continue;\n  vistos.add(id);\n  ids_recibidos.push(id);\n\n  const lat = aNumero(p.latitud);\n  const lon = aNumero(p.longitud);\n  const direccion = typeof p.direccion_texto === 'string' ? p.direccion_texto.trim() : '';\n\n  if (enRango(lat, lon)) {\n    resueltas.push({ pedido_id: id, latitud: lat, longitud: lon, peso_kg: peso });\n  } else if (direccion) {\n    pendientes.push({ pedido_id: id, direccion_texto: direccion, peso_kg: peso });\n  } else {\n    sin_resolver.push({ pedido_id: id, motivo: 'dirección no encontrada' });\n  }\n}\n\nreturn [{ json: { valido: true, ids_recibidos, resueltas, pendientes, sin_resolver, reglas, inicio_ms } }];\n"
       },
       "id": "a1000000-0000-4000-8000-000000000003",
       "name": "Normalizar",
@@ -246,7 +264,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Junta el resultado de la geocodificación con las paradas que ya tenían coordenadas.\nconst cfg = $('Config').first().json;\nconst base = $('Normalizar').first().json;\nconst pendientes = $('Separar pendientes').all().map((i) => i.json);\nconst respuestas = $input.all();\nconst minConfianza = Number(cfg.CONFIDENCE_MIN);\n\nconst resueltas = [...base.resueltas];\nconst sin_resolver = [...base.sin_resolver];\n\npendientes.forEach((p, i) => {\n  const r = respuestas[i] ? respuestas[i].json : null;\n  if (!r || r.error || !Array.isArray(r.features)) {\n    sin_resolver.push({ pedido_id: p.pedido_id, motivo: 'error de geocodificación' });\n    return;\n  }\n  const f = r.features[0];\n  const coords = f && f.geometry && f.geometry.coordinates;\n  if (!f || !Array.isArray(coords) || coords.length < 2) {\n    sin_resolver.push({ pedido_id: p.pedido_id, motivo: 'dirección no encontrada' });\n    return;\n  }\n  const props = f.properties || {};\n  // El confidence de ORS no basta: una dirección inventada puede volver con confidence 1 y\n  // match_type \"exact\" apuntando al centroide de otra calle. Solo se acepta un punto exacto.\n  if (props.layer !== 'address') {\n    sin_resolver.push({ pedido_id: p.pedido_id, motivo: 'dirección no encontrada con precisión suficiente' });\n    return;\n  }\n  const confianza = Number(props.confidence);\n  if (!(confianza >= minConfianza)) {\n    sin_resolver.push({ pedido_id: p.pedido_id, motivo: 'dirección ambigua' });\n    return;\n  }\n  // ORS devuelve [lon, lat].\n  const lon = Number(coords[0]);\n  const lat = Number(coords[1]);\n  if (!(lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180)) {\n    sin_resolver.push({ pedido_id: p.pedido_id, motivo: 'error de geocodificación' });\n    return;\n  }\n  resueltas.push({ pedido_id: p.pedido_id, latitud: lat, longitud: lon });\n});\n\nreturn [{ json: { ids_recibidos: base.ids_recibidos, resueltas, sin_resolver } }];"
+        "jsCode": "// Junta el resultado de la geocodificación con las paradas que ya tenían coordenadas.\nconst cfg = $('Config').first().json;\nconst base = $('Normalizar').first().json;\nconst pendientes = $('Separar pendientes').all().map((i) => i.json);\nconst respuestas = $input.all();\nconst minConfianza = Number(cfg.CONFIDENCE_MIN);\n\nconst resueltas = [...base.resueltas];\nconst sin_resolver = [...base.sin_resolver];\n\npendientes.forEach((p, i) => {\n  const r = respuestas[i] ? respuestas[i].json : null;\n  if (!r || r.error || !Array.isArray(r.features)) {\n    sin_resolver.push({ pedido_id: p.pedido_id, motivo: 'error de geocodificación' });\n    return;\n  }\n  const f = r.features[0];\n  const coords = f && f.geometry && f.geometry.coordinates;\n  if (!f || !Array.isArray(coords) || coords.length < 2) {\n    sin_resolver.push({ pedido_id: p.pedido_id, motivo: 'dirección no encontrada' });\n    return;\n  }\n  const props = f.properties || {};\n  // El confidence de ORS no basta: una dirección inventada puede volver con confidence 1 y\n  // match_type \"exact\" apuntando al centroide de otra calle. Solo se acepta un punto exacto.\n  if (props.layer !== 'address') {\n    sin_resolver.push({ pedido_id: p.pedido_id, motivo: 'dirección no encontrada con precisión suficiente' });\n    return;\n  }\n  const confianza = Number(props.confidence);\n  if (!(confianza >= minConfianza)) {\n    sin_resolver.push({ pedido_id: p.pedido_id, motivo: 'dirección ambigua' });\n    return;\n  }\n  // ORS devuelve [lon, lat].\n  const lon = Number(coords[0]);\n  const lat = Number(coords[1]);\n  if (!(lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180)) {\n    sin_resolver.push({ pedido_id: p.pedido_id, motivo: 'error de geocodificación' });\n    return;\n  }\n  resueltas.push({ pedido_id: p.pedido_id, latitud: lat, longitud: lon, peso_kg: p.peso_kg });\n});\n\nreturn [{ json: { ids_recibidos: base.ids_recibidos, resueltas, sin_resolver } }];"
       },
       "id": "a1000000-0000-4000-8000-000000000009",
       "name": "Evaluar geocodificación",
@@ -259,7 +277,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Llega desde Normalizar (sin geocodificar) o desde Evaluar geocodificación; ambos con la misma forma.\nconst cfg = $('Config').first().json;\nconst d = $input.first().json;\nconst depot = [Number(cfg.DEPOT_LON), Number(cfg.DEPOT_LAT)];\n\nconst body_optimizacion = {\n  vehicles: [{ id: 1, profile: 'driving-car', start: depot, end: depot }],\n  jobs: d.resueltas.map((p) => ({ id: p.pedido_id, location: [p.longitud, p.latitud] })),\n};\n\nreturn [{\n  json: {\n    ids_recibidos: d.ids_recibidos,\n    resueltas: d.resueltas,\n    sin_resolver: d.sin_resolver,\n    body_optimizacion,\n  },\n}];"
+        "jsCode": "// Llega desde Normalizar (sin geocodificar) o desde Evaluar geocodificación; ambos con la misma forma.\n// Aplica la restricción de peso antes de llamar a ORS y arma la primera solicitud de optimización\n// (k vehículos). Ver el README de N8N/ para el reparto del tiempo.\nconst cfg = $('Config').first().json;\nconst base = $('Normalizar').first().json;\nconst d = $input.first().json;\nconst { capacidad_kg, umbral_casa_kg, max_viajes } = base.reglas;\nconst depot = [Number(cfg.DEPOT_LON), Number(cfg.DEPOT_LAT)];\n\nconst PLAZO_MS = 36000; // las llamadas de optimización deben terminar 36 s después de recibir la solicitud\nconst TIMEOUT_MAX_MS = 10000;\nconst TIMEOUT_MIN_MS = 2000;\nconst MAX_APARTADAS = 2; // paradas que Evaluar error de optimización puede apartar (ubicación sin ruta alcanzable)\n\n// Una parada que por sí sola supera la capacidad no se puede cargar en ningún viaje.\nconst sin_resolver = [...d.sin_resolver];\nconst resueltas = [];\nfor (const p of d.resueltas) {\n  if (p.peso_kg > capacidad_kg) {\n    sin_resolver.push({ pedido_id: p.pedido_id, motivo: 'pedido excede la capacidad del camión' });\n  } else {\n    resueltas.push(p);\n  }\n}\n\nconst total = resueltas.reduce((s, p) => s + p.peso_kg, 0);\nif (total > capacidad_kg * max_viajes) {\n  return [{\n    json: {\n      valido: false,\n      status: 400,\n      error: 'carga_excede_capacidad',\n      detalle: 'El peso total de las paradas (' + total + ' kg) supera capacidad_kg * max_viajes (' + capacidad_kg * max_viajes + ' kg)',\n    },\n  }];\n}\n\n// Funciones del reparto (se repiten en Evaluar reparto, que arma los reintentos).\nconst cuerpoOptimizacion = (k) => ({\n  vehicles: Array.from({ length: k }, (_, i) => ({\n    id: i + 1, profile: 'driving-car', start: depot, end: depot, capacity: [capacidad_kg],\n  })),\n  jobs: resueltas.map((p) => ({ id: p.pedido_id, location: [p.longitud, p.latitud], amount: [p.peso_kg] })),\n});\n\nconst k0 = resueltas.length > 0 ? Math.max(1, Math.ceil(total / capacidad_kg)) : 0;\n// Llamadas que pueden hacer falta: los intentos desde k0 hasta max_viajes, una reoptimización a la casa\n// y un reintento por cada parada que se aparte por no tener ruta alcanzable.\nconst llamadas = resueltas.length > 0 ? (max_viajes - k0 + 1) + 1 + MAX_APARTADAS : 0;\nconst restante = base.inicio_ms + PLAZO_MS - Date.now();\nconst timeout_ms = llamadas > 0 ? Math.min(TIMEOUT_MAX_MS, Math.floor(restante / llamadas)) : 0;\nconst sin_tiempo = llamadas > 0 && timeout_ms < TIMEOUT_MIN_MS;\n\nreturn [{\n  json: {\n    valido: true,\n    ids_recibidos: d.ids_recibidos,\n    // Si no hay tiempo para optimizar no se llama a ORS: Armar respuesta responde 502.\n    resueltas: sin_tiempo ? [] : resueltas,\n    sin_resolver,\n    reglas: base.reglas,\n    depot,\n    k0,\n    body_optimizacion: llamadas > 0 && !sin_tiempo ? cuerpoOptimizacion(k0) : null,\n    timeout_ms,\n    plan_listo: resueltas.length === 0 || sin_tiempo,\n    fallo: sin_tiempo ? 'tiempo agotado antes de optimizar' : null,\n    accion: 'directo',\n    viajes_ors: [],\n  },\n}];\n"
       },
       "id": "a1000000-0000-4000-8000-00000000000a",
       "name": "Preparar optimización",
@@ -301,7 +319,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        1980,
+        2200,
         200
       ]
     },
@@ -322,7 +340,7 @@
         "specifyBody": "json",
         "jsonBody": "={{ JSON.stringify($json.body_optimizacion) }}",
         "options": {
-          "timeout": 20000
+          "timeout": "={{ $json.timeout_ms }}"
         }
       },
       "id": "a1000000-0000-4000-8000-00000000000c",
@@ -330,23 +348,23 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        2200,
+        2420,
         100
       ],
       "onError": "continueErrorOutput",
-      "notes": "Timeout, 429, 4xx o 5xx salen por la rama de error -> 502.",
+      "notes": "Timeout calculado por llamada (2-10 s, repartido dentro de un plazo de 36 s). Si falla (timeout, 429, 4xx, 5xx) sale por la rama de error hacia Evaluar error de optimización: un punto sin ruta alcanzable (code 3) aparta esa parada y reintenta; cualquier otra falla -> 502. Se vuelve a ejecutar si Evaluar reparto pide un vehículo más.",
       "notesInFlow": true
     },
     {
       "parameters": {
-        "jsCode": "// Arma {ruta, sin_resolver} y verifica el contrato antes de responder.\n// Si algo no cuadra, valido=false y se responde 502 (nunca una ruta parcial).\nconst prep = $('Preparar optimización').first().json;\nconst opt = $input.first().json;\n\nconst porId = new Map(prep.resueltas.map((p) => [p.pedido_id, p]));\nconst ruta = [];\nconst sin_resolver = [...prep.sin_resolver];\nconst errores = [];\n\nif (prep.resueltas.length > 0) {\n  if (!opt || !Array.isArray(opt.routes) || (opt.code !== undefined && opt.code !== 0)) {\n    errores.push('respuesta de optimización inesperada');\n  } else {\n    const steps = opt.routes[0] && Array.isArray(opt.routes[0].steps) ? opt.routes[0].steps : [];\n    const enRuta = new Set();\n    for (const s of steps) {\n      if (s.type !== 'job') continue;\n      const p = porId.get(s.id);\n      if (!p || enRuta.has(s.id)) {\n        errores.push('job desconocido o repetido: ' + s.id);\n        continue;\n      }\n      enRuta.add(s.id);\n      // Se devuelven las coordenadas propias (las recibidas o las geocodificadas).\n      ruta.push({ pedido_id: p.pedido_id, orden_entrega: ruta.length + 1, latitud: p.latitud, longitud: p.longitud });\n    }\n    // Lo que no quedó en la ruta (unassigned u omitido) va a sin_resolver.\n    for (const p of prep.resueltas) {\n      if (!enRuta.has(p.pedido_id)) {\n        sin_resolver.push({ pedido_id: p.pedido_id, motivo: 'no asignable en la optimización' });\n      }\n    }\n  }\n}\n\n// Verificación del contrato.\nconst apariciones = new Map();\nfor (const x of [...ruta, ...sin_resolver]) {\n  apariciones.set(x.pedido_id, (apariciones.get(x.pedido_id) || 0) + 1);\n}\nfor (const id of prep.ids_recibidos) {\n  if (apariciones.get(id) !== 1) errores.push('pedido_id ' + id + ' aparece ' + (apariciones.get(id) || 0) + ' veces');\n}\nfor (const id of apariciones.keys()) {\n  if (!prep.ids_recibidos.includes(id)) errores.push('pedido_id no recibido: ' + id);\n}\nruta.forEach((r, i) => {\n  if (r.orden_entrega !== i + 1) errores.push('orden_entrega inválido en ' + r.pedido_id);\n  if (!(r.latitud >= -90 && r.latitud <= 90 && r.longitud >= -180 && r.longitud <= 180)) {\n    errores.push('coordenadas fuera de rango en ' + r.pedido_id);\n  }\n});\n\nreturn [{ json: { valido: errores.length === 0, errores, respuesta: { ruta, sin_resolver } } }];"
+        "jsCode": "// Numera los viajes, arma {ruta, viajes, sin_resolver} y verifica el contrato antes de responder.\n// Si algo no cuadra, valido=false y se responde 502 (nunca una ruta parcial).\nconst d = $input.first().json;\n// Llega el plan ya listo en el item (sin reoptimización a la casa, sin paradas o con falla) o la respuesta\n// de ORS de \"Optimizar a casa (ORS)\", que reemplazó el item: el plan se lee entonces de \"Preparar viaje a\n// casa\", un nodo con una sola salida y una sola ejecución (no de un IF, cuyas dos salidas hacían ambigua\n// la lectura por nombre).\nconst plan = d.plan_listo ? d : $('Preparar viaje a casa').first().json;\nconst casaOpt = d.plan_listo ? null : d;\nconst { capacidad_kg, umbral_casa_kg, max_viajes } = plan.reglas;\n\nconst porId = new Map(plan.resueltas.map((p) => [p.pedido_id, p]));\nconst sin_resolver = [...plan.sin_resolver];\nconst errores = [];\nif (plan.fallo) errores.push(plan.fallo);\n\n// Viajes de ORS: pedidos en orden de visita y peso con los pesos recibidos.\nconst viajes = (plan.viajes_ors || []).map((v) => ({ vehiculo: v.vehiculo, ids: [...v.ids], termina_en: 'planta' }));\nconst pesoDe = (ids) => ids.reduce((s, id) => s + (porId.has(id) ? porId.get(id).peso_kg : 0), 0);\n\n// El viaje más liviano, reoptimizado hacia la casa: solo cambia su orden interno.\nif (plan.accion === 'casa' && errores.length === 0) {\n  const v = viajes.find((x) => x.vehiculo === plan.casa_vehiculo);\n  const r = casaOpt && Array.isArray(casaOpt.routes) && (casaOpt.code === undefined || casaOpt.code === 0) ? casaOpt.routes[0] : null;\n  const nuevos = r && Array.isArray(r.steps) ? r.steps.filter((s) => s.type === 'job').map((s) => s.id) : [];\n  const mismos = v && nuevos.length === v.ids.length && new Set(nuevos).size === nuevos.length && nuevos.every((id) => v.ids.includes(id));\n  const sinAsignar = casaOpt && Array.isArray(casaOpt.unassigned) && casaOpt.unassigned.length > 0;\n  if (!v || !mismos || sinAsignar || casaOpt.routes.length !== 1) {\n    errores.push('reoptimización hacia la casa inesperada');\n  } else {\n    v.ids = nuevos;\n    v.termina_en = 'casa';\n  }\n}\n\n// Numeración: los que terminan en la planta, de mayor a menor peso (empate: menor vehículo);\n// el de la casa, si existe, es el último (y el más liviano).\nconst enPlanta = viajes.filter((v) => v.termina_en === 'planta')\n  .sort((a, b) => pesoDe(b.ids) - pesoDe(a.ids) || a.vehiculo - b.vehiculo);\nconst enCasa = viajes.filter((v) => v.termina_en === 'casa');\nconst ordenados = [...enPlanta, ...enCasa];\n\nconst ruta = [];\nconst resumen = [];\nordenados.forEach((v, i) => {\n  const numero = i + 1;\n  v.ids.forEach((id, j) => {\n    const p = porId.get(id);\n    ruta.push({ pedido_id: id, viaje: numero, orden_entrega: j + 1, latitud: p.latitud, longitud: p.longitud });\n  });\n  resumen.push({ viaje: numero, peso_kg: pesoDe(v.ids), termina_en: v.termina_en, total_paradas: v.ids.length });\n});\n\n// Verificación del contrato (la misma que hace el backend).\nconst apariciones = new Map();\nfor (const x of [...ruta, ...sin_resolver]) {\n  apariciones.set(x.pedido_id, (apariciones.get(x.pedido_id) || 0) + 1);\n}\nfor (const id of plan.ids_recibidos) {\n  if (apariciones.get(id) !== 1) errores.push('pedido_id ' + id + ' aparece ' + (apariciones.get(id) || 0) + ' veces');\n}\nfor (const id of apariciones.keys()) {\n  if (!plan.ids_recibidos.includes(id)) errores.push('pedido_id no recibido: ' + id);\n}\nruta.forEach((r) => {\n  if (!(r.latitud >= -90 && r.latitud <= 90 && r.longitud >= -180 && r.longitud <= 180)) {\n    errores.push('coordenadas fuera de rango en ' + r.pedido_id);\n  }\n});\nconst total = resumen.length;\nif (total > max_viajes) errores.push('hay ' + total + ' viajes y el máximo es ' + max_viajes);\nresumen.forEach((v) => {\n  const paradas = ruta.filter((r) => r.viaje === v.viaje);\n  if (v.total_paradas < 1) errores.push('viaje ' + v.viaje + ' sin paradas');\n  const ordenes = paradas.map((r) => r.orden_entrega);\n  if (ordenes.some((o, i) => o !== i + 1)) errores.push('orden_entrega no consecutivo en el viaje ' + v.viaje);\n  if (v.peso_kg > capacidad_kg) errores.push('el viaje ' + v.viaje + ' excede la capacidad');\n  // \"casa\" solo en el último viaje, con V >= 2 y peso < umbral; y en ese caso es obligatoria.\n  const esperado = v.viaje === total && total >= 2 && v.peso_kg < umbral_casa_kg ? 'casa' : 'planta';\n  if (v.termina_en !== esperado) errores.push('termina_en inválido en el viaje ' + v.viaje);\n  if (total >= 2 && v.viaje < total && v.peso_kg < resumen[total - 1].peso_kg) {\n    errores.push('el último viaje no es el más liviano');\n  }\n});\n\nreturn [{ json: { valido: errores.length === 0, errores, respuesta: { ruta, viajes: resumen, sin_resolver } } }];\n"
       },
       "id": "a1000000-0000-4000-8000-00000000000d",
       "name": "Armar respuesta",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2420,
+        3960,
         260
       ]
     },
@@ -381,7 +399,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        2640,
+        4180,
         260
       ]
     },
@@ -398,7 +416,7 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
       "position": [
-        2860,
+        4400,
         160
       ]
     },
@@ -415,8 +433,258 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
       "position": [
-        2860,
+        4400,
         400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Evalúa cada respuesta de ORS Optimization: decide si hay que reintentar con un vehículo más,\n// o si el reparto en viajes está listo y si el viaje más liviano debe terminar en la casa.\n// Se ejecuta una vez por intento ($runIndex = 0 es el primero, con k0 vehículos).\nconst prep = $('Preparar optimización').first().json;\nconst base = $('Normalizar').first().json;\nconst opt = $input.first().json;\nconst { capacidad_kg, umbral_casa_kg, max_viajes } = prep.reglas;\nconst k = prep.k0 + $runIndex; // vehículos de la solicitud que se evalúa\n\nconst PLAZO_MS = 36000;\nconst TIMEOUT_MAX_MS = 10000;\nconst TIMEOUT_MIN_MS = 2000;\nconst MAX_APARTADAS = 2; // ver Evaluar error de optimización\nconst restante = () => base.inicio_ms + PLAZO_MS - Date.now();\n\nconst porId = new Map(prep.resueltas.map((p) => [p.pedido_id, p]));\nconst aNumero = (v) => (v === null || v === undefined || v === '' ? NaN : Number(v));\n\n// El resultado siempre lleva el plan completo (lo lee Armar respuesta).\nconst plan = (extra) => ({\n  plan_listo: true,\n  valido: true,\n  ids_recibidos: prep.ids_recibidos,\n  resueltas: prep.resueltas,\n  sin_resolver: prep.sin_resolver,\n  reglas: prep.reglas,\n  depot: prep.depot,\n  accion: 'directo',\n  fallo: null,\n  viajes_ors: [],\n  ...extra,\n});\nconst fallo = (motivo) => [{ json: plan({ fallo: motivo }) }];\n\n// 1. Rutas de ORS -> viajes (id de vehículo, pedidos en orden de visita, peso).\nif (!opt || !Array.isArray(opt.routes) || (opt.code !== undefined && opt.code !== 0)) {\n  return fallo('respuesta de optimización inesperada');\n}\nconst vistos = new Set();\nconst viajes = [];\nfor (const r of opt.routes) {\n  const ids = [];\n  for (const s of Array.isArray(r.steps) ? r.steps : []) {\n    if (s.type !== 'job') continue;\n    if (!porId.has(s.id) || vistos.has(s.id)) return fallo('job desconocido o repetido: ' + s.id);\n    vistos.add(s.id);\n    ids.push(s.id);\n  }\n  if (ids.length === 0) continue; // vehículo sin usar\n  const peso_kg = ids.reduce((s, id) => s + porId.get(id).peso_kg, 0);\n  if (peso_kg > capacidad_kg) return fallo('un viaje excede la capacidad');\n  viajes.push({ vehiculo: r.vehicle, ids, peso_kg });\n}\n// ORS devuelve cada job de la solicitud en una ruta o en \"unassigned\". Las que no aparecen son las que\n// Evaluar error de optimización apartó por no tener ruta alcanzable (no se enviaron en esta solicitud).\nconst sinRuta = new Set((Array.isArray(opt.unassigned) ? opt.unassigned : []).map((u) => u.id));\nconst intentadas = prep.resueltas.filter((p) => vistos.has(p.pedido_id) || sinRuta.has(p.pedido_id));\nconst apartadas = prep.resueltas.filter((p) => !vistos.has(p.pedido_id) && !sinRuta.has(p.pedido_id));\nconst sinAsignar = intentadas.filter((p) => !vistos.has(p.pedido_id));\n\n// 2. Lo que no se pudo empaquetar: un vehículo más (hasta max_viajes) y se vuelve a optimizar.\nif (sinAsignar.length > 0 && k < max_viajes) {\n  const siguiente = k + 1;\n  // Llamadas que aún pueden hacer falta: intentos desde siguiente hasta max_viajes, la reoptimización a la\n  // casa y los reintentos por paradas que aún se podrían apartar.\n  const llamadas = (max_viajes - siguiente + 1) + 1 + (MAX_APARTADAS - apartadas.length);\n  const timeout_ms = Math.min(TIMEOUT_MAX_MS, Math.floor(restante() / llamadas));\n  if (timeout_ms < TIMEOUT_MIN_MS) return fallo('tiempo agotado reintentando la optimización');\n  const depot = prep.depot;\n  return [{\n    json: plan({\n      accion: 'reintentar',\n      plan_listo: false,\n      timeout_ms,\n      body_optimizacion: {\n        vehicles: Array.from({ length: siguiente }, (_, i) => ({\n          id: i + 1, profile: 'driving-car', start: depot, end: depot, capacity: [capacidad_kg],\n        })),\n        jobs: intentadas.map((p) => ({ id: p.pedido_id, location: [p.longitud, p.latitud], amount: [p.peso_kg] })),\n      },\n    }),\n  }];\n}\n\n// 3. Reparto final. Lo que siga sin asignar va a sin_resolver.\nconst sin_resolver = [\n  ...prep.sin_resolver,\n  ...apartadas.map((p) => ({ pedido_id: p.pedido_id, motivo: 'ubicación sin ruta alcanzable' })),\n  ...sinAsignar.map((p) => ({ pedido_id: p.pedido_id, motivo: 'no asignable en la optimización' })),\n];\nconst final = (extra) => [{ json: plan({ sin_resolver, viajes_ors: viajes, ...extra }) }];\n\nif (viajes.length < 2) return final({});\n\n// El viaje más liviano (en empate, el de mayor número de vehículo) es el último.\n// Termina en la casa solo si pesa ESTRICTAMENTE menos que el umbral.\nconst liviano = viajes.reduce((a, b) => (b.peso_kg < a.peso_kg || (b.peso_kg === a.peso_kg && b.vehiculo > a.vehiculo) ? b : a));\nif (!(liviano.peso_kg < umbral_casa_kg)) return final({});\n\n// La casa solo existe en las variables de entorno de n8n: se valida aquí y nunca se copia a los datos.\nlet casaLat = NaN;\nlet casaLon = NaN;\ntry {\n  casaLat = aNumero($env.CASA_LAT);\n  casaLon = aNumero($env.CASA_LON);\n} catch (e) {\n  casaLat = NaN;\n  casaLon = NaN;\n}\nconst casaValida = Number.isFinite(casaLat) && Number.isFinite(casaLon) &&\n  casaLat >= -90 && casaLat <= 90 && casaLon >= -180 && casaLon <= 180 && !(casaLat === 0 && casaLon === 0);\nif (!casaValida) {\n  return [{\n    json: plan({\n      sin_resolver,\n      viajes_ors: viajes,\n      accion: 'error_config',\n      status: 500,\n      error: 'configuracion_incompleta',\n      detalle: 'Definir CASA_LAT y CASA_LON',\n    }),\n  }];\n}\n\n// Reoptimiza SOLO las paradas de ese viaje (el reparto entre viajes no cambia).\nconst timeout_casa_ms = Math.min(TIMEOUT_MAX_MS, restante());\nif (timeout_casa_ms < TIMEOUT_MIN_MS) return fallo('tiempo agotado antes de reoptimizar hacia la casa');\nreturn [{\n  json: plan({\n    sin_resolver,\n    viajes_ors: viajes,\n    accion: 'casa',\n    casa_vehiculo: liviano.vehiculo,\n    timeout_casa_ms,\n    // Pedidos del viaje liviano; \"Preparar viaje a casa\" arma los jobs y el nodo HTTP agrega el destino\n    // (la casa) desde $env: no pasa por los datos del flujo.\n    casa_ids: liviano.ids,\n  }),\n}];\n"
+      },
+      "id": "a1000000-0000-4000-8000-000000000011",
+      "name": "Evaluar reparto",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2640,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "i5",
+              "leftValue": "={{ $json.accion === 'reintentar' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000012",
+      "name": "¿Reintentar optimización?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2860,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "i6",
+              "leftValue": "={{ $json.valido }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000013",
+      "name": "¿Carga válida?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1980,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "i7",
+              "leftValue": "={{ $json.accion === 'error_config' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000014",
+      "name": "¿Error de configuración?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3080,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "i8",
+              "leftValue": "={{ $json.accion === 'casa' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000015",
+      "name": "¿Terminar en casa?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3300,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openrouteservice.org/optimization",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ $env.OPENROUTESERVICE_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ vehicles: [{ id: 1, profile: 'driving-car', start: $json.depot, end: [Number($env.CASA_LON), Number($env.CASA_LAT)], capacity: [$json.reglas.capacidad_kg] }], jobs: $json.jobs_casa }) }}",
+        "options": {
+          "timeout": "={{ $json.timeout_casa_ms }}"
+        }
+      },
+      "id": "a1000000-0000-4000-8000-000000000016",
+      "name": "Optimizar a casa (ORS)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3740,
+        100
+      ],
+      "onError": "continueErrorOutput",
+      "notes": "Reoptimiza SOLO el viaje más liviano (menor al umbral) con fin en la casa. El destino sale de $env.CASA_LAT/CASA_LON dentro de esta expresión: no pasa por los datos del flujo. Error -> 502.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Último paso antes de \"Optimizar a casa (ORS)\". Esa llamada reemplaza el item por la respuesta de ORS,\n// así que \"Armar respuesta\" necesita volver a leer el plan: lo lee de ESTE nodo, que tiene una sola\n// salida y se ejecuta una sola vez (por eso la lectura por nombre no es ambigua). También arma los\n// jobs del viaje liviano; el destino (la casa) lo agrega el nodo HTTP desde $env.\nconst plan = $input.first().json;\nconst porId = new Map(plan.resueltas.map((p) => [p.pedido_id, p]));\nreturn [{\n  json: {\n    ...plan,\n    jobs_casa: plan.casa_ids.map((id) => {\n      const p = porId.get(id);\n      return { id, location: [p.longitud, p.latitud], amount: [p.peso_kg] };\n    }),\n  },\n}];\n"
+      },
+      "id": "a1000000-0000-4000-8000-000000000017",
+      "name": "Preparar viaje a casa",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3520,
+        100
+      ],
+      "notes": "Una sola salida y una sola ejecución: de aquí lee Armar respuesta el plan después de la llamada a ORS (que reemplaza el item). Arma los jobs del viaje liviano.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Falla de \"Optimizar (ORS)\" (timeout, 4xx, 5xx...). Un único caso tiene arreglo: ORS responde\n// code 3 \"Unfound route(s) from location [lon,lat]\" cuando una parada está en un punto sin ruta\n// alcanzable (p. ej. en el mar). Entonces se aparta esa parada a sin_resolver y se reintenta con\n// las demás (máximo MAX_APARTADAS por solicitud). Cualquier otra falla, o un punto que no se pueda\n// asociar a una parada, termina en 502 optimizacion_fallida (llega a Armar respuesta con \"fallo\").\n// La entrada es el item que falló: trae body_optimizacion (la solicitud) y \"error\".\nconst prep = $('Preparar optimización').first().json;\nconst base = $('Normalizar').first().json;\nconst fallido = $input.first().json;\nconst { max_viajes } = prep.reglas;\n\nconst MAX_APARTADAS = 2; // paradas que se pueden apartar por este motivo en una solicitud\nconst TOLERANCIA_GRADOS = 0.0001; // ~11 m: ORS puede redondear las coordenadas que informa\nconst PLAZO_MS = 36000;\nconst TIMEOUT_MAX_MS = 10000;\nconst TIMEOUT_MIN_MS = 2000;\nconst MOTIVO = 'ubicación sin ruta alcanzable';\n\nconst plan = (extra) => ({\n  plan_listo: true,\n  valido: true,\n  ids_recibidos: prep.ids_recibidos,\n  resueltas: prep.resueltas,\n  sin_resolver: prep.sin_resolver,\n  reglas: prep.reglas,\n  depot: prep.depot,\n  accion: 'directo',\n  fallo: null,\n  viajes_ors: [],\n  ...extra,\n});\nconst fallo = (motivo) => [{ json: plan({ fallo: motivo }) }];\n\nconst body = fallido.body_optimizacion;\nif (!body || !Array.isArray(body.jobs) || !Array.isArray(body.vehicles)) {\n  return fallo('falló la optimización de ORS');\n}\nconst err = fallido.error;\nconst mensaje = String(err && (err.message || err.description) ? (err.message || err.description) : '');\nconst m = /Unfound route\\(s\\) from location \\[\\s*(-?\\d+(?:\\.\\d+)?)\\s*,\\s*(-?\\d+(?:\\.\\d+)?)\\s*\\]/.exec(mensaje);\nif (!m) return fallo('falló la optimización de ORS');\n\n// La parada cuyo punto coincide (con tolerancia); si varias comparten el punto, todas.\nconst lon = Number(m[1]);\nconst lat = Number(m[2]);\nconst dist = (j) => Math.max(Math.abs(j.location[0] - lon), Math.abs(j.location[1] - lat));\nconst minima = Math.min(...body.jobs.map(dist));\nif (!(minima <= TOLERANCIA_GRADOS)) return fallo('el punto sin ruta no corresponde a ninguna parada');\nconst coinciden = body.jobs.filter((j) => dist(j) <= minima + 1e-9);\n\nconst yaApartadas = prep.resueltas.filter((p) => !body.jobs.some((j) => j.id === p.pedido_id));\nconst apartadas = [...yaApartadas, ...prep.resueltas.filter((p) => coinciden.some((j) => j.id === p.pedido_id))];\nif (apartadas.length > MAX_APARTADAS) return fallo('demasiadas paradas sin ruta alcanzable');\n\nconst sin_resolver = [\n  ...prep.sin_resolver,\n  ...apartadas.map((p) => ({ pedido_id: p.pedido_id, motivo: MOTIVO })),\n];\nconst jobs = body.jobs.filter((j) => !coinciden.some((c) => c.id === j.id));\nif (jobs.length === 0) {\n  // No queda nada que optimizar: respuesta sin viajes, con todas en sin_resolver.\n  return [{ json: plan({ sin_resolver }) }];\n}\n\n// Presupuesto de tiempo: llamadas que aún pueden hacer falta (este reintento con los mismos k\n// vehículos, los intentos con más vehículos, la reoptimización a la casa y las paradas por apartar).\nconst k = body.vehicles.length;\nconst llamadas = (max_viajes - k + 1) + 1 + (MAX_APARTADAS - apartadas.length);\nconst restante = base.inicio_ms + PLAZO_MS - Date.now();\nconst timeout_ms = Math.min(TIMEOUT_MAX_MS, Math.floor(restante / llamadas));\nif (timeout_ms < TIMEOUT_MIN_MS) return fallo('tiempo agotado reintentando la optimización');\n\nreturn [{\n  json: plan({\n    sin_resolver,\n    accion: 'apartar',\n    plan_listo: false,\n    timeout_ms,\n    // Mismos vehículos (el intento k sigue contando por $runIndex en Evaluar reparto), sin las paradas apartadas.\n    body_optimizacion: { vehicles: body.vehicles, jobs },\n  }),\n}];\n"
+      },
+      "id": "a1000000-0000-4000-8000-000000000018",
+      "name": "Evaluar error de optimización",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2640,
+        300
+      ],
+      "notes": "Si ORS falla con code 3 'Unfound route(s) from location [lon,lat]', aparta la parada de ese punto a sin_resolver ('ubicación sin ruta alcanzable', máximo 2 por solicitud) y reintenta. Otra falla -> 502.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "i9",
+              "leftValue": "={{ $json.accion === 'apartar' }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "id": "a1000000-0000-4000-8000-000000000019",
+      "name": "¿Apartar parada y reintentar?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2860,
+        300
       ]
     }
   ],
@@ -527,7 +795,7 @@
       "main": [
         [
           {
-            "node": "¿Hay paradas resueltas?",
+            "node": "¿Carga válida?",
             "type": "main",
             "index": 0
           }
@@ -556,14 +824,14 @@
       "main": [
         [
           {
-            "node": "Armar respuesta",
+            "node": "Evaluar reparto",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "Responder optimización fallida (502)",
+            "node": "Evaluar error de optimización",
             "type": "main",
             "index": 0
           }
@@ -598,6 +866,147 @@
           }
         ]
       ]
+    },
+    "¿Carga válida?": {
+      "main": [
+        [
+          {
+            "node": "¿Hay paradas resueltas?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Responder error de entrada",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluar reparto": {
+      "main": [
+        [
+          {
+            "node": "¿Reintentar optimización?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Reintentar optimización?": {
+      "main": [
+        [
+          {
+            "node": "Optimizar (ORS)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "¿Error de configuración?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Error de configuración?": {
+      "main": [
+        [
+          {
+            "node": "Responder error de entrada",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "¿Terminar en casa?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Terminar en casa?": {
+      "main": [
+        [
+          {
+            "node": "Preparar viaje a casa",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Armar respuesta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Optimizar a casa (ORS)": {
+      "main": [
+        [
+          {
+            "node": "Armar respuesta",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Responder optimización fallida (502)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluar error de optimización": {
+      "main": [
+        [
+          {
+            "node": "¿Apartar parada y reintentar?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Apartar parada y reintentar?": {
+      "main": [
+        [
+          {
+            "node": "Optimizar (ORS)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Armar respuesta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar viaje a casa": {
+      "main": [
+        [
+          {
+            "node": "Optimizar a casa (ORS)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "pinData": {
@@ -615,27 +1024,36 @@
                 "pedido_id": 101,
                 "direccion_texto": "Santa María 793, Valpariso",
                 "latitud": -32.8812,
-                "longitud": -71.2486
+                "longitud": -71.2486,
+                "peso_kg": 400
               },
               {
                 "pedido_id": 102,
                 "direccion_texto": "Av. Libertad 1200, Viña del Mar",
                 "latitud": -33.0245,
-                "longitud": -71.5518
+                "longitud": -71.5518,
+                "peso_kg": 300
               },
               {
                 "pedido_id": 103,
                 "direccion_texto": "Avenida Valparaíso 541, Viña del Mar",
                 "latitud": null,
-                "longitud": null
+                "longitud": null,
+                "peso_kg": 350
               },
               {
                 "pedido_id": 104,
                 "direccion_texto": "Pasaje Zxqwyrt 98765, Villa Inexistente",
                 "latitud": null,
-                "longitud": null
+                "longitud": null,
+                "peso_kg": 200
               }
-            ]
+            ],
+            "reglas": {
+              "capacidad_kg": 1100,
+              "umbral_casa_kg": 800,
+              "max_viajes": 3
+            }
           },
           "webhookUrl": "http://localhost:5678/webhook/sigpa-ruta",
           "executionMode": "test"

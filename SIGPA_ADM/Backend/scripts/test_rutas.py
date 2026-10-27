@@ -8,6 +8,15 @@ con httpx.MockTransport). La autenticación JWT del panel se reemplaza con
 dependency_overrides.
 No es parte del código final: solo para validar manualmente el comportamiento.
 
+Contrato con viajes (restricción de peso): n8n devuelve la ruta repartida en
+viajes y el backend valida y persiste pedido.viaje junto con orden_entrega.
+Requiere aplicada la migración 20261026120000_agregar_viaje_pedido.sql (si la
+columna pedido.viaje no existe, el script aborta). Para que los casos no
+dependan de la configuración, el script fija RUTA_CAPACIDAD_KG = 10 * w,
+RUTA_UMBRAL_CASA_KG = 6 * w y RUTA_MAX_VIAJES = 3, con w = peso_kg de un
+producto real (solo se leen los productos; ninguno se modifica): un pedido de
+k unidades de ese producto pesa k * w kg.
+
 Datos de prueba: clientes en el rango de teléfonos 56932300xxx con sus
 pedidos. Al empezar y al terminar se borran esos clientes, sus pedidos y
 detalles, y las filas de auditoria que generó este script (usuario
@@ -22,11 +31,11 @@ from datetime import datetime
 from decimal import Decimal
 
 import httpx
-from sqlalchemy import text
+from sqlalchemy import event, text
 
 import app.services.ruta_service as ruta_service
 from app.core.config import settings
-from app.core.database import SessionLocal
+from app.core.database import SessionLocal, engine
 from app.core.security import get_current_user
 from app.main import app
 
@@ -87,6 +96,7 @@ async def _limpiar() -> None:
     await _ejecutar(f"delete from detalle_pedido where pedido_id in ({ids_pedidos})", rango=RANGO_TELEFONOS_SQL)
     await _ejecutar(f"delete from pedido where cliente_id in ({ids_clientes})", rango=RANGO_TELEFONOS_SQL)
     await _ejecutar(f"delete from cliente where id in ({ids_clientes})", rango=RANGO_TELEFONOS_SQL)
+    await _ejecutar("delete from producto where nombre like 'TEST_RUTAS_%'")
 
 
 async def _crear_cliente(datos: dict) -> int:
@@ -122,11 +132,34 @@ async def _cliente(cid: int) -> dict:
     return dict(fila._mapping)
 
 
+async def _poner_items(pid: int, items: list[tuple[int, int]]) -> None:
+    """Reemplaza los ítems del pedido por [(producto_id, cantidad), ...]."""
+    await _ejecutar("delete from detalle_pedido where pedido_id = :pid", pid=pid)
+    for producto_id, cantidad in items:
+        await _ejecutar(
+            "insert into detalle_pedido (pedido_id, producto_id, cantidad_solicitada, precio_unitario) "
+            "values (:pid, :producto, :cantidad, 1000)",
+            pid=pid,
+            producto=producto_id,
+            cantidad=cantidad,
+        )
+
+
+async def _poner_unidades(ctx: dict, **unidades: int) -> None:
+    """Deja cada pedido (clave p1, p2...) con esa cantidad de unidades del
+    producto de referencia: pesa unidades * w kg."""
+    for clave, cantidad in unidades.items():
+        await _poner_items(ctx[clave], [(ctx["prod"], cantidad)])
+
+
 async def _reiniciar(ctx: dict) -> None:
-    """Deja los pedidos planificables de prueba como recién creados."""
+    """Deja los pedidos planificables de prueba como recién creados (1 unidad
+    de peso cada uno, sin viaje)."""
+    for clave in ("p1", "p2", "p3"):
+        await _poner_items(ctx[clave], [(ctx["prod"], 1)])
     for pid in (ctx["p1"], ctx["p3"]):
         await _ejecutar(
-            "update pedido set estado = 'pendiente', orden_entrega = null, motivo_revision_direccion = null, "
+            "update pedido set estado = 'pendiente', orden_entrega = null, viaje = null, motivo_revision_direccion = null, "
             "latitud = :lat, longitud = :lon, direccion_despacho = :dir where id = :id",
             id=pid,
             lat=CLIENTE_CON_COORDS["latitud"],
@@ -134,7 +167,7 @@ async def _reiniciar(ctx: dict) -> None:
             dir=CLIENTE_CON_COORDS["direccion"],
         )
     await _ejecutar(
-        "update pedido set estado = 'pendiente', orden_entrega = null, motivo_revision_direccion = null, "
+        "update pedido set estado = 'pendiente', orden_entrega = null, viaje = null, motivo_revision_direccion = null, "
         "latitud = null, longitud = null, direccion_despacho = :dir where id = :id",
         id=ctx["p2"],
         dir=CLIENTE_SIN_COORDS["direccion"],
@@ -170,20 +203,56 @@ def _json(cuerpo: dict, codigo: int = 200) -> httpx.Response:
     return httpx.Response(codigo, json=cuerpo)
 
 
-def _ruta_completa(payload: dict, sin_resolver: set[int] = frozenset()) -> httpx.Response:
-    """Respuesta válida: todas las paradas en orden inverso al enviado (para
-    verificar que se respeta el orden de n8n), salvo las de sin_resolver."""
-    paradas = [p for p in payload["paradas"] if p["pedido_id"] not in sin_resolver]
-    ruta = [
-        {"pedido_id": p["pedido_id"], "orden_entrega": i, "latitud": -33.05 - i / 1000, "longitud": -71.6 - i / 1000}
-        for i, p in enumerate(reversed(paradas), start=1)
-    ]
+def _viajes_n8n(payload: dict, grupos: list[list[int]], sin_resolver: set[int] = frozenset()) -> httpx.Response:
+    """Respuesta válida de n8n para un reparto dado: `grupos` es la lista de
+    viajes (cada uno, los pedido_id en su orden de visita). Los pesos salen de
+    los peso_kg del propio payload y termina_en se calcula aquí con la regla
+    del negocio (último viaje, si hay al menos 2 y pesa menos que el umbral,
+    termina en casa), sin reutilizar código del backend."""
+    peso = {p["pedido_id"]: p["peso_kg"] for p in payload["paradas"]}
+    ruta, viajes, i = [], [], 0
+    for numero, grupo in enumerate(grupos, start=1):
+        for orden, pid in enumerate(grupo, start=1):
+            i += 1
+            ruta.append(
+                {"pedido_id": pid, "viaje": numero, "orden_entrega": orden,
+                 "latitud": -33.05 - i / 1000, "longitud": -71.6 - i / 1000}
+            )
+        total = sum(peso[pid] for pid in grupo)
+        casa = numero == len(grupos) and len(grupos) >= 2 and total < settings.RUTA_UMBRAL_CASA_KG
+        viajes.append(
+            {"viaje": numero, "peso_kg": total, "termina_en": "casa" if casa else "planta", "total_paradas": len(grupo)}
+        )
     return _json(
         {
             "ruta": ruta,
+            "viajes": viajes,
             "sin_resolver": [{"pedido_id": pid, "motivo": "No se pudo geocodificar"} for pid in sin_resolver],
         }
     )
+
+
+def _ruta_completa(payload: dict, sin_resolver: set[int] = frozenset()) -> httpx.Response:
+    """Respuesta válida con UN viaje: todas las paradas en orden inverso al
+    enviado (para verificar que se respeta el orden de n8n), salvo las de
+    sin_resolver."""
+    paradas = [p["pedido_id"] for p in payload["paradas"] if p["pedido_id"] not in sin_resolver]
+    return _viajes_n8n(payload, [list(reversed(paradas))] if paradas else [], sin_resolver)
+
+
+def _en_viajes(ctx: dict, *claves_por_viaje: tuple[str, ...], transformar=None):
+    """Responder de n8n con el reparto indicado con claves de ctx, p. ej.
+    _en_viajes(ctx, ("p1",), ("p2", "p3")); `transformar` puede alterar el
+    cuerpo (dict) para armar respuestas inválidas."""
+
+    def responder(payload):
+        grupos = [[ctx[k] for k in viaje] for viaje in claves_por_viaje]
+        cuerpo = json.loads(_viajes_n8n(payload, grupos).content)
+        if transformar:
+            transformar(cuerpo)
+        return _json(cuerpo)
+
+    return responder
 
 
 class Verificador:
@@ -221,10 +290,17 @@ async def caso_a(ctx: dict, v: Verificador) -> None:
         set(paradas) == set(ids)
         and paradas[ctx["p2"]]["latitud"] is None
         and paradas[ctx["p1"]]["direccion_texto"] == CLIENTE_CON_COORDS["direccion"]
-        and all(set(p) == {"pedido_id", "direccion_texto", "latitud", "longitud"} for p in paradas.values()),
-        "payload: paradas desde la BD, sin depósito ni datos extra",
+        and all(
+            set(p) == {"pedido_id", "direccion_texto", "latitud", "longitud", "peso_kg"} for p in paradas.values()
+        ),
+        "payload: paradas desde la BD (con peso_kg), sin depósito ni datos extra",
     )
     cuerpo = respuesta.json()
+    v.check(
+        all(p["viaje"] == 1 for p in cuerpo["ruta"])
+        and cuerpo["viajes"] == [{"viaje": 1, "peso_kg": 3 * ctx["w"], "termina_en": "planta", "total_paradas": 3}],
+        "un solo viaje, que termina en la planta, con el peso recalculado",
+    )
     v.check([p["orden_entrega"] for p in cuerpo["ruta"]] == [1, 2, 3], "respuesta ordenada por orden_entrega")
     v.check([p["pedido_id"] for p in cuerpo["ruta"]] == list(reversed(ids)), "respeta el orden que dio n8n")
     pedidos = {pid: await _pedido(pid) for pid in ids}
@@ -232,6 +308,7 @@ async def caso_a(ctx: dict, v: Verificador) -> None:
     v.check(
         [pedidos[pid]["orden_entrega"] for pid in reversed(ids)] == [1, 2, 3], "cada uno con su orden_entrega"
     )
+    v.check(all(p["viaje"] == 1 for p in pedidos.values()), "y con viaje 1")
     v.check(
         pedidos[ctx["p2"]]["latitud"] is not None and float(pedidos[ctx["p2"]]["latitud"]) < -33.0,
         "el pedido sin coordenadas guarda las geocodificadas por n8n",
@@ -280,7 +357,8 @@ async def caso_c(ctx: dict, v: Verificador) -> None:
     v.check(antes == despues, "el pedido fuera de la solicitud queda exactamente igual (estado, orden, fechas)")
     v.check((await _pedido(ctx["p3"]))["estado"] == "pendiente", "el pendiente no incluido sigue pendiente")
     v.check(
-        {"pedido_id": ctx["fuera"], "orden_entrega": 7} in respuesta.json()["confirmados_con_orden_fuera_de_solicitud"],
+        {"pedido_id": ctx["fuera"], "viaje": None, "orden_entrega": 7}
+        in respuesta.json()["confirmados_con_orden_fuera_de_solicitud"],
         "se informa el confirmado con orden viejo que quedó fuera",
     )
 
@@ -794,7 +872,7 @@ async def caso_x(ctx: dict, v: Verificador) -> None:
     respuesta = await _planificar(ctx, [ctx["p1"], pid])
     parada = next(p for p in ctx["n8n"].llamadas[-1]["payload"]["paradas"] if p["pedido_id"] == pid)
     v.check(
-        parada == {"pedido_id": pid, "direccion_texto": None, "latitud": None, "longitud": None},
+        parada == {"pedido_id": pid, "direccion_texto": None, "latitud": None, "longitud": None, "peso_kg": ctx["w"]},
         "se envía a n8n sin dirección ni coordenadas",
     )
     cuerpo = respuesta.json()
@@ -851,18 +929,19 @@ async def caso_z(ctx: dict, v: Verificador) -> None:
     await _planificar(ctx, ids)
     respuesta, cuerpo = await _ruta_actual(ctx)
     v.check(respuesta.status_code == 200, "200")
-    v.check(set(cuerpo) == {"ruta", "total", "advertencias"}, "con ruta, total y advertencias")
+    v.check(set(cuerpo) == {"ruta", "viajes", "total", "advertencias"}, "con ruta, viajes, total y advertencias")
     v.check(cuerpo["total"] == len(cuerpo["ruta"]), "total = cantidad de paradas")
     paradas = [p for p in _paradas_de_prueba(ctx, cuerpo) if p["pedido_id"] in ids]
     v.check([p["pedido_id"] for p in paradas] == list(reversed(ids)), "los 3 planificados en el orden que dio n8n")
     v.check([p["orden_entrega"] for p in paradas] == [1, 2, 3], "con orden_entrega 1, 2, 3")
-    ordenes = [p["orden_entrega"] for p in cuerpo["ruta"]]
-    v.check(ordenes == sorted(ordenes), "toda la ruta ordenada por orden_entrega asc")
+    posiciones = [(p["viaje"] is None, p["viaje"] or 0, p["orden_entrega"]) for p in cuerpo["ruta"]]
+    v.check(posiciones == sorted(posiciones), "toda la ruta ordenada por viaje y orden_entrega asc")
     p2 = next(p for p in paradas if p["pedido_id"] == ctx["p2"])
     v.check(
         set(p2)
-        == {"pedido_id", "orden_entrega", "cliente_id", "cliente_nombre", "cliente_telefono",
+        == {"pedido_id", "viaje", "orden_entrega", "cliente_id", "cliente_nombre", "cliente_telefono",
             "direccion_texto", "latitud", "longitud", "estado"}
+        and p2["viaje"] == 1
         and p2["cliente_id"] == ctx["c2"]
         and p2["cliente_nombre"] == CLIENTE_SIN_COORDS["nombre"]
         and p2["cliente_telefono"] == CLIENTE_SIN_COORDS["telefono"]
@@ -894,8 +973,11 @@ async def caso_ab(ctx: dict, v: Verificador) -> None:
         ids = {p["pedido_id"] for p in cuerpo["ruta"]}
         v.check(ctx["p1"] not in ids, "cancelado con orden no aparece")
         v.check(ctx["p2"] not in ids, "entregado con orden no aparece")
-        v.check(ctx["p3"] not in ids, "en_despacho con orden no aparece")
-        v.check(all(p["estado"] == "confirmado" for p in cuerpo["ruta"]), "solo hay confirmados")
+        v.check(ctx["p3"] in ids, "en_despacho con orden SÍ aparece")
+        v.check(
+            all(p["estado"] in ("confirmado", "en_despacho") for p in cuerpo["ruta"]),
+            "solo hay confirmados y en despacho",
+        )
     finally:
         # Que _reiniciar no tenga que deshacer un entregado o cancelado.
         await _ejecutar(
@@ -927,9 +1009,12 @@ async def caso_ac(ctx: dict, v: Verificador) -> None:
         paradas.index(ctx["p1"]) < paradas.index(ctx["fuera"]),
         "a igual orden va primero el actualizado más recientemente",
     )
-    ordenes = [p["orden_entrega"] for p in cuerpo["ruta"]]
-    repetidos = {o for o in ordenes if ordenes.count(o) > 1}
-    v.check({a["orden_entrega"] for a in cuerpo["advertencias"]} == repetidos, "una advertencia por cada orden repetido")
+    posiciones = [(p["viaje"], p["orden_entrega"]) for p in cuerpo["ruta"]]
+    repetidas = {x for x in posiciones if posiciones.count(x) > 1}
+    v.check(
+        {(a["viaje"], a["orden_entrega"]) for a in cuerpo["advertencias"]} == repetidas,
+        "una advertencia por cada (viaje, orden_entrega) repetido",
+    )
 
 
 async def caso_ad(ctx: dict, v: Verificador) -> None:
@@ -953,6 +1038,524 @@ async def caso_ae(ctx: dict, v: Verificador) -> None:
     ids = {p["pedido_id"] for p in cuerpo["ruta"]}
     v.check(ctx["p2"] not in ids, "el sin_resolver (confirmado, orden null) no aparece en la ruta")
     v.check({ctx["p1"], ctx["p3"]} <= ids, "los que sí entraron a la ruta aparecen")
+
+
+async def _pedir_n8n_sin_escribir(ctx: dict, v: Verificador, responder, ids: list[int], texto: str) -> None:
+    """502 con `texto` en los problemas y nada persistido."""
+    ctx["n8n"].responder = responder
+    respuesta = await _planificar(ctx, ids)
+    problemas = respuesta.json()["detail"].get("problemas", []) if respuesta.status_code == 502 else []
+    v.check(respuesta.status_code == 502 and any(texto in p for p in problemas), f"502 con el problema '{texto}'")
+    for pid in ids:
+        pedido = await _pedido(pid)
+        v.check(
+            pedido["estado"] == "pendiente" and pedido["orden_entrega"] is None and pedido["viaje"] is None,
+            f"pedido {pid} sin cambios (sin viaje ni orden)",
+        )
+
+
+async def caso_af(ctx: dict, v: Verificador) -> None:
+    # Redondeo: una sola vez, sobre la suma (no por línea) y con mínimo 1.
+    v.check(ruta_service._redondear_kg(Decimal("10.2") + Decimal("10.2")) == 21, "10,2 + 10,2 = 20,4 -> 21 (no 11 + 11 = 22)")
+    v.check(ruta_service._redondear_kg(Decimal("20.0")) == 20, "un total exacto no sube")
+    v.check(ruta_service._redondear_kg(Decimal("0.3")) == 1, "mínimo 1 kg")
+    # Cálculo contra la BD: dos productos, en UNA sola consulta.
+    await _poner_items(ctx["p1"], [(ctx["prod"], 3), (ctx["prod_b"], 2)])
+    consultas = []
+
+    def contar(conn, cursor, statement, parameters, context, executemany):
+        consultas.append(statement)
+
+    event.listen(engine.sync_engine, "before_cursor_execute", contar)
+    try:
+        async with SessionLocal() as session:
+            pesos, sin_peso = await ruta_service.calcular_pesos(session, [ctx["p1"], ctx["p2"], ctx["p3"]])
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", contar)
+    v.check(len(consultas) == 1, f"una sola consulta para todos los pedidos ({len(consultas)})")
+    v.check(
+        pesos == {ctx["p1"]: 3 * ctx["w"] + 2 * ctx["w_b"], ctx["p2"]: ctx["w"], ctx["p3"]: ctx["w"]} and not sin_peso,
+        "peso = SUM(cantidad * peso_kg) por pedido",
+    )
+    fila = await _fila_get(ctx, ctx["p1"])
+    v.check(fila["peso_kg"] == 3 * ctx["w"] + 2 * ctx["w_b"] and isinstance(fila["peso_kg"], int), "GET pendientes lo muestra (int)")
+
+
+async def caso_ag(ctx: dict, v: Verificador) -> None:
+    ctx["n8n"].responder = _ruta_completa
+    llamadas = len(ctx["n8n"].llamadas)
+    # p1: un producto sin peso; p2: sin ítems; p3: bien.
+    await _poner_items(ctx["p1"], [(ctx["prod"], 1), (ctx["prod_sin_peso"], 1)])
+    await _poner_items(ctx["p2"], [])
+    respuesta = await _planificar(ctx, [ctx["p1"], ctx["p2"], ctx["p3"]])
+    detalle = respuesta.json()["detail"]
+    v.check(respuesta.status_code == 422, "422")
+    v.check(sorted(detalle["sin_peso"]) == sorted([ctx["p1"], ctx["p2"]]), "con los pedidos sin peso calculable")
+    v.check(
+        detalle["productos_sin_peso"] == [{"pedido_id": ctx["p1"], "productos": [ctx["nombre_sin_peso"]]}],
+        "y el producto sin peso del que sí tiene ítems",
+    )
+    v.check(detalle["mensaje"], "con mensaje")
+    v.check(len(ctx["n8n"].llamadas) == llamadas, "sin llamar a n8n")
+    await _sin_cambios(ctx, v)
+
+
+async def caso_ah(ctx: dict, v: Verificador) -> None:
+    ctx["n8n"].responder = _ruta_completa
+    llamadas = len(ctx["n8n"].llamadas)
+    await _poner_unidades(ctx, p1=11)  # 11 * w > capacidad (10 * w)
+    respuesta = await _planificar(ctx, [ctx["p1"], ctx["p2"]])
+    detalle = respuesta.json()["detail"]
+    v.check(respuesta.status_code == 422, "422")
+    v.check(
+        detalle["sobre_capacidad"] == [{"pedido_id": ctx["p1"], "peso_kg": 11 * ctx["w"]}]
+        and detalle["capacidad_kg"] == settings.RUTA_CAPACIDAD_KG,
+        "con el pedido que pesa más que la capacidad",
+    )
+    v.check(len(ctx["n8n"].llamadas) == llamadas, "sin llamar a n8n")
+    await _sin_cambios(ctx, v)
+    await _poner_unidades(ctx, p1=10)  # justo en la capacidad: pasa
+    justo = await _planificar(ctx, [ctx["p1"]])
+    v.check(justo.status_code == 200, "un pedido que pesa justo la capacidad: 200")
+
+
+async def caso_ai(ctx: dict, v: Verificador) -> None:
+    await _poner_unidades(ctx, p1=10, p2=10, p3=10)  # 30 * w = capacidad * max_viajes
+    ctx["n8n"].responder = _en_viajes(ctx, ("p1",), ("p2",), ("p3",))
+    justo = await _planificar(ctx, [ctx["p1"], ctx["p2"], ctx["p3"]])
+    v.check(justo.status_code == 200, "justo en capacidad * max_viajes: 200 (3 viajes)")
+    v.check([x["viaje"] for x in justo.json()["viajes"]] == [1, 2, 3], "con 3 viajes")
+    await _reiniciar(ctx)
+    await _poner_unidades(ctx, p1=10, p2=10, p3=10)
+    llamadas = len(ctx["n8n"].llamadas)
+    respuesta = await _planificar(ctx, [ctx["p1"], ctx["p2"], ctx["p3"], ctx["fuera"]])  # + 1 * w
+    detalle = respuesta.json()["detail"]
+    maximo = settings.RUTA_CAPACIDAD_KG * settings.RUTA_MAX_VIAJES
+    v.check(respuesta.status_code == 422, "total sobre capacidad * max_viajes: 422")
+    v.check(
+        detalle["peso_total_kg"] == 31 * ctx["w"]
+        and detalle["maximo_kg"] == maximo
+        and str(31 * ctx["w"]) in detalle["mensaje"]
+        and str(maximo) in detalle["mensaje"],
+        "con el total y el máximo en el mensaje",
+    )
+    v.check(len(ctx["n8n"].llamadas) == llamadas, "sin llamar a n8n")
+    await _sin_cambios(ctx, v)
+
+
+async def caso_aj(ctx: dict, v: Verificador) -> None:
+    ctx["n8n"].responder = _ruta_completa
+    await _poner_unidades(ctx, p1=3, p2=2, p3=1)
+    respuesta = await _planificar(ctx, [ctx["p1"], ctx["p2"], ctx["p3"]])
+    payload = ctx["n8n"].llamadas[-1]["payload"]
+    v.check(respuesta.status_code == 200, "200")
+    v.check(set(payload) == {"paradas", "reglas"}, "el payload solo suma 'reglas'")
+    v.check(
+        payload["reglas"]
+        == {
+            "capacidad_kg": settings.RUTA_CAPACIDAD_KG,
+            "umbral_casa_kg": settings.RUTA_UMBRAL_CASA_KG,
+            "max_viajes": settings.RUTA_MAX_VIAJES,
+        },
+        "reglas: capacidad_kg, umbral_casa_kg y max_viajes",
+    )
+    pesos = {p["pedido_id"]: p["peso_kg"] for p in payload["paradas"]}
+    v.check(
+        pesos == {ctx["p1"]: 3 * ctx["w"], ctx["p2"]: 2 * ctx["w"], ctx["p3"]: ctx["w"]}
+        and all(isinstance(x, int) and x >= 1 for x in pesos.values()),
+        "cada parada con su peso_kg (int >= 1)",
+    )
+    v.check(
+        ctx["n8n"].llamadas[-1]["headers"].get("x-route-secret") == SECRETO_N8N_PRUEBA,
+        "la autenticación no cambia",
+    )
+    por_defecto = {k: type(settings).model_fields[k].default for k in ("RUTA_CAPACIDAD_KG", "RUTA_UMBRAL_CASA_KG", "RUTA_MAX_VIAJES")}
+    v.check(por_defecto == {"RUTA_CAPACIDAD_KG": 1100, "RUTA_UMBRAL_CASA_KG": 800, "RUTA_MAX_VIAJES": 3}, "defaults 1100 / 800 / 3")
+
+
+async def caso_ak(ctx: dict, v: Verificador) -> None:
+    def viaje_3(cuerpo):  # viajes 1 y 3: falta el 2
+        for x in [*cuerpo["ruta"], *cuerpo["viajes"]]:
+            if x["viaje"] == 2:
+                x["viaje"] = 3
+
+    await _poner_unidades(ctx, p1=7, p2=2, p3=2)
+    await _pedir_n8n_sin_escribir(
+        ctx, v, _en_viajes(ctx, ("p1",), ("p2", "p3"), transformar=viaje_3), [ctx["p1"], ctx["p2"], ctx["p3"]], "consecutivos"
+    )
+
+
+async def caso_al(ctx: dict, v: Verificador) -> None:
+    ids = [ctx["p1"], ctx["p2"], ctx["p3"]]
+    await _poner_unidades(ctx, p1=7, p2=2, p3=2)
+
+    def hueco_en_viaje_2(cuerpo):
+        [x for x in cuerpo["ruta"] if x["pedido_id"] == ctx["p3"]][0]["orden_entrega"] = 3
+
+    def orden_global(cuerpo):  # 1, 2 en el viaje 1 y 3 en el viaje 2: era válido con la regla global anterior
+        [x for x in cuerpo["ruta"] if x["pedido_id"] == ctx["p3"]][0]["orden_entrega"] = 2
+        [x for x in cuerpo["ruta"] if x["pedido_id"] == ctx["p2"]][0]["orden_entrega"] = 3
+
+    await _pedir_n8n_sin_escribir(
+        ctx, v, _en_viajes(ctx, ("p1",), ("p2", "p3"), transformar=hueco_en_viaje_2), ids, "viaje 2: orden_entrega no es consecutivo"
+    )
+    # viaje 1 = p1 (orden 1); viaje 2 = p2 (orden 3), p3 (orden 2): 1,2,3 en total, pero el viaje 2 no parte en 1.
+    await _pedir_n8n_sin_escribir(
+        ctx, v, _en_viajes(ctx, ("p1",), ("p2", "p3"), transformar=orden_global), ids, "viaje 2: orden_entrega no es consecutivo"
+    )
+
+
+async def caso_am(ctx: dict, v: Verificador) -> None:
+    def declara_viaje_vacio(cuerpo):
+        cuerpo["viajes"].append({"viaje": 2, "peso_kg": 0, "termina_en": "casa", "total_paradas": 0})
+
+    await _pedir_n8n_sin_escribir(
+        ctx, v, _en_viajes(ctx, ("p1", "p2", "p3"), transformar=declara_viaje_vacio), [ctx["p1"], ctx["p2"], ctx["p3"]], "viaje 2 sin paradas"
+    )
+
+
+async def caso_an(ctx: dict, v: Verificador) -> None:
+    await _poner_unidades(ctx, p1=7, p2=5, p3=1)  # p1 + p2 = 12 * w > capacidad; el total (13 * w) sí cabe en 2 viajes
+    await _pedir_n8n_sin_escribir(
+        ctx, v, _en_viajes(ctx, ("p1", "p2"), ("p3",)), [ctx["p1"], ctx["p2"], ctx["p3"]], "la capacidad es"
+    )
+
+
+async def caso_ao(ctx: dict, v: Verificador) -> None:
+    ids = [ctx["p1"], ctx["p2"], ctx["p3"]]
+    await _poner_unidades(ctx, p1=3, p2=2, p3=2)
+
+    def casa_en_el_primero(cuerpo):
+        cuerpo["viajes"][0]["termina_en"] = "casa"
+
+    await _pedir_n8n_sin_escribir(
+        ctx, v, _en_viajes(ctx, ("p1",), ("p2", "p3"), transformar=casa_en_el_primero), ids, "solo el último viaje puede terminar en casa"
+    )
+    # p1 (3 * w) en el viaje 1 y 4 * w en el 2: el último no es el más liviano.
+    await _pedir_n8n_sin_escribir(
+        ctx, v, _en_viajes(ctx, ("p1",), ("p2", "p3")), ids, "debe ser el más liviano"
+    )
+
+
+async def caso_ap(ctx: dict, v: Verificador) -> None:
+    ids = [ctx["p1"], ctx["p2"], ctx["p3"]]
+    await _poner_unidades(ctx, p1=7, p2=3, p3=3)  # viaje 2 = 6 * w = umbral: NO es estrictamente menor
+
+    def casa(cuerpo):
+        cuerpo["viajes"][1]["termina_en"] = "casa"
+
+    await _pedir_n8n_sin_escribir(
+        ctx, v, _en_viajes(ctx, ("p1",), ("p2", "p3"), transformar=casa), ids, "termina en casa con"
+    )
+    ctx["n8n"].responder = _en_viajes(ctx, ("p1",), ("p2", "p3"))
+    ok = await _planificar(ctx, ids)
+    v.check(
+        ok.status_code == 200 and ok.json()["viajes"][1]["termina_en"] == "planta",
+        "con peso == umbral el último viaje termina en la planta (planta aceptada)",
+    )
+    await _reiniciar(ctx)
+    await _poner_unidades(ctx, p1=7, p2=3, p3=2)  # 5 * w < umbral
+    ctx["n8n"].responder = _en_viajes(ctx, ("p1",), ("p2", "p3"), transformar=lambda c: c["viajes"][1].update(termina_en="planta"))
+    await _pedir_n8n_sin_escribir(ctx, v, ctx["n8n"].responder, ids, "debe terminar en casa")
+
+
+async def caso_aq(ctx: dict, v: Verificador) -> None:
+    def casa(cuerpo):
+        cuerpo["viajes"][0]["termina_en"] = "casa"
+
+    await _pedir_n8n_sin_escribir(
+        ctx, v, _en_viajes(ctx, ("p1", "p2", "p3"), transformar=casa), [ctx["p1"], ctx["p2"], ctx["p3"]], "un único viaje siempre termina en planta"
+    )
+    # valor que no existe
+    def raro(cuerpo):
+        cuerpo["viajes"][0]["termina_en"] = "bodega"
+
+    await _pedir_n8n_sin_escribir(
+        ctx, v, _en_viajes(ctx, ("p1", "p2", "p3"), transformar=raro), [ctx["p1"], ctx["p2"], ctx["p3"]], "termina_en inválido"
+    )
+
+
+async def caso_ar(ctx: dict, v: Verificador) -> None:
+    def peso_distinto(cuerpo):
+        cuerpo["viajes"][0]["peso_kg"] += 1
+
+    await _pedir_n8n_sin_escribir(
+        ctx, v, _en_viajes(ctx, ("p1", "p2", "p3"), transformar=peso_distinto), [ctx["p1"], ctx["p2"], ctx["p3"]], "el backend calcula"
+    )
+
+
+async def caso_as(ctx: dict, v: Verificador) -> None:
+    def sin_viajes(cuerpo):
+        del cuerpo["viajes"]
+
+    ctx["n8n"].responder = _en_viajes(ctx, ("p1", "p2", "p3"), transformar=sin_viajes)
+    respuesta = await _planificar(ctx, [ctx["p1"], ctx["p2"], ctx["p3"]])
+    v.check(
+        respuesta.status_code == 502 and "falta la lista 'viajes'" in respuesta.json()["detail"]["problemas"],
+        "sin 'viajes': 502 con el problema",
+    )
+    def sin_viaje_en_parada(cuerpo):
+        del cuerpo["ruta"][0]["viaje"]
+
+    await _pedir_n8n_sin_escribir(
+        ctx, v, _en_viajes(ctx, ("p1", "p2", "p3"), transformar=sin_viaje_en_parada), [ctx["p1"], ctx["p2"], ctx["p3"]], "no existe en 'viajes'"
+    )
+    await _sin_cambios(ctx, v)
+
+
+async def caso_at(ctx: dict, v: Verificador) -> None:
+    ids = [ctx["p1"], ctx["p2"], ctx["p3"]]
+    await _poner_unidades(ctx, p1=7, p2=2, p3=2)  # viaje 1 = 7 * w; viaje 2 = 4 * w (< umbral 6 * w)
+    ctx["n8n"].responder = _en_viajes(ctx, ("p1",), ("p3", "p2"))
+    respuesta = await _planificar(ctx, ids)
+    cuerpo = respuesta.json()
+    v.check(respuesta.status_code == 200, "200")
+    v.check(
+        [(x["pedido_id"], x["viaje"], x["orden_entrega"]) for x in cuerpo["ruta"]]
+        == [(ctx["p1"], 1, 1), (ctx["p3"], 2, 1), (ctx["p2"], 2, 2)],
+        "la ruta de la respuesta trae viaje y orden dentro del viaje",
+    )
+    v.check(
+        cuerpo["viajes"]
+        == [
+            {"viaje": 1, "peso_kg": 7 * ctx["w"], "termina_en": "planta", "total_paradas": 1},
+            {"viaje": 2, "peso_kg": 4 * ctx["w"], "termina_en": "casa", "total_paradas": 2},
+        ],
+        "viajes con el peso recalculado; el último, más liviano, termina en casa",
+    )
+    guardado = {pid: ((await _pedido(pid))["viaje"], (await _pedido(pid))["orden_entrega"]) for pid in ids}
+    v.check(
+        guardado == {ctx["p1"]: (1, 1), ctx["p3"]: (2, 1), ctx["p2"]: (2, 2)},
+        "pedido.viaje y orden_entrega persistidos",
+    )
+    v.check(
+        [(await _pedido(pid))["estado"] for pid in ids] == ["confirmado"] * 3,
+        "todos confirmados",
+    )
+    despues = await _ejecutar(
+        "select (despues->>'viaje')::int from auditoria where entidad = 'pedido' and accion = 'planificar_ruta' "
+        "and usuario = :usuario and entidad_id = :id order by id desc limit 1",
+        usuario=USUARIO_PRUEBA,
+        id=ctx["p3"],
+    )
+    v.check(despues.scalar_one() == 2, "la auditoría guarda el viaje")
+    # La vista previa también trae viaje y viajes, sin escribir.
+    await _reiniciar(ctx)
+    await _poner_unidades(ctx, p1=7, p2=2, p3=2)
+    previa = await ctx["http"].post("/rutas/planificar", json={"pedido_ids": ids, "vista_previa": True})
+    v.check(
+        previa.status_code == 200
+        and [x["viaje"] for x in previa.json()["ruta"]] == [1, 2, 2]
+        and len(previa.json()["viajes"]) == 2,
+        "vista previa: ruta con viaje y 'viajes'",
+    )
+    await _sin_cambios(ctx, v)
+
+
+async def caso_au(ctx: dict, v: Verificador) -> None:
+    ids = [ctx["p1"], ctx["p2"], ctx["p3"]]
+    await _poner_unidades(ctx, p1=7, p2=2, p3=2)
+    ctx["n8n"].responder = _en_viajes(ctx, ("p1",), ("p2", "p3"))
+    await _planificar(ctx, ids)
+    v.check((await _pedido(ctx["p2"]))["viaje"] == 2, "p2 queda en el viaje 2")
+    # En la siguiente planificación p2 queda sin_resolver: viaje y orden vuelven a NULL.
+    ctx["n8n"].responder = lambda payload: _viajes_n8n(payload, [[ctx["p1"], ctx["p3"]]], {ctx["p2"]})
+    respuesta = await _planificar(ctx, ids)
+    p2 = await _pedido(ctx["p2"])
+    v.check(respuesta.status_code == 200, "200")
+    v.check(
+        p2["viaje"] is None and p2["orden_entrega"] is None and p2["motivo_revision_direccion"] is not None,
+        "sin_resolver: viaje y orden_entrega NULL (con su motivo)",
+    )
+    v.check([x["pedido_id"] for x in respuesta.json()["sin_resolver"]] == [ctx["p2"]], "y sigue en sin_resolver en la respuesta")
+    v.check(
+        [x["viaje"] for x in respuesta.json()["viajes"]] == [1] and (await _pedido(ctx["p3"]))["viaje"] == 1,
+        "los demás en el viaje 1",
+    )
+
+
+async def caso_av(ctx: dict, v: Verificador) -> None:
+    ids = [ctx["p1"], ctx["p2"], ctx["p3"]]
+    await _poner_unidades(ctx, p1=6, p2=2, p3=2)  # 10 * w: también cabe en un solo viaje
+    ctx["n8n"].responder = _en_viajes(ctx, ("p1",), ("p2", "p3"))
+    await _planificar(ctx, ids)
+    antes = {pid: ((await _pedido(pid))["viaje"], (await _pedido(pid))["orden_entrega"]) for pid in ids}
+    ctx["n8n"].responder = _en_viajes(ctx, ("p3", "p1", "p2"))  # todo en un viaje, otro orden
+    respuesta = await _planificar(ctx, ids)
+    despues = {pid: ((await _pedido(pid))["viaje"], (await _pedido(pid))["orden_entrega"]) for pid in ids}
+    v.check(respuesta.status_code == 200, "replanificar: 200")
+    v.check(antes != despues, "cambió el reparto")
+    v.check(
+        despues == {ctx["p3"]: (1, 1), ctx["p1"]: (1, 2), ctx["p2"]: (1, 3)},
+        "viaje y orden se sobrescriben con la nueva planificación",
+    )
+
+
+async def caso_aw(ctx: dict, v: Verificador) -> None:
+    await _poner_items(ctx["p1"], [(ctx["prod"], 3), (ctx["prod_b"], 2)])
+    await _poner_items(ctx["p2"], [(ctx["prod"], 1), (ctx["prod_sin_peso"], 1)])
+    await _poner_items(ctx["p3"], [])
+    respuesta = await ctx["http"].get("/rutas/pedidos-pendientes")
+    filas = {f["pedido_id"]: f for f in respuesta.json()}
+    v.check(respuesta.status_code == 200, "200")
+    v.check(
+        filas[ctx["p1"]]["peso_kg"] == 3 * ctx["w"] + 2 * ctx["w_b"] and isinstance(filas[ctx["p1"]]["peso_kg"], int),
+        "peso_kg entero = SUM(cantidad * peso_kg)",
+    )
+    v.check(filas[ctx["p2"]]["peso_kg"] is None, "con un producto sin peso: null")
+    v.check(filas[ctx["p3"]]["peso_kg"] is None, "sin ítems: null")
+    v.check(
+        all("peso_kg" in f for f in filas.values()) and {"pedido_id", "cliente_nombre", "direccion_texto", "estado"} <= set(filas[ctx["p1"]]),
+        "todos los items traen peso_kg y no se quitó ningún campo",
+    )
+
+
+async def caso_ax(ctx: dict, v: Verificador) -> None:
+    ids = [ctx["p1"], ctx["p2"], ctx["p3"]]
+    await _poner_unidades(ctx, p1=7, p2=2, p3=2)
+    ctx["n8n"].responder = _en_viajes(ctx, ("p1",), ("p2", "p3"))
+    await _planificar(ctx, ids)
+    await _ejecutar("update pedido set estado = 'en_despacho' where id = :id", id=ctx["p3"])
+    _, cuerpo = await _ruta_actual(ctx)
+    propias = [(p["pedido_id"], p["viaje"], p["orden_entrega"], p["estado"]) for p in _paradas_de_prueba(ctx, cuerpo) if p["pedido_id"] in ids]
+    v.check(
+        propias == [
+            (ctx["p1"], 1, 1, "confirmado"),
+            (ctx["p2"], 2, 1, "confirmado"),
+            (ctx["p3"], 2, 2, "en_despacho"),
+        ],
+        "ordenada por viaje y orden; el en_despacho aparece con su viaje",
+    )
+    ajenos = [p for p in cuerpo["ruta"] if p["pedido_id"] not in ctx["propios"] and p["viaje"] is not None]
+    if ajenos:
+        print(f"    [aviso] hay {len(ajenos)} pedidos ajenos con viaje en la BD: se omite la comparación exacta de 'viajes'")
+    else:
+        v.check(
+            cuerpo["viajes"]
+            == [
+                {"viaje": 1, "peso_kg": 7 * ctx["w"], "termina_en": "planta", "total_paradas": 1},
+                {"viaje": 2, "peso_kg": 4 * ctx["w"], "termina_en": "casa", "total_paradas": 2},
+            ],
+            "viajes: peso, termina_en derivado (último y < umbral: casa) y total_paradas",
+        )
+    # Advertencias por (viaje, orden): p3 en el viaje 1 orden 1 choca con p1; el viaje 2 orden 1 de p2 no choca.
+    await _ejecutar("update pedido set viaje = 1, orden_entrega = 1, actualizado_en = now() where id = :id", id=ctx["p3"])
+    _, cuerpo = await _ruta_actual(ctx)
+    choques = [a for a in cuerpo["advertencias"] if {ctx["p1"], ctx["p3"]} <= set(a["pedido_ids"])]
+    v.check(
+        len(choques) == 1 and choques[0]["viaje"] == 1 and choques[0]["orden_entrega"] == 1 and "viaje 1" in choques[0]["mensaje"],
+        "advertencia por (viaje, orden_entrega) repetido, con el viaje",
+    )
+    v.check(
+        not any(ctx["p2"] in a["pedido_ids"] for a in cuerpo["advertencias"]),
+        "mismo orden en otro viaje (p2: viaje 2, orden 1) no es duplicado",
+    )
+    await _ejecutar("update pedido set estado = 'pendiente', orden_entrega = null, viaje = null where id = any(:ids)", ids=ids)
+
+
+async def caso_ay(ctx: dict, v: Verificador) -> None:
+    ids = [ctx["p1"], ctx["p2"], ctx["p3"]]
+    await _poner_unidades(ctx, p1=7, p2=2, p3=2)
+    ctx["n8n"].responder = _en_viajes(ctx, ("p1",), ("p2", "p3"))
+    previa = (await ctx["http"].post("/rutas/planificar", json={"pedido_ids": ids, "vista_previa": True})).json()
+    por_id = {x["pedido_id"]: x for x in previa["ruta"]}
+
+    def parada(clave, viaje=...):
+        x = por_id[ctx[clave]]
+        base = {"pedido_id": x["pedido_id"], "latitud": x["latitud"], "longitud": x["longitud"], "version": x["version"]}
+        if viaje is not ...:
+            base["viaje"] = viaje
+        return base
+
+    # viajes del panel: p3 antes que p2 en el viaje 2
+    respuesta = await ctx["http"].post(
+        "/rutas/confirmar", json={"paradas": [parada("p1", 1), parada("p3", 2), parada("p2", 2)], "sin_resolver": []}
+    )
+    print(f"  POST /rutas/confirmar -> {respuesta.status_code}: {respuesta.text[:300]}")
+    v.check(respuesta.status_code == 200, "confirmar con viajes: 200")
+    guardado = {pid: ((await _pedido(pid))["viaje"], (await _pedido(pid))["orden_entrega"]) for pid in ids}
+    v.check(
+        guardado == {ctx["p1"]: (1, 1), ctx["p3"]: (2, 1), ctx["p2"]: (2, 2)},
+        "guarda viaje y orden dentro del viaje en el orden recibido",
+    )
+    v.check([x["viaje"] for x in respuesta.json()["viajes"]] == [1, 2], "responde 'viajes'")
+    # todo en un viaje y sobre la capacidad: 422 sin escribir
+    await _reiniciar(ctx)
+    await _poner_unidades(ctx, p1=7, p2=2, p3=2)
+    previa = (await ctx["http"].post("/rutas/planificar", json={"pedido_ids": ids, "vista_previa": True})).json()
+    por_id = {x["pedido_id"]: x for x in previa["ruta"]}
+    sobre = await ctx["http"].post(
+        "/rutas/confirmar", json={"paradas": [parada("p1"), parada("p2"), parada("p3")], "sin_resolver": []}
+    )
+    v.check(
+        sobre.status_code == 422 and any("capacidad" in p for p in sobre.json()["detail"]["problemas"]),
+        "sin viaje se asume el 1: 11 * w sobre la capacidad -> 422",
+    )
+    await _sin_cambios(ctx, v)
+
+
+async def caso_az(ctx: dict, v: Verificador) -> None:
+    # Solo dispensadores (peso 0): se planifica y el pedido pesa 1 kg (mínimo sobre el total).
+    await _poner_items(ctx["p1"], [(ctx["prod_cero"], 2)])
+    ctx["n8n"].responder = _ruta_completa
+    respuesta = await _planificar(ctx, [ctx["p1"]])
+    v.check(respuesta.status_code == 200, "pedido solo con productos de peso 0: 200 (no 422)")
+    v.check(
+        ctx["n8n"].llamadas[-1]["payload"]["paradas"][0]["peso_kg"] == 1
+        and respuesta.json()["viajes"][0]["peso_kg"] == 1,
+        "pesa 1 kg (mínimo sobre el total) en el payload y en viajes",
+    )
+    await _reiniciar(ctx)
+    await _poner_items(ctx["p1"], [(ctx["prod_cero"], 2)])
+    v.check((await _fila_get(ctx, ctx["p1"]))["peso_kg"] == 1, "GET pendientes: peso_kg 1")
+
+
+async def caso_ba(ctx: dict, v: Verificador) -> None:
+    # Dispensador (0 kg) + bidón: pesa solo el bidón.
+    await _poner_items(ctx["p1"], [(ctx["prod_cero"], 1), (ctx["prod"], 1)])
+    ctx["n8n"].responder = _ruta_completa
+    respuesta = await _planificar(ctx, [ctx["p1"]])
+    v.check(respuesta.status_code == 200, "200")
+    v.check(
+        ctx["n8n"].llamadas[-1]["payload"]["paradas"][0]["peso_kg"] == ctx["w"],
+        f"dispensador + bidón pesa lo del bidón ({ctx['w']} kg)",
+    )
+    # El mínimo de 1 kg es sobre el total: no se suma por línea de peso 0.
+    async with SessionLocal() as session:
+        await _poner_items(ctx["p2"], [(ctx["prod_cero"], 3), (ctx["prod_cero"], 4)])
+        pesos, sin_peso = await ruta_service.calcular_pesos(session, [ctx["p2"]])
+    v.check(pesos == {ctx["p2"]: 1} and not sin_peso, "solo peso 0: total 1 kg")
+
+
+async def caso_bb(ctx: dict, v: Verificador) -> None:
+    # Peso 0 junto a un producto con peso NULL: 422 y solo se nombra el NULL.
+    await _poner_items(ctx["p1"], [(ctx["prod_cero"], 1), (ctx["prod_sin_peso"], 1)])
+    llamadas = len(ctx["n8n"].llamadas)
+    ctx["n8n"].responder = _ruta_completa
+    respuesta = await _planificar(ctx, [ctx["p1"], ctx["p2"]])
+    detalle = respuesta.json()["detail"]
+    v.check(respuesta.status_code == 422 and detalle["sin_peso"] == [ctx["p1"]], "422 con el pedido de peso NULL en sin_peso")
+    v.check(
+        detalle["productos_sin_peso"] == [{"pedido_id": ctx["p1"], "productos": [ctx["nombre_sin_peso"]]}],
+        "productos_sin_peso nombra solo el de peso NULL, no el de peso 0",
+    )
+    v.check(len(ctx["n8n"].llamadas) == llamadas, "sin llamar a n8n")
+    await _sin_cambios(ctx, v)
+
+
+async def caso_bc(ctx: dict, v: Verificador) -> None:
+    await _poner_items(ctx["p1"], [(ctx["prod"], 1), (ctx["prod_negativo"], 1)])
+    llamadas = len(ctx["n8n"].llamadas)
+    ctx["n8n"].responder = _ruta_completa
+    respuesta = await _planificar(ctx, [ctx["p1"], ctx["p2"]])
+    detalle = respuesta.json()["detail"]
+    v.check(respuesta.status_code == 422 and detalle["sin_peso"] == [ctx["p1"]], "peso_kg negativo: 422 con sin_peso")
+    v.check(
+        detalle["productos_sin_peso"] == [{"pedido_id": ctx["p1"], "productos": ["TEST_RUTAS_negativo"]}],
+        "con el producto de peso negativo en productos_sin_peso",
+    )
+    v.check(len(ctx["n8n"].llamadas) == llamadas, "sin llamar a n8n")
+    await _sin_cambios(ctx, v)
 
 
 def _usuario_prueba() -> dict:
@@ -987,16 +1590,81 @@ CASOS = [
     ("y", "creado_en en ISO 8601 con zona horaria UTC", caso_y),
     ("z", "GET /rutas/actual tras planificar 3 pedidos los devuelve en orden", caso_z),
     ("aa", "GET /rutas/actual: confirmado sin orden_entrega no aparece", caso_aa),
-    ("ab", "GET /rutas/actual: cancelado, entregado o en despacho con orden no aparece", caso_ab),
-    ("ac", "GET /rutas/actual: orden_entrega duplicado genera advertencia", caso_ac),
+    ("ab", "GET /rutas/actual: cancelado y entregado con orden no aparecen; en_despacho sí", caso_ab),
+    ("ac", "GET /rutas/actual: (viaje, orden_entrega) duplicado genera advertencia", caso_ac),
     ("ad", "GET /rutas/actual sin JWT: 401", caso_ad),
     ("ae", "GET /rutas/actual: los sin_resolver no aparecen", caso_ae),
+    ("af", "Peso: SUM(cantidad * peso_kg) en una consulta y redondeo único hacia arriba", caso_af),
+    ("ag", "Pedido sin ítems o con producto sin peso: 422 con sin_peso, sin llamar a n8n", caso_ag),
+    ("ah", "Pedido individual sobre la capacidad: 422 sin llamar a n8n", caso_ah),
+    ("ai", "Total sobre capacidad * max_viajes: 422 con total y máximo", caso_ai),
+    ("aj", "El payload a n8n trae peso_kg en cada parada y 'reglas'", caso_aj),
+    ("ak", "Viaje con hueco en la numeración: 502", caso_ak),
+    ("al", "orden_entrega no consecutivo dentro de un viaje: 502", caso_al),
+    ("am", "Viaje sin paradas: 502", caso_am),
+    ("an", "Peso de un viaje sobre la capacidad: 502", caso_an),
+    ("ao", "'casa' en un viaje que no es el último, o último más pesado: 502", caso_ao),
+    ("ap", "'casa' con peso >= umbral: 502; con peso == umbral termina en planta", caso_ap),
+    ("aq", "'casa' con un solo viaje o termina_en inválido: 502", caso_aq),
+    ("ar", "peso_kg de n8n distinto del recalculado: 502", caso_ar),
+    ("as", "Falta 'viajes' (o el viaje de una parada): 502", caso_as),
+    ("at", "Persistencia de viaje + respuesta con viajes + vista previa", caso_at),
+    ("au", "sin_resolver deja viaje y orden_entrega en NULL", caso_au),
+    ("av", "Replanificar sobrescribe viaje y orden_entrega", caso_av),
+    ("aw", "GET pendientes con peso_kg (null si no calculable)", caso_aw),
+    ("ax", "GET /rutas/actual: viajes, en_despacho y advertencias por (viaje, orden)", caso_ax),
+    ("ay", "POST /rutas/confirmar con viajes: guarda viaje y valida el peso", caso_ay),
+    ("az", "Pedido solo con productos de peso 0 se planifica y pesa 1 kg", caso_az),
+    ("ba", "Dispensador (0 kg) + bidón pesa lo del bidón; mínimo 1 kg sobre el total", caso_ba),
+    ("bb", "Peso 0 junto a producto de peso NULL: 422 que nombra solo el NULL", caso_bb),
+    ("bc", "Producto con peso_kg negativo: 422 con sin_peso y productos_sin_peso", caso_bc),
 ]
 
 
+async def _verificar_esquema() -> dict:
+    """Aborta con un mensaje claro si falta la migración de viaje; devuelve los
+    productos de referencia (solo lectura)."""
+    existe = await _ejecutar(
+        "select count(*) from information_schema.columns where table_schema = 'public' "
+        "and table_name = 'pedido' and column_name = 'viaje'"
+    )
+    if existe.scalar_one() == 0:
+        raise SystemExit(
+            "ABORTADO: la columna pedido.viaje no existe. Aplica primero la migración "
+            "supabase/migrations/20261026120000_agregar_viaje_pedido.sql (la aplica Julio en Supabase)."
+        )
+    con_peso = (await _ejecutar("select id, peso_kg from producto where peso_kg > 0 order by id")).all()
+    sin_peso = (await _ejecutar("select id, nombre from producto where peso_kg is null order by id")).all()
+    if not con_peso or not sin_peso:
+        raise SystemExit(
+            "ABORTADO: se necesita al menos un producto con peso_kg > 0 y otro con peso_kg NULL en la tabla producto."
+        )
+    return {
+        "prod": con_peso[0].id,
+        "w": con_peso[0].peso_kg,
+        "prod_b": con_peso[-1].id,
+        "w_b": con_peso[-1].peso_kg,
+        "prod_sin_peso": sin_peso[0].id,
+        "nombre_sin_peso": sin_peso[0].nombre,
+    }
+
+
+async def _crear_producto_temporal(nombre: str, peso_kg: int) -> int:
+    """Producto de prueba (se borra en _limpiar): los reales no se modifican."""
+    result = await _ejecutar(
+        "insert into producto (nombre, precio_unitario, stock, peso_kg) values (:nombre, 1000, 0, :peso) returning id",
+        nombre=nombre,
+        peso=peso_kg,
+    )
+    return result.scalar_one()
+
+
 async def main() -> None:
+    productos = await _verificar_esquema()
     await _limpiar()
-    ctx = {}
+    ctx = dict(productos)
+    ctx["prod_cero"] = await _crear_producto_temporal("TEST_RUTAS_cero", 0)
+    ctx["prod_negativo"] = await _crear_producto_temporal("TEST_RUTAS_negativo", -5)
     ctx["c1"] = await _crear_cliente(CLIENTE_CON_COORDS)
     ctx["c2"] = await _crear_cliente(CLIENTE_SIN_COORDS)
     ctx["c3"] = await _crear_cliente(CLIENTE_SIN_DIRECCION)
@@ -1007,10 +1675,15 @@ async def main() -> None:
     ctx["cancelado"] = await _crear_pedido(CLIENTE_CON_COORDS, ctx["c1"], "cancelado")
     ctx["entregado"] = await _crear_pedido(CLIENTE_CON_COORDS, ctx["c1"], "entregado")
     ctx["sin_direccion"] = await _crear_pedido(CLIENTE_SIN_DIRECCION, ctx["c3"], "confirmado", orden=8)
+    for clave in ("p1", "p2", "p3", "fuera", "cancelado", "entregado", "sin_direccion"):
+        await _poner_items(ctx[clave], [(ctx["prod"], 1)])
+    ctx["propios"] = {ctx[k] for k in ("p1", "p2", "p3", "fuera", "cancelado", "entregado", "sin_direccion")}
     ctx["cliente_antes"] = {cid: await _cliente(cid) for cid in (ctx["c1"], ctx["c2"])}
     print(f"Datos de prueba: {ctx}")
 
     original = (settings.N8N_ROUTE_WEBHOOK_URL, settings.N8N_ROUTE_WEBHOOK_SECRET, ruta_service._cliente_http)
+    reglas_originales = (settings.RUTA_CAPACIDAD_KG, settings.RUTA_UMBRAL_CASA_KG, settings.RUTA_MAX_VIAJES)
+    settings.RUTA_CAPACIDAD_KG, settings.RUTA_UMBRAL_CASA_KG, settings.RUTA_MAX_VIAJES = 10 * ctx["w"], 6 * ctx["w"], 3
     ctx["n8n"] = N8nFalso()
     settings.N8N_ROUTE_WEBHOOK_URL = URL_N8N_PRUEBA
     settings.N8N_ROUTE_WEBHOOK_SECRET = SECRETO_N8N_PRUEBA
@@ -1036,6 +1709,7 @@ async def main() -> None:
                 print()
     finally:
         settings.N8N_ROUTE_WEBHOOK_URL, settings.N8N_ROUTE_WEBHOOK_SECRET, ruta_service._cliente_http = original
+        settings.RUTA_CAPACIDAD_KG, settings.RUTA_UMBRAL_CASA_KG, settings.RUTA_MAX_VIAJES = reglas_originales
         app.dependency_overrides.pop(get_current_user, None)
         await _limpiar()
 

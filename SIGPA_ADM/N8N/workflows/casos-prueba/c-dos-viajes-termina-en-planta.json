@@ -1,0 +1,23 @@
+{
+  "paradas": [
+    {
+      "pedido_id": 1,
+      "direccion_texto": "Calle Ficticia 100, Viña del Mar",
+      "latitud": -33.0201,
+      "longitud": -71.5502,
+      "peso_kg": 1000
+    },
+    {
+      "pedido_id": 2,
+      "direccion_texto": "Calle Ficticia 300, Valparaíso",
+      "latitud": -33.043,
+      "longitud": -71.61,
+      "peso_kg": 900
+    }
+  ],
+  "reglas": {
+    "capacidad_kg": 1100,
+    "umbral_casa_kg": 800,
+    "max_viajes": 3
+  }
+}

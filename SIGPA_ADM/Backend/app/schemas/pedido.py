@@ -22,6 +22,7 @@ class PedidoOut(BaseModel):
     latitud: float | None = None
     longitud: float | None = None
     orden_entrega: int | None = None
+    viaje: int | None = None
     motivo_revision_direccion: str | None = None
 
 

@@ -49,7 +49,7 @@ nodos, payload ni respuesta. Todo lo que varía por entorno se carga como variab
 | `N8N_DIAGNOSTICS_ENABLED` | `false` | Sin telemetría a n8n. Ya viene en el Dockerfile; con la imagen oficial, cargarla a mano. |
 | `PORT` | `5678` | Solo en Render (ver punto 1). |
 | `N8N_PROXY_HOPS` | `1` | En Render, porque n8n queda detrás de su proxy. Evita errores de `X-Forwarded-For` en las rutas con rate limit. Confirmar en los logs del primer arranque que no aparecen esos errores. No va en el Dockerfile ni en el compose local. |
-| `EXECUTIONS_DATA_PRUNE` | `true` | Obligatoria en producción: borra las ejecuciones antiguas. Las ejecuciones guardan las direcciones de los clientes y, si ORS devolviera un error, la API key podría quedar en los datos guardados de esa ejecución. |
+| `EXECUTIONS_DATA_PRUNE` | `true` | Obligatoria en producción: borra las ejecuciones antiguas. Las ejecuciones guardan las direcciones de los clientes, el depósito y el destino de la reoptimización hacia la casa (lo devuelve ORS) y, si ORS devolviera un error, la API key podría quedar en los datos guardados de esa ejecución. |
 | `EXECUTIONS_DATA_MAX_AGE` | Horas, ej. `168` (7 días) | Antigüedad máxima de las ejecuciones guardadas (junto con `EXECUTIONS_DATA_PRUNE`). |
 
 ### Opcionales
@@ -58,6 +58,10 @@ nodos, payload ni respuesta. Todo lo que varía por entorno se carga como variab
 |---|---|---|
 | `CONFIDENCE_MIN` | `0.6` | Confianza mínima de ORS para aceptar una dirección (además de exigir layer `address`). Un valor no numérico se ignora y se usa 0.6. |
 | `PAIS` | `CL` | País al que se limita la geocodificación. |
+| `CASA_LAT` / `CASA_LON` | — | Casa del despachador (números). **Obligatorias solo cuando la regla exige terminar en la casa**: hay 2 o más viajes y el más liviano pesa menos que `UMBRAL_CASA_KG`. Si faltan o son inválidas en ese caso, el webhook responde 500 `configuracion_incompleta` con `Definir CASA_LAT y CASA_LON`. Con un solo viaje, o si el más liviano pesa >= umbral, no se usan. Cargarlas solo en el panel de variables; pedir el valor al equipo. |
+| `CAPACIDAD_KG` | `1100` | Capacidad del camión por viaje (kg). Respaldo si el backend no envía `reglas`. |
+| `UMBRAL_CASA_KG` | `800` | El último viaje termina en la casa solo si pesa estrictamente menos que esto (kg). Respaldo si el backend no envía `reglas`. |
+| `MAX_VIAJES` | `3` | Máximo de viajes por planificación. Respaldo si el backend no envía `reglas`. El plan estándar de ORS admitiría como máximo 3 vehículos por solicitud (verificar en su documentación). Cada planificación hace hasta `MAX_VIAJES + 1` llamadas de optimización, más hasta 2 reintentos por paradas sin ruta alcanzable (6 con los defaults). |
 | `DB_TYPE` y `DB_POSTGRESDB_*` | SQLite en disco | Ver punto 3. |
 
 Nunca escribir estos valores en el repo (Dockerfile, README, JSON del workflow): solo en el panel
@@ -139,21 +143,26 @@ curl -i -X POST "https://<host>/webhook/sigpa-ruta" \
   -H "Content-Type: application/json" \
   -H "X-Route-Secret: <SECRETO>" \
   -d '{"paradas": [
-        {"pedido_id": 1, "direccion_texto": "Calle Ejemplo 123", "latitud": -33.0300, "longitud": -71.5500},
-        {"pedido_id": 2, "direccion_texto": "Calle Ejemplo 456", "latitud": -33.0450, "longitud": -71.5200}
-      ]}'
+        {"pedido_id": 1, "direccion_texto": "Calle Ejemplo 123", "latitud": -33.0300, "longitud": -71.5500, "peso_kg": 400},
+        {"pedido_id": 2, "direccion_texto": "Calle Ejemplo 456", "latitud": -33.0450, "longitud": -71.5200, "peso_kg": 300}
+      ],
+      "reglas": {"capacidad_kg": 1100, "umbral_casa_kg": 800, "max_viajes": 3}}'
 ```
 
 Respuesta esperada: `200` con
 
 ```json
-{"ruta": [{"pedido_id": 2, "orden_entrega": 1, "latitud": -33.045, "longitud": -71.52},
-          {"pedido_id": 1, "orden_entrega": 2, "latitud": -33.03, "longitud": -71.55}],
+{"ruta": [{"pedido_id": 2, "viaje": 1, "orden_entrega": 1, "latitud": -33.045, "longitud": -71.52},
+          {"pedido_id": 1, "viaje": 1, "orden_entrega": 2, "latitud": -33.03, "longitud": -71.55}],
+ "viajes": [{"viaje": 1, "peso_kg": 700, "termina_en": "planta", "total_paradas": 2}],
  "sin_resolver": []}
 ```
 
-(el orden depende de la ubicación del depósito; cada pedido aparece una vez y `orden_entrega`
-va de 1 a N).
+(el orden depende de la ubicación del depósito; cada pedido aparece una vez, `orden_entrega`
+va de 1 a N dentro de cada viaje y, con un solo viaje, `termina_en` es siempre `planta`).
+
+Más casos (dos viajes con y sin casa, `peso_kg` faltante, carga sobre la capacidad, `CASA_*` sin
+definir) con su resultado esperado: [`workflows/casos-prueba/`](workflows/casos-prueba/README.md).
 
 **Secreto incorrecto (403).** El mismo comando con `-H "X-Route-Secret: incorrecto"` debe
 responder `403` sin ejecutar el workflow.
@@ -236,7 +245,7 @@ curl.exe -i -X POST "https://<host>/webhook/sigpa-ruta" -H "Content-Type: applic
 # 2. Cuerpo vacío con el secreto correcto -> 400 {"error": "entrada_invalida", ...}
 curl.exe -i -X POST "https://<host>/webhook/sigpa-ruta" -H "Content-Type: application/json" -H "X-Route-Secret: <SECRETO>" -d "{}"
 
-# 3. Dos paradas con coordenadas -> 200 con "ruta" y "sin_resolver"
+# 3. Dos paradas con coordenadas y peso_kg -> 200 con "ruta", "viajes" y "sin_resolver"
 curl.exe -i -X POST "https://<host>/webhook/sigpa-ruta" -H "Content-Type: application/json" -H "X-Route-Secret: <SECRETO>" --data-binary "@paradas.json"
 ```
 

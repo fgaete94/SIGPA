@@ -96,6 +96,7 @@ def _pedido_a_out(pedido: Pedido) -> PedidoOut:
         latitud=pedido.latitud,
         longitud=pedido.longitud,
         orden_entrega=pedido.orden_entrega,
+        viaje=pedido.viaje,
         motivo_revision_direccion=pedido.motivo_revision_direccion,
     )
 
