@@ -36,17 +36,22 @@ export function columnasProductos(filas, productos = []) {
 }
 
 // Una fila por parada, en el orden recibido (el de "Ruta en curso", incluido un orden cambiado a mano).
+// Con viajes, el número de parada parte de 1 en cada viaje (como orden_entrega).
 // detalles: GET /pedidos/{id} de cada parada, por id. El sector sale del cliente y /sectores.
 export function filasHoja(paradas, detalles = {}, clientes = [], sectores = []) {
   const clientePorId = new Map(clientes.map(c => [c.id, c]));
   const sectorPorId = new Map(sectores.map(s => [s.id, s]));
-  return paradas.map((p, i) => {
+  const contados = new Map();
+  return paradas.map(p => {
+    const viaje = p.viaje ?? null;
+    contados.set(viaje, (contados.get(viaje) || 0) + 1);
     const sector = sectorPorId.get(clientePorId.get(p.cliente_id)?.sector_id);
     const comuna = p.comuna_nombre || sector?.comuna_nombre || null;
     const detalle = detalles[p.id];
     const sectorVisible = sector && sector.nombre !== comuna ? sector.nombre : null;
     return {
-      numero: i + 1,
+      numero: contados.get(viaje),
+      viaje,
       pedidoId: p.id,
       clienteId: p.cliente_id,
       cliente: p.cliente_nombre || `Cliente ${p.cliente_id}`,

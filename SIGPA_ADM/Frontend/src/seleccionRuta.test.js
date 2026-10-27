@@ -37,9 +37,14 @@ test('filtra por día y comuna', () => {
 
 test('marcar los visibles respeta el máximo y deja fuera los que tienen la dirección por revisar', () => {
   const martes = filtrarPendientes(lista, { dia: 'Martes' });
-  assert.deepEqual(marcarVisibles([], martes, 30), { ids: [10, 11, 12], agregados: 3, porRevisar: 1, sinCupo: 0 });
+  assert.deepEqual(marcarVisibles([], martes, 30), { ids: [10, 11, 12], agregados: 3, porRevisar: 1, sinCupo: 0, sinPeso: 0 });
   // Ya había uno marcado de otro día y el máximo es 3: solo caben 2 más.
-  assert.deepEqual(marcarVisibles([13], martes, 3), { ids: [13, 10, 11], agregados: 2, porRevisar: 1, sinCupo: 1 });
+  assert.deepEqual(marcarVisibles([13], martes, 3), { ids: [13, 10, 11], agregados: 2, porRevisar: 1, sinCupo: 1, sinPeso: 0 });
   assert.deepEqual(desmarcarVisibles([13, 10, 11], martes), [13]);
   assert.equal(sinUbicacionEn(lista, [10, 11, 13]), 1);
+});
+
+test('marcar los visibles deja fuera los pedidos sin peso calculable', () => {
+  const conPeso = enriquecerPendientes([pendiente(20, 1, { peso_kg: 40 }), pendiente(21, 1, { peso_kg: null }), pendiente(22, 1, { peso_kg: 0 })], clientes);
+  assert.deepEqual(marcarVisibles([], conPeso, 50), { ids: [20, 22], agregados: 2, porRevisar: 0, sinCupo: 0, sinPeso: 1 });
 });

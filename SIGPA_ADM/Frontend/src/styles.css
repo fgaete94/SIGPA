@@ -245,6 +245,9 @@ button.despachar{background:#e3e0fb;border-color:#cdc6f5;color:#3b2f9a}
 .paradas-previa li>span:not(.acciones-parada){flex:1;min-width:0}
 .paradas-previa small{display:block;margin-top:2px;color:var(--gris);font-size:13px}
 .paradas-previa.fuera li{opacity:.8}
+/* Encabezado de cada viaje (una carga del camión) en la vista previa y en la ruta en curso. */
+.peso-ruta{margin:8px 0;font-size:15px}
+.viaje-titulo{margin:18px 0 4px;padding:6px 10px;border-radius:8px;background:var(--fondo);color:var(--azul);font-size:15px}
 .paradas-previa .number{font-size:16px;padding:5px 9px}
 @media (max-width:640px){.paradas-previa li{flex-wrap:wrap}.paradas-previa .acciones-parada{width:100%;padding-left:40px}.paradas-previa.fuera .acciones-parada{padding-left:0}}
 /* Ordenar arrastrando (vista previa y ruta en curso): la fila sigue al puntero y las demás se corren. */
@@ -397,6 +400,7 @@ td.celda-acciones button+button{margin-left:6px}
 .hoja .hoja-rendicion tr:first-child>*{background:#e8eef8}
 .hoja-paradas tbody{break-inside:avoid}
 .hoja-paradas tbody:nth-of-type(even) td{background:#f7f9fc}
+.hoja .hoja-viaje th{background:#e8eef8;color:var(--azul);font-size:11px;padding:5px 7px}
 .hoja-numero{width:36px;text-align:center}
 .hoja-numero b{display:inline-grid;place-items:center;min-width:26px;height:26px;padding:0 4px;border-radius:13px;background:var(--azul);color:#fff;font:700 14px/1 'Barlow Condensed',sans-serif}
 .hoja-cliente{width:140px}

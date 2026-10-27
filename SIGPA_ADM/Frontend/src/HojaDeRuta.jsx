@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { api } from './api';
 import { fechaHora, hoyChile } from './fechas';
 import { cargaRuta, columnasProductos, etiquetaProducto, fechaHoja, filasHoja, totalPorCobrar } from './hojaRuta';
+import { agruparPorViaje, encabezadoViaje } from './viajes';
 
 const dinero = n => new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP', maximumFractionDigits: 0 }).format(n);
 const MEDIOS_PAGO = ['Efectivo', 'Transferencia', 'Tarjeta'];
@@ -18,7 +19,7 @@ function recordarConductor(nombre) {
 // Hoja de ruta para el conductor: vista previa a pantalla completa e impresión en horizontal.
 // Recibe una copia fija de las paradas (con el orden que se ve en "Ruta en curso"), así una recarga
 // de datos no la cambia mientras está abierta. Los productos salen de GET /pedidos/{id} de cada parada.
-export default function HojaDeRuta({ paradas, clientes, productos, onClose }) {
+export default function HojaDeRuta({ paradas, viajes = [], clientes, productos, onClose }) {
   const [detalles, setDetalles] = useState(null);
   const [fallidos, setFallidos] = useState([]);
   const [sectores, setSectores] = useState([]);
@@ -67,6 +68,10 @@ export default function HojaDeRuta({ paradas, clientes, productos, onClose }) {
   const columnas = columnasProductos(filas, productos);
   const carga = cargaRuta(filas, columnas);
   const unidades = Object.values(carga).reduce((suma, n) => suma + n, 0);
+  // Con más de un viaje, la carga de cada uno (el camión vuelve a cargar entre viajes) y el encabezado en las paradas.
+  const grupos = agruparPorViaje(filas, viajes);
+  const conViajes = grupos.length > 1 || grupos.some(g => g.viaje != null);
+  const sumar = cantidades => Object.values(cantidades).reduce((suma, n) => suma + n, 0);
   const listo = detalles && !fallidos.length;
   const encabezadosProductos = columnas.map(nombre => <th key={nombre} scope="col" title={nombre}>{etiquetaProducto(nombre)}</th>);
 
@@ -111,7 +116,8 @@ export default function HojaDeRuta({ paradas, clientes, productos, onClose }) {
             <table className="hoja-carga">
               <thead><tr><th scope="col"><span className="hoja-oculto">Fila</span></th>{encabezadosProductos}<th scope="col">Total</th></tr></thead>
               <tbody>
-                <tr><th scope="row">A entregar</th>{columnas.map(n => <td key={n}>{carga[n] || '–'}</td>)}<td>{unidades}</td></tr>
+                {conViajes && grupos.map(g => { const c = cargaRuta(g.paradas, columnas); return <tr key={g.viaje ?? 'sin-viaje'}><th scope="row">{g.viaje != null ? `Viaje ${g.viaje}` : 'Sin viaje'}</th>{columnas.map(n => <td key={n}>{c[n] || '–'}</td>)}<td>{sumar(c)}</td></tr>; })}
+                <tr><th scope="row">{conViajes ? 'Total a entregar' : 'A entregar'}</th>{columnas.map(n => <td key={n}>{carga[n] || '–'}</td>)}<td>{unidades}</td></tr>
                 <tr><th scope="row">Cargado</th>{columnas.map(n => <td key={n}/>)}<td/></tr>
                 <tr><th scope="row">Vuelve</th>{columnas.map(n => <td key={n}/>)}<td/></tr>
               </tbody>
@@ -136,7 +142,7 @@ export default function HojaDeRuta({ paradas, clientes, productos, onClose }) {
             {encabezadosProductos}
             <th scope="col">Monto</th><th scope="col">Pago</th><th scope="col">Observaciones / firma</th>
           </tr></thead>
-          {filas.map(f => <tbody key={f.pedidoId}>
+          {filas.map((f, i) => <React.Fragment key={f.pedidoId}>{conViajes && f.viaje !== filas[i - 1]?.viaje && <tbody className="hoja-viaje"><tr><th scope="rowgroup" colSpan={columnas.length + 7}>{encabezadoViaje(grupos.find(g => g.viaje === f.viaje)) || 'Sin viaje'}</th></tr></tbody>}<tbody>
             <tr>
               <td rowSpan={2} className="hoja-numero"><b>{f.numero}</b></td>
               <td rowSpan={2} className="hoja-cliente"><strong>{f.cliente}</strong><small className="hoja-codigos">Pedido #{f.pedidoId} · Cliente {f.clienteId}</small>{f.telefono && <small>{f.telefono}</small>}</td>
@@ -152,7 +158,7 @@ export default function HojaDeRuta({ paradas, clientes, productos, onClose }) {
               {columnas.map(n => <td key={n}/>)}
               <td className="hoja-cobrado"><small>Cobrado</small></td>
             </tr>
-          </tbody>)}
+          </tbody></React.Fragment>)}
         </table>
 
         <div className="hoja-pie">

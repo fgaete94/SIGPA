@@ -7,6 +7,7 @@ import { fechaCorta as fecha } from './fechas';
 import { RUTA_MAX_PEDIDOS, alternarSeleccion, detallesErrorRuta, enlaceMapa, leerCoordenadas } from './planificacion';
 import { datosConfirmar, estadoVistaPrevia } from './vistaPrevia';
 import { LIMITE_SIN_UBICACION, desmarcarVisibles, enriquecerPendientes, filtrarPendientes, marcarVisibles, opcionesSeleccion, sinUbicacionEn } from './seleccionRuta';
+import { CAPACIDAD_KG, MAX_VIAJES, kilos, resumenPeso } from './viajes';
 import VistaPreviaRuta from './VistaPreviaRuta';
 
 // Pestaña Rutas: elegir pedidos (máx. RUTA_MAX_PEDIDOS), corregir la ubicación de los que n8n no pudo
@@ -37,20 +38,25 @@ export default function Rutas({ pendientes, clientes = [], busy, onActualizar, o
   const lleno = selected.length >= RUTA_MAX_PEDIDOS;
   const porRevisar = pendientes.filter(p => p.motivo_revision_direccion).length;
   const sinUbicacionElegidos = sinUbicacionEn(lista, selected);
+  // EP-04: el peso de lo marcado dice cuántos viajes hará el camión como mínimo (lo reparte n8n).
+  const conPesos = lista.some(p => 'peso_kg' in p);
+  const peso = resumenPeso(lista.filter(p => selected.includes(p.pedido_id)));
   function marcar() {
     const r = marcarVisibles(selected, visibles, RUTA_MAX_PEDIDOS);
     setSelected(r.ids);
     setAviso([
       r.agregados === 1 ? 'Se marcó 1 pedido.' : `Se marcaron ${r.agregados} pedidos.`,
       r.sinCupo ? `${r.sinCupo} no caben: el máximo por ruta es ${RUTA_MAX_PEDIDOS}.` : '',
-      r.porRevisar ? `${r.porRevisar} con la dirección por revisar quedaron fuera: corrige su ubicación primero.` : '',
+      r.porRevisar ? `${r.porRevisar} con la dirección por revisar ${r.porRevisar === 1 ? 'quedó' : 'quedaron'} fuera: corrige su ubicación primero.` : '',
+      r.sinPeso ? `${r.sinPeso} sin peso calculable ${r.sinPeso === 1 ? 'quedó' : 'quedaron'} fuera: no se pueden planificar hasta que sus productos tengan peso.` : '',
     ].filter(Boolean).join(' '));
   }
 
   // #87: calcular no guarda nada; la ruta se revisa en la vista previa y se guarda al confirmar.
   async function calcular() {
     setPlanning(true); onPlanificando(true); setError(null); setAviso(''); setResult(null); setVista(null); setErrorVista(null);
-    try { setVista(estadoVistaPrevia(await api('/rutas/planificar', { method: 'POST', body: JSON.stringify({ pedido_ids: selected, vista_previa: true }) }))); }
+    const pesos = Object.fromEntries(pendientes.map(p => [p.pedido_id, p.peso_kg]));
+    try { setVista(estadoVistaPrevia(await api('/rutas/planificar', { method: 'POST', body: JSON.stringify({ pedido_ids: selected, vista_previa: true }) }), pesos)); }
     catch (e) { setError({ mensaje: e.message, detalles: detallesErrorRuta(e) }); onPlanificando(false); }
     finally { setPlanning(false); }
   }
@@ -82,14 +88,18 @@ export default function Rutas({ pendientes, clientes = [], busy, onActualizar, o
         <button disabled={planning || !visibles.some(p => selected.includes(p.pedido_id))} onClick={() => { setSelected(ids => desmarcarVisibles(ids, visibles)); setAviso(''); }}>Desmarcar visibles</button>
       </div>
       {aviso && <p role="status" className="ok">{aviso}</p>}
+      {conPesos && selected.length > 0 && <p className="peso-ruta" aria-live="polite">Peso de lo marcado: <strong>{kilos(peso.total)}</strong>{peso.sinPeso.length > 0 && ' sin contar los que no tienen peso'}{!peso.excedido && ` · ${peso.viajes === 1 ? '1 viaje' : `al menos ${peso.viajes} viajes`} (el camión carga hasta ${kilos(CAPACIDAD_KG)} por viaje)`}</p>}
+      {conPesos && peso.excedido && <p className="notice">Lo marcado supera el máximo por ruta ({kilos(CAPACIDAD_KG * MAX_VIAJES)}, {MAX_VIAJES} viajes): desmarca pedidos y déjalos para otra ruta.</p>}
+      {peso.sobreCapacidad.length > 0 && <p className="notice">{peso.sobreCapacidad.map(p => `#${p.pedido_id}`).join(', ')} {peso.sobreCapacidad.length === 1 ? 'pesa' : 'pesan'} más de lo que carga el camión ({kilos(CAPACIDAD_KG)}) por sí {peso.sobreCapacidad.length === 1 ? 'solo' : 'solos'}: no se puede planificar así.</p>}
+      {conPesos && peso.sinPeso.length > 0 && selected.length > 0 && <p className="notice">{peso.sinPeso.map(p => `#${p.pedido_id}`).join(', ')} no {peso.sinPeso.length === 1 ? 'tiene' : 'tienen'} peso calculable (algún producto sin peso registrado): {peso.sinPeso.length === 1 ? 'desmárcalo' : 'desmárcalos'} o la ruta no se podrá calcular.</p>}
       {sinUbicacionElegidos > LIMITE_SIN_UBICACION && <p className="notice">{sinUbicacionElegidos} de los pedidos marcados no tienen ubicación: el servicio de rutas tendría que buscarlos todos y podría no alcanzar a responder. Calcula en dos tandas o corrige primero algunas ubicaciones.</p>}
       {visibles.map(p => <div className="parada" key={p.pedido_id}>
         <div className="stop">
           <input id={`pedido-${p.pedido_id}`} type="checkbox" disabled={planning || (lleno && !selected.includes(p.pedido_id))} checked={selected.includes(p.pedido_id)} onChange={e => setSelected(ids => alternarSeleccion(ids, p.pedido_id, e.target.checked))}/>
           <label htmlFor={`pedido-${p.pedido_id}`}>
             <strong>#{p.pedido_id} · {p.cliente_nombre}</strong>
-            <span className="etiquetas"><span className={`badge ${p.estado}`}>{ETIQUETA_ESTADO[p.estado] || p.estado}</span>{p.motivo_revision_direccion ? <span className="badge revisar">Dirección por revisar</span> : p.sinUbicacion && <span className="badge sin-ubicacion" title="Al calcular, el servicio de rutas buscará la dirección en el mapa">Sin ubicación</span>}</span>
-            <small>{p.direccion_texto || 'Sin dirección'} · {p.comuna} · {nombreDia(p.dia)} · {fecha(p.creado_en)}</small>
+            <span className="etiquetas"><span className={`badge ${p.estado}`}>{ETIQUETA_ESTADO[p.estado] || p.estado}</span>{p.motivo_revision_direccion ? <span className="badge revisar">Dirección por revisar</span> : p.sinUbicacion && <span className="badge sin-ubicacion" title="Al calcular, el servicio de rutas buscará la dirección en el mapa">Sin ubicación</span>}{p.peso_kg === null && <span className="badge revisar" title="Algún producto del pedido no tiene peso registrado">Sin peso</span>}</span>
+            <small>{p.direccion_texto || 'Sin dirección'} · {p.comuna} · {nombreDia(p.dia)} · {fecha(p.creado_en)}{Number.isFinite(p.peso_kg) && ` · ${kilos(p.peso_kg)}`}</small>
             {p.motivo_revision_direccion && <small className="motivo">Motivo: {p.motivo_revision_direccion}</small>}
           </label>
           {p.motivo_revision_direccion && corrigiendo !== p.pedido_id && <button onClick={() => { setCorrigiendo(p.pedido_id); setAviso(''); }}>Corregir ubicación</button>}
@@ -105,7 +115,7 @@ export default function Rutas({ pendientes, clientes = [], busy, onActualizar, o
     {vista && <VistaPreviaRuta estado={vista} onCambiar={setVista} onCancelar={cerrarVista} onConfirmar={confirmar} onRecalcular={calcular} guardando={guardando} error={errorVista}/>}
     {result && <section className="no-print">
       <div className="title"><h2>Última planificación</h2><button onClick={() => setResult(null)}>Ocultar</button></div>
-      <p role="status" className="ok">Se confirmaron {result.pedidos_confirmados} pedidos: {result.ruta.length} en la ruta{result.sin_resolver?.length ? ` y ${result.sin_resolver.length} sin ubicación` : ''}.{result.ruta.length ? ' El orden quedó guardado y se ve en "Ruta en curso".' : ' Ninguno entró a la ruta: quedaron marcados para revisar su dirección.'}</p>
+      <p role="status" className="ok">Se confirmaron {result.pedidos_confirmados} pedidos: {result.ruta.length} en la ruta{result.viajes?.length > 1 ? `, repartidos en ${result.viajes.length} viajes` : ''}{result.sin_resolver?.length ? ` y ${result.sin_resolver.length} sin ubicación` : ''}.{result.ruta.length ? ' El orden quedó guardado y se ve en "Ruta en curso".' : ' Ninguno entró a la ruta: quedaron marcados para revisar su dirección.'}</p>
       {result.sin_resolver?.length > 0 && <div className="error"><h3>Pedidos sin ubicación resuelta</h3>{result.sin_resolver.map(p => <p key={p.pedido_id}>#{p.pedido_id} · {p.cliente_nombre}: {p.motivo}</p>)}<p>Quedaron confirmados pero fuera de la ruta. Aparecen en "Preparar ruta" como "Dirección por revisar": corrige su ubicación y vuelve a planificar.</p></div>}
       {result.confirmados_con_orden_fuera_de_solicitud?.length > 0 && <p className="notice">Hay {result.confirmados_con_orden_fuera_de_solicitud.length} pedidos confirmados con orden de otras planificaciones: aparecen mezclados en "Ruta en curso".</p>}
     </section>}
