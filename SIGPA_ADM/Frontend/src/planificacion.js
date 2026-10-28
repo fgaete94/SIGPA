@@ -54,6 +54,8 @@ export function detallesErrorRuta(error) {
   if (d.peso_total_kg != null) lineas.push(`Lo seleccionado pesa ${kilos(d.peso_total_kg)} y el máximo por ruta es ${kilos(d.maximo_kg)}: saca pedidos y déjalos para otra ruta.`);
   for (const problema of d.problemas || []) lineas.push(problema);
   if (d.codigo != null) lineas.push(`Código del servicio de rutas: ${d.codigo}.`);
+  // n8n reenvía el 429 de OpenRouteService cuando se acaba su cuota gratuita (por minuto o diaria).
+  if (/\(429\)/.test(d.mensaje || error?.message || '')) lineas.push('Se alcanzó el límite de consultas del servicio de mapas: espera unos minutos y vuelve a intentar. Si sigue, se agotó la cuota del día.');
   if (error?.status === 503) lineas.push('El servicio de rutas no está configurado en el servidor: avisa al equipo técnico.');
   if (error?.status === 504) lineas.push('En el plan gratuito n8n se duerme y tarda en despertar: espera un minuto y vuelve a intentar.');
   if ([409, 422, 502, 503, 504].includes(error?.status)) lineas.push('No se guardó nada: los pedidos siguen como estaban.');

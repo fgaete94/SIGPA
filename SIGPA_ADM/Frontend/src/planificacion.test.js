@@ -47,6 +47,8 @@ test('explica los errores del backend al planificar', () => {
   assert.match(detallesErrorRuta(total)[0], /^Lo seleccionado pesa 3\.500 kg y el máximo por ruta es 3\.300 kg/);
   const confirmar = Object.assign(new Error('x'), { status: 422, detalle: { mensaje: 'x', problemas: ['viaje 1: pesa 1200 kg y la capacidad es 1100 kg'] } });
   assert.deepEqual(detallesErrorRuta(confirmar), ['viaje 1: pesa 1200 kg y la capacidad es 1100 kg', 'No se guardó nada: los pedidos siguen como estaban.']);
+  const cuota = Object.assign(new Error('El servicio de rutas respondió con error (429). Los pedidos siguen pendientes.'), { status: 502, detalle: { mensaje: 'El servicio de rutas respondió con error (429). Los pedidos siguen pendientes.' } });
+  assert.match(detallesErrorRuta(cuota)[0], /límite de consultas del servicio de mapas/);
   const sinConfigurar = Object.assign(new Error('x'), { status: 503, detalle: { mensaje: 'x' } });
   assert.match(detallesErrorRuta(sinConfigurar)[0], /no está configurado/);
 
