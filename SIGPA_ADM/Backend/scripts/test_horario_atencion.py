@@ -41,6 +41,10 @@ from app.services.horario_atencion import (
 )
 from app.services.notificacion_ejecutiva import CLIENTE_NUEVO, texto_notificacion_ejecutiva
 
+# Estas pruebas reemplazan send_whatsapp_message por un fake: sin plantilla
+# configurada, el aviso a la ejecutiva también pasa por ese fake (#152).
+settings.WHATSAPP_TEMPLATE_EJECUTIVA_NAME = ""
+
 CHILE = ZoneInfo("America/Santiago")
 UTC = ZoneInfo("UTC")
 

@@ -49,6 +49,10 @@ from app.services import webhook_queue
 from app.services.conversacion_bot_service import marcar_activa
 from app.services.draft_store import clear_draft, get_draft
 
+# Estas pruebas reemplazan send_whatsapp_message por un fake: sin plantilla
+# configurada, el aviso a la ejecutiva también pasa por ese fake (#152).
+settings.WHATSAPP_TEMPLATE_EJECUTIVA_NAME = ""
+
 RANGO_TELEFONOS_SQL = r"^(56)?932302\d{3}$"
 USUARIO_BOT = order_flow.USUARIO_AUDITORIA_BOT
 

@@ -64,6 +64,11 @@ from app.services.order_flow import (
     procesar_mensaje,
 )
 from app.models import Cliente
+from app.core.config import settings
+
+# Estas pruebas reemplazan send_whatsapp_message por un fake: sin plantilla
+# configurada, el aviso a la ejecutiva también pasa por ese fake (#152).
+settings.WHATSAPP_TEMPLATE_EJECUTIVA_NAME = ""
 
 RANGO_TELEFONOS_SQL = r"^(56)?932100\d{3}$"
 

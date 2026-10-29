@@ -211,6 +211,7 @@ En las variables del servicio del backend:
 | `N8N_ROUTE_WEBHOOK_URL` | `https://<host>/webhook/sigpa-ruta` |
 | `N8N_ROUTE_WEBHOOK_SECRET` | El mismo valor (campo *Value*) de la credencial `SIGPA X-Route-Secret` |
 | `EJECUTIVA_PHONE` | Teléfono (WhatsApp, formato `569XXXXXXXX`) de la ejecutiva que recibe las notificaciones de traspaso. **Obligatoria:** no tiene default; sin ella el sistema deja de notificar a la ejecutiva en producción y solo queda un warning en el log al iniciar. |
+| `WHATSAPP_TEMPLATE_EJECUTIVA_NAME` | `aviso_ejecutiva_cliente`: plantilla Utility aprobada por Meta con la que se avisa a la ejecutiva (#152). Vacía, o si Meta la rechaza, se envía texto libre, que solo llega si la ejecutiva escribió al bot en las últimas 24 h. Idioma: `WHATSAPP_TEMPLATE_EJECUTIVA_LANG` (default `es_CL`). |
 | `CORS_ORIGINS` | Solo si el rewrite `/api/*` del panel no funciona y el panel llama a la URL directa del backend: el origen del sitio del panel (ej. `https://<panel>`), sin `*`. |
 
 | `N8N_ROUTE_TIMEOUT_SECONDS` | Segundos que el backend espera la respuesta de n8n. Default del backend: `45`. En el despliegue actual: `120`, para cubrir el arranque en frío de n8n en el plan gratuito. |
