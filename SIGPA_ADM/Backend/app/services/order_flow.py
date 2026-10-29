@@ -41,7 +41,14 @@ from app.services.agent_service import (
 from app.services.auditoria_service import construir_snapshot
 from app.services.cliente_lookup import buscar_clientes_por_telefono, normalizar_telefono
 from app.services.conversacion_bot_service import marcar_inactiva
-from app.services.draft_store import clear_draft, get_draft, get_lock, save_draft
+from app.services.draft_store import (
+    cargar_draft,
+    clear_draft,
+    get_draft,
+    get_lock,
+    persistir_draft,
+    save_draft,
+)
 from app.services.horario_atencion import en_horario_atencion, mensaje_derivacion_ejecutiva
 from app.services.notificacion_ejecutiva import (
     clasificar_clientes,
@@ -3024,6 +3031,98 @@ async def _responder_a_oferta_repetir(
     _, respuesta = await _responder_siguiente_paso(phone, nuevo, cliente)
     return f"Perfecto, repetimos tu último pedido.\n\n{respuesta}"
 
+async def _procesar_mensaje_interno(
+    phone: str,
+    message_type: str,
+    message_text: str | None,
+    location: dict | None,
+) -> str:
+    # Identificación por teléfono (normalizado) en cada mensaje: si hay
+    # más de un cliente con ese teléfono, no se elige uno.
+    clientes = await _buscar_clientes(phone)
+    if len(clientes) > 1:
+        return await _escalar_telefono_duplicado(phone, clientes)
+    cliente = _datos_cliente(clientes[0]) if clientes else None
+
+    draft = get_draft(phone)
+    estado = draft.get("estado") if draft else None
+
+    # Historia #64: respuesta a la oferta de repetir el último pedido.
+    if draft is not None and draft.get("oferta_repetir") and message_type == "text":
+        respuesta = await _responder_a_oferta_repetir(phone, draft, cliente, message_text)
+        if respuesta is not None:
+            return respuesta
+        draft = get_draft(phone)
+        estado = draft.get("estado") if draft else None
+
+    # Cancelación EXPLÍCITA del pedido/estado en curso: se intercepta antes
+    # de llamar al LLM y antes de cualquier otra rama del flujo, con
+    # cualquier draft (con o sin productos). clear_draft(phone) borra el
+    # draft completo, y como la tabla cliente solo se escribe al
+    # confirmar, cancelar no deja ningún cambio en cliente. Si no es claro
+    # que quiera cancelar (ver _intencion_cancelar), se le pregunta.
+    if draft is not None and message_type == "text":
+        cancelacion = _intencion_cancelar(
+            message_text, texto_libre=draft.get("paso") in _PASOS_TEXTO_LIBRE
+        )
+        if cancelacion == "cancelar":
+            clear_draft(phone)
+            return MENSAJE_PEDIDO_CANCELADO
+        if cancelacion == "duda":
+            if estado in (ESTADO_ESPERANDO_CONFIRMACION, ESTADO_ESPERANDO_MODIFICACION):
+                # Tras esta pregunta un "sí" no debe confirmar el pedido.
+                save_draft(phone, {**draft, "estado": ESTADO_ESPERANDO_MODIFICACION})
+            return PREGUNTA_CANCELAR
+
+    # Corrección que el bot ofreció en su último mensaje ("¿Quieres que
+    # cambie ... por Bidón 20L ...?"): vale solo para este mensaje. Se
+    # aplica con un sí explícito (o con la cantidad, si se preguntó
+    # cuántas), "no" la descarta y pregunta qué cambiar, y cualquier otra
+    # cosa la descarta y sigue el flujo normal.
+    correccion = draft.pop("correccion_pendiente", None) if draft else None
+    if correccion:
+        save_draft(phone, draft)
+        if message_type == "text":
+            respuesta = await _responder_a_correccion(phone, draft, cliente, correccion, message_text)
+            if respuesta is not None:
+                return respuesta
+
+    if message_type == "location":
+        return await _aplicar_ubicacion(phone, location, draft, cliente)
+
+    # Solo se confirma con un sí explícito y si el último mensaje del bot
+    # fue el resumen. Cualquier otra respuesta no confirma: una negativa
+    # pregunta qué cambiar, y el resto (cambios, consultas) pasa al LLM,
+    # que vuelve a armar el resumen si no falta nada.
+    if estado == ESTADO_ESPERANDO_CONFIRMACION:
+        if _es_confirmacion_explicita(message_text):
+            return await _confirmar_pedido(phone, draft)
+        if _es_negativa_simple(message_text):
+            save_draft(phone, {**draft, "estado": ESTADO_ESPERANDO_MODIFICACION})
+            return MENSAJE_NO_CONFIRMADO
+    elif estado == ESTADO_ESPERANDO_MODIFICACION:
+        if _es_confirmacion_explicita(message_text):
+            # Respondió "no" al resumen y ahora "sí": no se confirma (¿sí a
+            # qué?). Se muestra de nuevo el resumen para que confirme
+            # explícitamente.
+            paso, texto = await _responder_siguiente_paso(phone, draft, cliente)
+            return f"{PREFIJO_REPETIR_RESUMEN}\n\n{texto}" if paso == "confirmacion" else texto
+        if _es_negativa_simple(message_text):
+            return PREGUNTA_CANCELAR
+
+    resultado = await _interpretar_con_debug(
+        phone, message_text or "", cliente is None, _contexto_desde_draft(draft)
+    )
+
+    # Historia #64: primer mensaje de un cliente con historial.
+    if draft is None and message_type == "text":
+        oferta = await _ofrecer_repetir_pedido(phone, cliente, resultado, message_text)
+        if oferta is not None:
+            return oferta
+
+    return await _aplicar_resultado_llm(phone, resultado, draft, cliente, message_text)
+
+
 async def procesar_mensaje(
     phone: str,
     message_type: str,
@@ -3035,87 +3134,11 @@ async def procesar_mensaje(
     # el segundo espera a que el primero termine por completo (incluyendo
     # cualquier escritura en el draft o creación de pedido) antes de empezar.
     async with get_lock(phone):
-        # Identificación por teléfono (normalizado) en cada mensaje: si hay
-        # más de un cliente con ese teléfono, no se elige uno.
-        clientes = await _buscar_clientes(phone)
-        if len(clientes) > 1:
-            return await _escalar_telefono_duplicado(phone, clientes)
-        cliente = _datos_cliente(clientes[0]) if clientes else None
-
-        draft = get_draft(phone)
-        estado = draft.get("estado") if draft else None
-
-        # Historia #64: respuesta a la oferta de repetir el último pedido.
-        if draft is not None and draft.get("oferta_repetir") and message_type == "text":
-            respuesta = await _responder_a_oferta_repetir(phone, draft, cliente, message_text)
-            if respuesta is not None:
-                return respuesta
-            draft = get_draft(phone)
-            estado = draft.get("estado") if draft else None
-
-        # Cancelación EXPLÍCITA del pedido/estado en curso: se intercepta antes
-        # de llamar al LLM y antes de cualquier otra rama del flujo, con
-        # cualquier draft (con o sin productos). clear_draft(phone) borra el
-        # draft completo, y como la tabla cliente solo se escribe al
-        # confirmar, cancelar no deja ningún cambio en cliente. Si no es claro
-        # que quiera cancelar (ver _intencion_cancelar), se le pregunta.
-        if draft is not None and message_type == "text":
-            cancelacion = _intencion_cancelar(
-                message_text, texto_libre=draft.get("paso") in _PASOS_TEXTO_LIBRE
-            )
-            if cancelacion == "cancelar":
-                clear_draft(phone)
-                return MENSAJE_PEDIDO_CANCELADO
-            if cancelacion == "duda":
-                if estado in (ESTADO_ESPERANDO_CONFIRMACION, ESTADO_ESPERANDO_MODIFICACION):
-                    # Tras esta pregunta un "sí" no debe confirmar el pedido.
-                    save_draft(phone, {**draft, "estado": ESTADO_ESPERANDO_MODIFICACION})
-                return PREGUNTA_CANCELAR
-
-        # Corrección que el bot ofreció en su último mensaje ("¿Quieres que
-        # cambie ... por Bidón 20L ...?"): vale solo para este mensaje. Se
-        # aplica con un sí explícito (o con la cantidad, si se preguntó
-        # cuántas), "no" la descarta y pregunta qué cambiar, y cualquier otra
-        # cosa la descarta y sigue el flujo normal.
-        correccion = draft.pop("correccion_pendiente", None) if draft else None
-        if correccion:
-            save_draft(phone, draft)
-            if message_type == "text":
-                respuesta = await _responder_a_correccion(phone, draft, cliente, correccion, message_text)
-                if respuesta is not None:
-                    return respuesta
-
-        if message_type == "location":
-            return await _aplicar_ubicacion(phone, location, draft, cliente)
-
-        # Solo se confirma con un sí explícito y si el último mensaje del bot
-        # fue el resumen. Cualquier otra respuesta no confirma: una negativa
-        # pregunta qué cambiar, y el resto (cambios, consultas) pasa al LLM,
-        # que vuelve a armar el resumen si no falta nada.
-        if estado == ESTADO_ESPERANDO_CONFIRMACION:
-            if _es_confirmacion_explicita(message_text):
-                return await _confirmar_pedido(phone, draft)
-            if _es_negativa_simple(message_text):
-                save_draft(phone, {**draft, "estado": ESTADO_ESPERANDO_MODIFICACION})
-                return MENSAJE_NO_CONFIRMADO
-        elif estado == ESTADO_ESPERANDO_MODIFICACION:
-            if _es_confirmacion_explicita(message_text):
-                # Respondió "no" al resumen y ahora "sí": no se confirma (¿sí a
-                # qué?). Se muestra de nuevo el resumen para que confirme
-                # explícitamente.
-                paso, texto = await _responder_siguiente_paso(phone, draft, cliente)
-                return f"{PREFIJO_REPETIR_RESUMEN}\n\n{texto}" if paso == "confirmacion" else texto
-            if _es_negativa_simple(message_text):
-                return PREGUNTA_CANCELAR
-
-        resultado = await _interpretar_con_debug(
-            phone, message_text or "", cliente is None, _contexto_desde_draft(draft)
-        )
-
-        # Historia #64: primer mensaje de un cliente con historial.
-        if draft is None and message_type == "text":
-            oferta = await _ofrecer_repetir_pedido(phone, cliente, resultado, message_text)
-            if oferta is not None:
-                return oferta
-
-        return await _aplicar_resultado_llm(phone, resultado, draft, cliente, message_text)
+        # Historia #150: el borrador se carga de la BD (si no está en la caché)
+        # antes de procesar y se respalda al terminar, también en los return
+        # tempranos. Ambas toleran fallos de la BD: ver draft_store.
+        await cargar_draft(phone)
+        try:
+            return await _procesar_mensaje_interno(phone, message_type, message_text, location)
+        finally:
+            await persistir_draft(phone)

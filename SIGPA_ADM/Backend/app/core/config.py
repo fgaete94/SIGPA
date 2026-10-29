@@ -61,6 +61,10 @@ class Settings(BaseSettings):
     RECORDATORIO_HORA_INICIO: int = 15
     RECORDATORIO_HORA_FIN: int = 20
 
+    # Historia #150: horas que un borrador de pedido guardado en la BD
+    # (borrador_pedido) sigue vigente; pasado ese tiempo no se retoma.
+    BORRADOR_TTL_HORAS: int = 24
+
     # Asistente virtual y horario de atención de las ejecutivas (hora de
     # Chile), ver app/services/horario_atencion.py. DIAS_ATENCION: días
     # separados por coma o un rango, ej. "lunes-viernes".

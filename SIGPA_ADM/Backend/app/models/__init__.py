@@ -4,6 +4,7 @@ al hacer create_all() o al generar migraciones con Alembic.
 """
 
 from app.models.auditoria import Auditoria
+from app.models.borrador_pedido import BorradorPedido
 from app.models.cliente import Cliente
 from app.models.cliente_producto_habitual import ClienteProductoHabitual
 from app.models.comuna import Comuna
@@ -18,6 +19,7 @@ from app.models.tipo_cliente import TipoCliente
 
 __all__ = [
     "Auditoria",
+    "BorradorPedido",
     "Cliente",
     "ClienteProductoHabitual",
     "Comuna",
