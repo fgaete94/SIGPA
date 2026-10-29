@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Modelo entidad-relación SIGPA</title>
+<style>
+  body { margin: 0; padding: 24px; background: #ffffff; font-family: Calibri, Arial, sans-serif; }
+  #diagrama { display: inline-block; }
+</style>
+</head>
+<body>
+<div id="diagrama">
+<pre class="mermaid">
+erDiagram
+  comuna ||--o{ sector : "contiene"
+  comuna ||--o{ cliente : "agrupa"
+  sector |o--o{ cliente : "ubica"
+  tipo_cliente |o--o{ cliente : "clasifica"
+  cliente ||--o{ pedido : "realiza"
+  pedido ||--|{ detalle_pedido : "contiene"
+  producto ||--o{ detalle_pedido : "se pide en"
+  cliente ||--o{ cliente_producto_habitual : "tiene"
+  producto ||--o{ cliente_producto_habitual : "es habitual en"
+  cliente |o--o{ mensaje_whatsapp : "envia y recibe"
+  pedido |o--o{ mensaje_whatsapp : "se asocia a"
+
+  comuna {
+    int id PK
+    varchar nombre UK
+  }
+  sector {
+    int id PK
+    int comuna_id FK
+    varchar nombre
+  }
+  tipo_cliente {
+    int id PK
+    varchar nombre UK
+  }
+  cliente {
+    int id PK
+    varchar cod_legado
+    varchar nombre
+    varchar apellido_paterno
+    varchar apellido_materno
+    varchar telefono
+    varchar direccion
+    int comuna_id FK
+    int sector_id FK
+    int tipo_cliente_id FK
+    dia_semana dia_reparto
+    boolean activo
+    boolean opt_out_whatsapp
+    numeric latitud
+    numeric longitud
+    text notas
+    timestamp creado_en
+  }
+  producto {
+    int id PK
+    varchar nombre UK
+    numeric precio_unitario
+    int stock
+    numeric capacidad_litros
+    smallint peso_kg
+  }
+  cliente_producto_habitual {
+    int cliente_id PK,FK
+    int producto_id PK,FK
+  }
+  pedido {
+    int id PK
+    int cliente_id FK
+    estado_pedido estado
+    varchar direccion_despacho
+    numeric total
+    numeric latitud
+    numeric longitud
+    smallint viaje
+    int orden_entrega
+    text motivo_revision_direccion
+    timestamp creado_en
+    timestamp actualizado_en
+  }
+  detalle_pedido {
+    int id PK
+    int pedido_id FK
+    int producto_id FK
+    int cantidad_solicitada
+    int cantidad_entregada
+    numeric precio_unitario
+  }
+  mensaje_whatsapp {
+    int id PK
+    int cliente_id FK
+    int pedido_id FK
+    varchar telefono
+    varchar meta_message_id
+    direccion_mensaje direccion
+    varchar tipo
+    text contenido
+    varchar estado
+    timestamp creado_en
+  }
+  conversacion_bot {
+    varchar telefono PK
+    boolean activa
+    timestamp iniciada_en
+    timestamp actualizada_en
+  }
+  auditoria {
+    int id PK
+    varchar usuario
+    varchar entidad
+    int entidad_id
+    varchar accion
+    jsonb antes
+    jsonb despues
+    timestamp creado_en
+  }
+</pre>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+<script>
+  mermaid.initialize({ startOnLoad: false, theme: 'default', er: { useMaxWidth: false, fontSize: 14 }, themeVariables: { fontFamily: 'Calibri, Arial, sans-serif' } });
+  mermaid.run().then(() => { document.body.dataset.listo = '1'; });
+</script>
+</body>
+</html>
