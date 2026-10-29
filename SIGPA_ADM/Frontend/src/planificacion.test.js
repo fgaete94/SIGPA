@@ -39,6 +39,19 @@ test('explica los errores del backend al planificar', () => {
   const invalida = Object.assign(new Error('x'), { status: 502, detalle: { mensaje: 'x', problemas: ['pedidos repetidos: [5]'], codigo: 'entrada_invalida' } });
   assert.deepEqual(detallesErrorRuta(invalida).slice(0, 2), ['pedidos repetidos: [5]', 'Código del servicio de rutas: entrada_invalida.']);
 
+  const sinPeso = Object.assign(new Error('x'), { status: 422, detalle: { mensaje: 'x', sin_peso: [8, 9], productos_sin_peso: [{ pedido_id: 8, productos: ['Promo USB + 2 Bidones'] }] } });
+  assert.equal(detallesErrorRuta(sinPeso)[0], 'Sin peso calculable: #8 (Promo USB + 2 Bidones), #9. Sácalos de la selección hasta que sus productos tengan peso registrado.');
+  const pesado = Object.assign(new Error('x'), { status: 422, detalle: { mensaje: 'x', capacidad_kg: 1100, sobre_capacidad: [{ pedido_id: 5, peso_kg: 1200 }] } });
+  assert.equal(detallesErrorRuta(pesado)[0], 'El pedido #5 pesa 1.200 kg: solo ya supera lo que carga el camión (1.100 kg).');
+  const total = Object.assign(new Error('x'), { status: 422, detalle: { mensaje: 'x', peso_total_kg: 3500, maximo_kg: 3300 } });
+  assert.match(detallesErrorRuta(total)[0], /^Lo seleccionado pesa 3\.500 kg y el máximo por ruta es 3\.300 kg/);
+  const confirmar = Object.assign(new Error('x'), { status: 422, detalle: { mensaje: 'x', problemas: ['viaje 1: pesa 1200 kg y la capacidad es 1100 kg'] } });
+  assert.deepEqual(detallesErrorRuta(confirmar), ['viaje 1: pesa 1200 kg y la capacidad es 1100 kg', 'No se guardó nada: los pedidos siguen como estaban.']);
+  const cuota = Object.assign(new Error('El servicio de rutas respondió con error (429). Los pedidos siguen pendientes.'), { status: 502, detalle: { mensaje: 'El servicio de rutas respondió con error (429). Los pedidos siguen pendientes.' } });
+  assert.match(detallesErrorRuta(cuota)[0], /límite de consultas del servicio de mapas/);
+  const sinConfigurar = Object.assign(new Error('x'), { status: 503, detalle: { mensaje: 'x' } });
+  assert.match(detallesErrorRuta(sinConfigurar)[0], /no está configurado/);
+
   const dormido = Object.assign(new Error('x'), { status: 504, detalle: { mensaje: 'x' } });
   assert.match(detallesErrorRuta(dormido)[0], /despertar/);
 

@@ -6,9 +6,12 @@ import HojaDeRuta from './HojaDeRuta';
 import { enlaceComoLlegar, enlaceWhatsApp, rutaEnCurso, textoRuta } from './reparto';
 import { useArrastre } from './Arrastre';
 import { moverA } from './route';
+import { agruparPorViaje, contarViajes, reemplazarViaje, tituloGrupo } from './viajes';
 
 // Historia #85: la ruta guardada en la base, para coordinar al repartidor (imprimir, WhatsApp o copiar).
-export default function RutaEnCurso({ pedidos, clientes, productos, onActualizar, onEntregar }) {
+// Agrupada por viaje: cada viaje es una carga del camión y numera sus paradas desde 1. viajes: el peso y
+// dónde termina cada viaje (GET /rutas/actual); sin esos datos el encabezado muestra solo el número.
+export default function RutaEnCurso({ pedidos, clientes, productos, viajes = [], onActualizar, onEntregar }) {
   const { paradas: guardadas, repetidos, sinUbicacion } = useMemo(() => rutaEnCurso(pedidos, clientes), [pedidos, clientes]);
   // Reordenar (arrastrando) solo cambia esta vista: impresión y texto. Para guardar otro orden se vuelve a calcular la ruta (#87).
   const [paradas, setParadas] = useState(guardadas);
@@ -17,8 +20,9 @@ export default function RutaEnCurso({ pedidos, clientes, productos, onActualizar
   const [hoja, setHoja] = useState(null);
   useEffect(() => setParadas(guardadas), [guardadas]);
   const manual = paradas.some((p, i) => p.id !== guardadas[i]?.id);
-  const texto = textoRuta(paradas, fechaCorta(new Date().toISOString()));
-  const { propsFila, propsManilla } = useArrastre(paradas.length, (desde, hasta) => setParadas(ps => moverA(ps, desde, hasta)));
+  const texto = textoRuta(paradas, fechaCorta(new Date().toISOString()), viajes);
+  const grupos = agruparPorViaje(paradas, viajes);
+  const moverEnViaje = viaje => (desde, hasta) => setParadas(ps => reemplazarViaje(ps, viaje, moverA(ps.filter(p => (p.viaje ?? null) === viaje), desde, hasta)));
 
   async function copiar() {
     try { await navigator.clipboard.writeText(texto); setCopiado('Ruta copiada. Pégala en el chat del repartidor.'); }
@@ -44,9 +48,9 @@ export default function RutaEnCurso({ pedidos, clientes, productos, onActualizar
 
   return <section className="print-route">
     <div className="title">
-      <div><h2>Ruta en curso</h2><p className="muted">{paradas.length === 1 ? '1 parada' : `${paradas.length} paradas`} · pedidos confirmados o en despacho, en el orden guardado al planificar</p></div>
+      <div><h2>Ruta en curso</h2><p className="muted">{paradas.length === 1 ? '1 parada' : `${paradas.length} paradas`}{contarViajes(grupos) > 1 && ` en ${contarViajes(grupos)} viajes`} · pedidos confirmados o en despacho, en el orden guardado al planificar</p></div>
       {paradas.length > 0 && <div className="acciones no-print">
-        <button onClick={() => setHoja(paradas)}>Imprimir hoja de ruta</button>
+        <button onClick={() => setHoja({ paradas, viajes })}>Imprimir hoja de ruta</button>
         <a className="boton" href={enlaceWhatsApp(texto)} target="_blank" rel="noopener noreferrer">Enviar por WhatsApp</a>
         <button onClick={copiar}>Copiar ruta</button>
         {porDespachar.length > 0 && <button className="primary" disabled={despachando} onClick={despacharRuta}>{despachando ? 'Marcando…' : `Salió a reparto (${porDespachar.length})`}</button>}
@@ -57,8 +61,22 @@ export default function RutaEnCurso({ pedidos, clientes, productos, onActualizar
       {resultado.listos > 0 && <p>{resultado.listos === 1 ? '1 pedido quedó' : `${resultado.listos} pedidos quedaron`} en despacho.</p>}
       {resultado.fallidos.length > 0 && <><p>No se pudieron cambiar:</p><ul>{resultado.fallidos.map(f => <li key={f}>{f}</li>)}</ul></>}
     </div>}
-    {repetidos.length > 0 && <p className="notice">Hay pedidos de más de una planificación con el mismo número de parada ({repetidos.join(', ')}). Revisa el orden antes de entregarla al repartidor o vuelve a planificar esos pedidos.</p>}
+    {repetidos.length > 0 && <p className="notice">Hay pedidos de más de una planificación con el mismo número de parada ({repetidos.map(r => (r.viaje != null ? `viaje ${r.viaje}: ${r.numeros.join(', ')}` : r.numeros.join(', '))).join('; ')}). Revisa el orden antes de entregarla al repartidor o vuelve a planificar esos pedidos.</p>}
     {manual && <p className="notice">Orden cambiado solo para imprimir o enviar. No se guarda en el servidor: al actualizar los datos vuelve al orden planificado. <button className="no-print enlace" onClick={() => setParadas(guardadas)}>Volver al orden planificado</button></p>}
+    {grupos.map(v => <ViajeEnCurso key={v.viaje ?? 'sin-viaje'} viaje={v} titulo={tituloGrupo(v, grupos)} onMover={moverEnViaje(v.viaje)} onEntregar={onEntregar}/>)}
+    {!paradas.length && <p>No hay una ruta en curso. Selecciona pedidos en "Preparar ruta" y planifícala.</p>}
+    {hoja && <HojaDeRuta paradas={hoja.paradas} viajes={hoja.viajes} clientes={clientes} productos={productos} onClose={() => setHoja(null)}/>}
+    {sinUbicacion > 0 && <p className="notice no-print">{sinUbicacion === 1 ? '1 pedido confirmado quedó' : `${sinUbicacion} pedidos confirmados quedaron`} fuera de la ruta por dirección por revisar. Corrige su ubicación más abajo y vuelve a planificar.</p>}
+  </section>;
+}
+
+// Un viaje de la ruta en curso: encabezado y paradas, que se pueden reordenar arrastrando dentro del viaje.
+function ViajeEnCurso({ viaje, titulo, onMover, onEntregar }) {
+  const { paradas } = viaje;
+  const { propsFila, propsManilla } = useArrastre(paradas.length, onMover);
+  const delViaje = viaje.viaje != null ? ` del viaje ${viaje.viaje}` : '';
+  return <>
+    {titulo && <h3 className="viaje-titulo">{titulo}</h3>}
     {paradas.map((p, i) => {
       const enlace = enlaceComoLlegar(p);
       const fila = propsFila(i);
@@ -72,12 +90,9 @@ export default function RutaEnCurso({ pedidos, clientes, productos, onActualizar
         </span>
         <div className="no-print acciones-parada">
           {enlace && <a className="boton" href={enlace} target="_blank" rel="noopener noreferrer">Cómo llegar</a>}
-          <button aria-label={`Registrar entrega de la parada ${i + 1}`} onClick={() => onEntregar(p.id)}>Entregado</button>
+          <button aria-label={`Registrar entrega de la parada ${i + 1}${delViaje}`} onClick={() => onEntregar(p.id)}>Entregado</button>
         </div>
       </div>;
     })}
-    {!paradas.length && <p>No hay una ruta en curso. Selecciona pedidos en "Preparar ruta" y planifícala.</p>}
-    {hoja && <HojaDeRuta paradas={hoja} clientes={clientes} productos={productos} onClose={() => setHoja(null)}/>}
-    {sinUbicacion > 0 && <p className="notice no-print">{sinUbicacion === 1 ? '1 pedido confirmado quedó' : `${sinUbicacion} pedidos confirmados quedaron`} fuera de la ruta por dirección por revisar. Corrige su ubicación más abajo y vuelve a planificar.</p>}
-  </section>;
+  </>;
 }

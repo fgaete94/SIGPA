@@ -33,18 +33,21 @@ export const filtrarPendientes = (lista, { dia = '', comuna = '' } = {}) =>
   lista.filter(p => (!dia || p.dia === dia) && (!comuna || p.comuna === comuna));
 
 // Marca los visibles sin pasar del máximo. Los que tienen la dirección por revisar se dejan fuera:
-// sin corregir su ubicación volverían a quedar sin resolver.
+// sin corregir su ubicación volverían a quedar sin resolver. Tampoco los sin peso calculable
+// (peso_kg null): el backend rechaza la ruta entera si va uno.
 export function marcarVisibles(seleccion, visibles, maximo) {
   const ids = [...seleccion];
   let porRevisar = 0;
   let sinCupo = 0;
+  let sinPeso = 0;
   for (const p of visibles) {
     if (ids.includes(p.pedido_id)) continue;
     if (p.motivo_revision_direccion && p.sinUbicacion) { porRevisar += 1; continue; }
+    if (p.peso_kg === null) { sinPeso += 1; continue; }
     if (ids.length >= maximo) { sinCupo += 1; continue; }
     ids.push(p.pedido_id);
   }
-  return { ids, agregados: ids.length - seleccion.length, porRevisar, sinCupo };
+  return { ids, agregados: ids.length - seleccion.length, porRevisar, sinCupo, sinPeso };
 }
 
 export const desmarcarVisibles = (seleccion, visibles) => seleccion.filter(id => !visibles.some(p => p.pedido_id === id));
