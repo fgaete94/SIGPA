@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { api } from './api';
 import { fechaHora, hoyChile } from './fechas';
 import { cargaRuta, columnasProductos, etiquetaProducto, fechaHoja, filasHoja, totalPorCobrar } from './hojaRuta';
-import { agruparPorViaje, encabezadoViaje } from './viajes';
+import { SIN_VIAJE, agruparPorViaje, tituloGrupo } from './viajes';
 
 const dinero = n => new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP', maximumFractionDigits: 0 }).format(n);
 const MEDIOS_PAGO = ['Efectivo', 'Transferencia', 'Tarjeta'];
@@ -142,7 +142,7 @@ export default function HojaDeRuta({ paradas, viajes = [], clientes, productos, 
             {encabezadosProductos}
             <th scope="col">Monto</th><th scope="col">Pago</th><th scope="col">Observaciones / firma</th>
           </tr></thead>
-          {filas.map((f, i) => <React.Fragment key={f.pedidoId}>{conViajes && f.viaje !== filas[i - 1]?.viaje && <tbody className="hoja-viaje"><tr><th scope="rowgroup" colSpan={columnas.length + 7}>{encabezadoViaje(grupos.find(g => g.viaje === f.viaje)) || 'Sin viaje'}</th></tr></tbody>}<tbody>
+          {filas.map((f, i) => <React.Fragment key={f.pedidoId}>{conViajes && f.viaje !== filas[i - 1]?.viaje && <tbody className="hoja-viaje"><tr><th scope="rowgroup" colSpan={columnas.length + 7}>{tituloGrupo(grupos.find(g => g.viaje === f.viaje), grupos) || SIN_VIAJE}</th></tr></tbody>}<tbody>
             <tr>
               <td rowSpan={2} className="hoja-numero"><b>{f.numero}</b></td>
               <td rowSpan={2} className="hoja-cliente"><strong>{f.cliente}</strong><small className="hoja-codigos">Pedido #{f.pedidoId} · Cliente {f.clienteId}</small>{f.telefono && <small>{f.telefono}</small>}</td>

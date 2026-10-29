@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { agruparPorViaje, encabezadoViaje, ordenViaje, problemasViajes, reemplazarViaje, resumenPeso, terminaEn } from './viajes.js';
+import { SIN_VIAJE, agruparPorViaje, contarViajes, encabezadoViaje, ordenViaje, problemasViajes, reemplazarViaje, resumenPeso, terminaEn, tituloGrupo } from './viajes.js';
 
 const parada = (pedido_id, viaje, orden_entrega) => ({ pedido_id, viaje, orden_entrega });
 
@@ -16,6 +16,15 @@ test('agrupa las paradas por viaje con su peso y destino', () => {
   assert.equal(encabezadoViaje(grupos[1]), 'Viaje 2 · 380 kg · termina en casa del despachador');
   assert.equal(encabezadoViaje({ viaje: 3 }), 'Viaje 3', 'sin datos del viaje, solo el número');
   assert.equal(encabezadoViaje({ viaje: null }), null, 'ruta anterior a los viajes: sin encabezado');
+});
+
+test('los pedidos sin viaje de una ruta anterior no cuentan como viaje y llevan su propio título', () => {
+  const mixtos = agruparPorViaje([parada(1, 1, 1), parada(2, 2, 1), parada(3, null, 1)]);
+  assert.equal(contarViajes(mixtos), 2);
+  assert.deepEqual(mixtos.map(g => tituloGrupo(g, mixtos)), ['Viaje 1', 'Viaje 2', SIN_VIAJE]);
+  const antiguos = agruparPorViaje([parada(3, null, 1), parada(4, null, 2)]);
+  assert.equal(contarViajes(antiguos), 0);
+  assert.equal(tituloGrupo(antiguos[0], antiguos), null, 'si toda la ruta es anterior, sin título');
 });
 
 test('reemplazar el orden de un viaje no mueve los de otros viajes', () => {

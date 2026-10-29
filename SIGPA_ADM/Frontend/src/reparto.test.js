@@ -53,3 +53,12 @@ test('con viajes: orden por viaje, el mismo número en viajes distintos no es re
     '*Viaje 2 · 300 kg · termina en casa del despachador*', '1. Cliente 1 (pedido #1)', '2. Cliente 4 (pedido #4)',
   ]);
 });
+
+test('la ruta anterior sin viaje va al final del texto con su propio título', () => {
+  const { paradas } = rutaEnCurso([pedido(1, 'confirmado', 1, { viaje: 1 }), pedido(2, 'confirmado', 1)]);
+  assert.deepEqual(textoRuta(paradas, '29-10-2026').split('\n\n').map(b => b.split('\n')[0]), [
+    'Ruta Agua DM · 29-10-2026 · 2 paradas',
+    '*Viaje 1*', '1. Cliente 1 (pedido #1)',
+    '*Sin viaje · planificados antes de los viajes*', '1. Cliente 2 (pedido #2)',
+  ]);
+});

@@ -1,6 +1,6 @@
 // Historia #85: la ruta en curso son los pedidos confirmados o en despacho que tienen orden_entrega
 // (el backend no guarda una tabla de rutas: el orden y el viaje viven en cada pedido).
-import { agruparPorViaje, encabezadoViaje, ordenViaje } from './viajes.js';
+import { agruparPorViaje, ordenViaje, tituloGrupo } from './viajes.js';
 
 const EN_CURSO = ['confirmado', 'en_despacho'];
 
@@ -32,7 +32,8 @@ export function enlaceComoLlegar(parada) {
 // Texto para enviar al repartidor por WhatsApp o copiar: una parada por bloque, con su enlace.
 // Con viajes, cada uno lleva su encabezado y numera sus paradas desde 1.
 export function textoRuta(paradas, fecha, viajes = []) {
-  const bloques = agruparPorViaje(paradas, viajes).flatMap(v => [encabezadoViaje(v) && `*${encabezadoViaje(v)}*`, ...v.paradas.map((p, i) => [
+  const grupos = agruparPorViaje(paradas, viajes);
+  const bloques = grupos.flatMap(v => [tituloGrupo(v, grupos) && `*${tituloGrupo(v, grupos)}*`, ...v.paradas.map((p, i) => [
     `${i + 1}. ${p.cliente_nombre || `Cliente ${p.cliente_id}`} (pedido #${p.id})`,
     p.direccion || 'Sin dirección registrada',
     p.cliente_telefono && `Tel: ${p.cliente_telefono}`,

@@ -32,6 +32,12 @@ export function encabezadoViaje({ viaje, peso_kg, termina_en }) {
   return [`Viaje ${viaje}`, Number.isFinite(peso_kg) && kilos(peso_kg), DESTINO[termina_en]].filter(Boolean).join(' · ');
 }
 
+// Si en la ruta conviven pedidos con viaje y pedidos de una ruta anterior (sin viaje), estos últimos van al
+// final con su propio título; no cuentan como un viaje más.
+export const SIN_VIAJE = 'Sin viaje · planificados antes de los viajes';
+export const tituloGrupo = (grupo, grupos) => (grupo.viaje != null ? encabezadoViaje(grupo) : grupos.some(g => g.viaje != null) ? SIN_VIAJE : null);
+export const contarViajes = grupos => grupos.filter(g => g.viaje != null).length;
+
 // Reemplaza las paradas de un viaje por las mismas en otro orden, sin tocar las de los demás viajes.
 export function reemplazarViaje(paradas, viaje, nuevas) {
   const siguiente = nuevas[Symbol.iterator]();
