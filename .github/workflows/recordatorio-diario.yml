@@ -1,10 +1,23 @@
 name: Recordatorio diario SIGPA
 
+# GitHub Actions retrasa y a veces se salta las ejecuciones programadas
+# (entre el 25 y el 28/10 hubo 9 de 32 y ninguna cayó entre las 15:00 y las
+# 15:59 de Chile). Por eso no se apunta a una hora exacta: hay una ejecución
+# cada 30 minutos (minutos 7 y 37, poco congestionados) y el backend decide
+# si corresponde enviar según su ventana horaria en hora de Chile
+# (RECORDATORIO_HORA_INICIO / RECORDATORIO_HORA_FIN, por defecto 15:00-20:00).
+# El cron va en UTC: 18-23 UTC cubre de 15:07 a 20:37 con horario de verano de
+# Chile (UTC-3) y de 14:07 a 19:37 sin él (UTC-4).
+#
+# Es seguro ejecutarlo tantas veces: el envío es idempotente por fecha (a cada
+# teléfono se le manda una sola plantilla al día; las siguientes llamadas lo
+# informan como ya_enviados_hoy) y el backend serializa ejecuciones solapadas.
+# Un envío que Meta rechazó no queda marcado y se reintenta en la siguiente
+# ejecución de la ventana. Las ejecuciones fuera de la ventana responden
+# "skipped" y terminan en verde: es lo esperado, no un fallo.
 on:
   schedule:
-    - cron: '30,45 17 * * *'
-    - cron: '0,15,30,45 18 * * *'
-    - cron: '0,15 19 * * *'
+    - cron: '7,37 18-23 * * *'
   workflow_dispatch:
     inputs:
       forzar:
@@ -21,8 +34,9 @@ jobs:
           CRON_SECRET: ${{ secrets.INTERNAL_CRON_SECRET }}
           # En las ejecuciones programadas inputs.forzar viene vacío.
           FORZAR: ${{ inputs.forzar }}
-        # Sin reintentos a propósito: un reintento durante un arranque en
-        # frío de Render podría duplicar envíos.
+        # Sin reintentos automáticos a propósito: un reintento durante un
+        # arranque en frío de Render podría solaparse con la ejecución
+        # original. El siguiente cron (30 min después) ya hace de reintento.
         run: |
           URL="https://sigpa-34sy.onrender.com/internal/recordatorio-diario"
           if [ "$FORZAR" = "true" ]; then

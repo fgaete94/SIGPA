@@ -25,6 +25,7 @@ Uso: python -m scripts.test_recordatorio
 
 import asyncio
 import json
+import logging
 import re
 from contextlib import contextmanager
 from datetime import datetime
@@ -69,6 +70,7 @@ TEL_MIERCOLES = "56933300310"
 # sábado 24 (mañana domingo), siempre a las 15:05 hora Chile.
 MIERCOLES_15 = datetime(2026, 10, 21, 15, 5, tzinfo=CHILE)
 MIERCOLES_16 = datetime(2026, 10, 21, 16, 5, tzinfo=CHILE)
+MIERCOLES_20 = datetime(2026, 10, 21, 20, 0, tzinfo=CHILE)
 MIERCOLES_14 = datetime(2026, 10, 21, 14, 59, tzinfo=CHILE)
 VIERNES_15 = datetime(2026, 10, 23, 15, 5, tzinfo=CHILE)
 VIERNES_10 = datetime(2026, 10, 23, 10, 0, tzinfo=CHILE)
@@ -77,6 +79,8 @@ SABADO_15 = datetime(2026, 10, 24, 15, 5, tzinfo=CHILE)
 LUNES_15 = datetime(2026, 10, 19, 15, 5, tzinfo=CHILE)
 LUNES_10 = datetime(2026, 10, 19, 10, 0, tzinfo=CHILE)
 MARTES_15 = datetime(2026, 10, 20, 15, 5, tzinfo=CHILE)
+# Lunes 26/10 18:45: hora real en que cayó un cron retrasado (mañana martes).
+LUNES_26_1845 = datetime(2026, 10, 26, 18, 45, tzinfo=CHILE)
 
 
 def _texto(nombre: str) -> str:
@@ -122,11 +126,15 @@ def _hora(ahora: datetime):
 class FakeEnvio:
     """Reemplaza send_whatsapp_template y marcar_activa en el endpoint."""
 
-    def __init__(self, fallan: set[str] | None = None) -> None:
+    def __init__(self, fallan: set[str] | None = None, retraso: float = 0) -> None:
         self.envios: list[dict] = []
         self.fallan = fallan or set()
+        # Segundos que tarda cada envío (simula a Meta para solapar ejecuciones).
+        self.retraso = retraso
 
     async def send(self, to, template_name, language_code, body_params, texto_registro):
+        if self.retraso:
+            await asyncio.sleep(self.retraso)
         if not _es_de_prueba(to):
             # Cliente real con reparto mañana: no se "envía" ni se marca.
             return None
@@ -437,7 +445,7 @@ async def caso_b(v: Verificador) -> None:
 
 
 async def caso_c(v: Verificador) -> None:
-    for hora in (MIERCOLES_14, MIERCOLES_16):
+    for hora in (MIERCOLES_14, MIERCOLES_20):
         fake = FakeEnvio()
         with _config_base(), _hora(hora), _fake_envio(fake):
             status, r = await _llamar()
@@ -445,6 +453,13 @@ async def caso_c(v: Verificador) -> None:
             status == 200 and r.get("status") == "skipped" and not fake.envios,
             f"{hora.strftime('%H:%M')} -> skipped, sin envíos",
         )
+        v.check(r.get("ventana") == "15:00-20:00", "el JSON incluye la ventana '15:00-20:00'")
+    print(f"    respuesta: {json.dumps(r, ensure_ascii=False)}")
+    v.check(
+        r["razon"] == "fuera de la ventana horaria"
+        and {"hora_actual_chile", "modo_prueba", "prueba_respeta_dia", "forzar"} <= r.keys(),
+        "skipped mantiene razon, hora_actual_chile, modo_prueba, prueba_respeta_dia y forzar",
+    )
 
 
 async def caso_d(v: Verificador) -> None:
@@ -711,10 +726,164 @@ async def caso_o(v: Verificador) -> None:
     v.check(status == 500 and r["prueba_respeta_dia"] is False, "plantilla_no_configurada incluye prueba_respeta_dia")
 
 
+# --------------------------------------------------------------------------
+# Ventana horaria 15:00-20:00 (GitHub retrasa y se salta crons)
+# --------------------------------------------------------------------------
+
+
+async def caso_p(v: Verificador) -> None:
+    # Cada hora, en una corrida limpia.
+    for hora, minuto in ((15, 5), (17, 0), (18, 45), (19, 59)):
+        await _limpiar_estado()
+        fake = FakeEnvio()
+        with _config_base(), _hora(MIERCOLES_15.replace(hour=hora, minute=minuto)), _fake_envio(fake):
+            status, r = await _llamar()
+        etiqueta = f"{hora}:{minuto:02d}"
+        v.check(
+            status == 200 and "status" not in r and len(fake.a(TEL_JUEVES)) == 1,
+            f"{etiqueta} envía al cliente con reparto mañana",
+        )
+        v.check(TEL_JUEVES in r["telefonos_enviados"], f"{etiqueta} -> en telefonos_enviados")
+
+
+async def caso_q(v: Verificador) -> None:
+    # Lunes 26/10 a las 18:45: el cron real llegó 3 h 45 min tarde.
+    fake = FakeEnvio()
+    with _config_base(), _hora(LUNES_26_1845), _fake_envio(fake):
+        _, r = await _llamar()
+    print(f"    producción: dia_manana={r['dia_manana']} enviados={_enviados_de_prueba(r)}")
+    v.check(r["dia_manana"] == "Martes" and TEL_MARTES in r["telefonos_enviados"], "producción: envía al de reparto martes")
+    v.check(len(fake.a(TEL_MARTES)) == 1 and not fake.a(TEL_LUNES), "producción: solo al cliente cuyo día es mañana")
+
+    await _limpiar_estado()
+    fake = FakeEnvio()
+    with _config_base(telefonos_prueba=LISTA_DIAS, respetar_dia=True), _hora(LUNES_26_1845), _fake_envio(fake):
+        _, r = await _llamar()
+    print(f"    modo prueba + respetar_dia: {json.dumps(r, ensure_ascii=False)}")
+    v.check(
+        r["modo_prueba"] is True
+        and r["telefonos_enviados"] == [TEL_MARTES]
+        and [e["to"] for e in fake.envios] == [TEL_MARTES],
+        "modo prueba con respetar_dia: envía solo al cliente de reparto mañana",
+    )
+
+
+async def caso_r(v: Verificador) -> None:
+    fake = FakeEnvio()
+    resultados = []
+    with _config_base(), _fake_envio(fake):
+        for hora, minuto in ((15, 5), (15, 35), (18, 45)):
+            with _hora(MIERCOLES_15.replace(hour=hora, minute=minuto)):
+                _, r = await _llamar()
+            resultados.append(r)
+    v.check(TEL_JUEVES in resultados[0]["telefonos_enviados"], "15:05 envía")
+    for r, hora in zip(resultados[1:], ("15:35", "18:45")):
+        v.check(
+            TEL_JUEVES in r["telefonos_ya_enviados_hoy"] and TEL_JUEVES not in r["telefonos_enviados"],
+            f"{hora} lo reporta en ya_enviados_hoy y no reenvía",
+        )
+    v.check(
+        all(len(fake.a(t)) == 1 for t in (TEL_JUEVES, TEL_NOMBRE_VACIO, TEL_NOMBRE_MULTILINEA, TEL_FALLA)),
+        "el envío se llamó exactamente una vez por teléfono",
+    )
+
+
+async def caso_s(v: Verificador) -> None:
+    fake = FakeEnvio(fallan={TEL_FALLA})
+    with _config_base(), _fake_envio(fake):
+        with _hora(MIERCOLES_15):
+            _, r1 = await _llamar()
+        v.check(any(e.get("telefono") == TEL_FALLA for e in r1["errores"]), "15:05: el teléfono fallido va a errores")
+        v.check(await _conversacion(TEL_FALLA) is None, "15:05: no queda marcado")
+        fake.fallan = set()
+        with _hora(MIERCOLES_15.replace(minute=35)):
+            _, r2 = await _llamar()
+    v.check(TEL_FALLA in r2["telefonos_enviados"], "15:35: se envía")
+    v.check(len(fake.a(TEL_FALLA)) == 2, "dos intentos en total (falló y reintentó)")
+    conv = await _conversacion(TEL_FALLA)
+    v.check(conv is not None and conv.activa, "tras el reintento queda marcado")
+    v.check(len(fake.a(TEL_JUEVES)) == 1, "los que sí se enviaron a las 15:05 no se repiten a las 15:35")
+
+
+async def caso_t(v: Verificador) -> None:
+    # Dos invocaciones simultáneas (cron retrasado solapado con otro). El
+    # envío tarda 0,3 s para que de verdad se pisen.
+    fake = FakeEnvio(retraso=0.3)
+    with _config_base(telefonos_prueba=TEL_JUEVES), _hora(MIERCOLES_15), _fake_envio(fake):
+        (_, r1), (_, r2) = await asyncio.gather(_llamar(), _llamar())
+    print(f"    ejecución 1: {r1.get('status', 'completa')} / ejecución 2: {r2.get('status', 'completa')}")
+    v.check(len(fake.a(TEL_JUEVES)) == 1, "el teléfono recibió una sola plantilla")
+    v.check(
+        sum(TEL_JUEVES in r.get("telefonos_enviados", []) for r in (r1, r2)) == 1,
+        "solo una ejecución lo reporta como enviado",
+    )
+    omitidas = [r for r in (r1, r2) if r.get("status") == "skipped"]
+    v.check(
+        len(omitidas) == 1 and omitidas[0]["razon"] == "otra ejecución en curso",
+        "la otra se omite con razon 'otra ejecución en curso'",
+    )
+    # Con el candado liberado, una nueva invocación funciona y no reenvía.
+    with _config_base(telefonos_prueba=TEL_JUEVES), _hora(MIERCOLES_15.replace(minute=35)), _fake_envio(fake):
+        _, r3 = await _llamar()
+    v.check(
+        TEL_JUEVES in r3["telefonos_ya_enviados_hoy"] and len(fake.a(TEL_JUEVES)) == 1,
+        "candado liberado: la siguiente ve ya_enviados_hoy",
+    )
+
+
+@contextmanager
+def _capturar_logs():
+    registros: list[str] = []
+
+    class Capturador(logging.Handler):
+        def emit(self, record):
+            registros.append(record.getMessage())
+
+    manejador = Capturador(level=logging.WARNING)
+    logger = logging.getLogger("app.core.config")
+    logger.addHandler(manejador)
+    try:
+        yield registros
+    finally:
+        logger.removeHandler(manejador)
+
+
+async def caso_u(v: Verificador) -> None:
+    from app.core import config
+
+    v.check(
+        (Settings.model_fields["RECORDATORIO_HORA_INICIO"].default, Settings.model_fields["RECORDATORIO_HORA_FIN"].default)
+        == (15, 20),
+        "defaults 15 y 20",
+    )
+    for ini, fin in ((20, 15), (15, 15), (-1, 20), (15, 25)):
+        cfg = Settings(RECORDATORIO_HORA_INICIO=ini, RECORDATORIO_HORA_FIN=fin)
+        with _capturar_logs() as registros:
+            config.validar_ventana_recordatorio(cfg)
+        v.check(
+            (cfg.RECORDATORIO_HORA_INICIO, cfg.RECORDATORIO_HORA_FIN) == (15, 20)
+            and any("inválida" in m for m in registros),
+            f"inicio={ini}, fin={fin} -> defaults 15-20 y warning",
+        )
+    for ini, fin in ((0, 24), (9, 10)):
+        cfg = Settings(RECORDATORIO_HORA_INICIO=ini, RECORDATORIO_HORA_FIN=fin)
+        config.validar_ventana_recordatorio(cfg)
+        v.check((cfg.RECORDATORIO_HORA_INICIO, cfg.RECORDATORIO_HORA_FIN) == (ini, fin), f"{ini}-{fin} es válida y se respeta")
+
+    # Una ventana personalizada manda sobre los defaults.
+    fake = FakeEnvio()
+    with _config_base(), _config(RECORDATORIO_HORA_INICIO=9, RECORDATORIO_HORA_FIN=10), _hora(MIERCOLES_15), _fake_envio(fake):
+        _, r = await _llamar()
+    v.check(
+        r.get("status") == "skipped" and r["ventana"] == "09:00-10:00" and not fake.envios,
+        "ventana 9-10: a las 15:05 -> skipped",
+    )
+
+
 CASOS = [
     ("a", "Payload de send_whatsapp_template y registro", caso_a),
     ("b", "Producción: filtro por día de reparto, activo y opt-out", caso_b),
-    ("c", "Fuera de la ventana de las 15:00 -> skipped", caso_c),
+    ("c", "Fuera de la ventana (14:59 y 20:00) -> skipped con ventana", caso_c),
     ("d", "Idempotencia: segunda ejecución del día no reenvía", caso_d),
     ("e", "Fallo de Meta: va a errores, no se marca, se reintenta", caso_e),
     ("f", "Modo prueba: solo la lista, ignora día (viernes y sábado)", caso_f),
@@ -727,6 +896,12 @@ CASOS = [
     ("m", "Modo prueba, respetar_dia=true: fuera de la lista no recibe", caso_m),
     ("n", "forzar con respetar_dia=true: salta hora e idempotencia, no el día", caso_n),
     ("o", "Producción: respetar_dia no cambia nada", caso_o),
+    ("p", "Ventana: 15:05, 17:00, 18:45 y 19:59 envían", caso_p),
+    ("q", "Caso real lunes 26/10 18:45: producción y modo prueba", caso_q),
+    ("r", "Varias invocaciones en la ventana: solo la primera envía", caso_r),
+    ("s", "Fallo de Meta 15:05 y éxito 15:35", caso_s),
+    ("t", "Concurrencia: dos invocaciones simultáneas no duplican", caso_t),
+    ("u", "Config inválida de la ventana cae a los defaults", caso_u),
 ]
 
 

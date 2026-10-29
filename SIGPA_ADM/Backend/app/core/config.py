@@ -54,6 +54,12 @@ class Settings(BaseSettings):
     # Solo con modo prueba: si es true, a los teléfonos de prueba también se
     # les exige dia_reparto == mañana (como en producción).
     RECORDATORIO_PRUEBA_RESPETAR_DIA: bool = False
+    # Ventana horaria (hora de Chile) en que el recordatorio puede enviarse:
+    # desde HORA_INICIO:00 hasta antes de HORA_FIN:00 (por defecto horas 15 a
+    # 19). Es ancha porque GitHub Actions retrasa y se salta ejecuciones
+    # programadas; el envío es idempotente por fecha, así que no duplica.
+    RECORDATORIO_HORA_INICIO: int = 15
+    RECORDATORIO_HORA_FIN: int = 20
 
     # Asistente virtual y horario de atención de las ejecutivas (hora de
     # Chile), ver app/services/horario_atencion.py. DIAS_ATENCION: días
@@ -100,6 +106,25 @@ if not settings.EJECUTIVA_PHONE:
     logging.getLogger(__name__).warning(
         "EJECUTIVA_PHONE está vacío: las derivaciones a la ejecutiva no se podrán enviar"
     )
+
+def validar_ventana_recordatorio(config: Settings) -> None:
+    if 0 <= config.RECORDATORIO_HORA_INICIO < config.RECORDATORIO_HORA_FIN <= 24:
+        return
+    inicio = Settings.model_fields["RECORDATORIO_HORA_INICIO"].default
+    fin = Settings.model_fields["RECORDATORIO_HORA_FIN"].default
+    logging.getLogger(__name__).warning(
+        "Ventana del recordatorio inválida (RECORDATORIO_HORA_INICIO=%s, RECORDATORIO_HORA_FIN=%s): "
+        "debe cumplir 0 <= inicio < fin <= 24. Se usan los valores por defecto (%s-%s).",
+        config.RECORDATORIO_HORA_INICIO,
+        config.RECORDATORIO_HORA_FIN,
+        inicio,
+        fin,
+    )
+    config.RECORDATORIO_HORA_INICIO = inicio
+    config.RECORDATORIO_HORA_FIN = fin
+
+
+validar_ventana_recordatorio(settings)
 
 if settings.RECORDATORIO_TELEFONOS_PRUEBA.strip():
     if settings.RECORDATORIO_PRUEBA_RESPETAR_DIA:

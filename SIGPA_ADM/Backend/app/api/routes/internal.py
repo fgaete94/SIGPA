@@ -1,13 +1,14 @@
 import logging
+from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.core.config import settings
-from app.core.database import SessionLocal
+from app.core.database import SessionLocal, engine
 from app.models.cliente import Cliente
 from app.models.conversacion_bot import ConversacionBot
 from app.models.enums import DiaSemana
@@ -22,7 +23,9 @@ router = APIRouter(prefix="/internal", tags=["internal"])
 ZONA_HORARIA_CHILE = ZoneInfo("America/Santiago")
 UTC = ZoneInfo("UTC")
 
-HORA_RECORDATORIO = 15
+# Clave del advisory lock de Postgres que serializa las ejecuciones del
+# recordatorio (ver _candado_recordatorio). Valor arbitrario pero fijo.
+CLAVE_CANDADO_RECORDATORIO = 7_150_615
 
 # Cuerpo de la plantilla Utility aprobada por Meta
 # (confirmacion_reparto_programado, es_CL; {{1}} = nombre del cliente). Solo
@@ -43,6 +46,33 @@ _NOMBRES_DIA_SEMANA = ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes", "Sab
 def _ahora_chile() -> datetime:
     """Hora actual en Chile. Función aparte para que los tests la parcheen."""
     return datetime.now(ZONA_HORARIA_CHILE)
+
+
+@asynccontextmanager
+async def _candado_recordatorio():
+    """Candado de Postgres (advisory lock de sesión) para que dos ejecuciones
+    del recordatorio no corran a la vez: sin él, ambas leerían "no enviado
+    hoy" para el mismo teléfono antes de que la otra llame a marcar_activa y
+    le mandarían la plantilla dos veces. Entrega True si lo obtuvo y False si
+    otra ejecución lo tiene (la que llega después no espera: se salta y el
+    cron siguiente la reemplaza). Se pide en una conexión en AUTOCOMMIT que se
+    mantiene abierta toda la ejecución. Si la conexión muere, Postgres suelta
+    el candado solo."""
+    async with engine.connect() as conn:
+        conn = await conn.execution_options(isolation_level="AUTOCOMMIT")
+        obtenido = bool(
+            (await conn.execute(select(func.pg_try_advisory_lock(CLAVE_CANDADO_RECORDATORIO)))).scalar()
+        )
+        try:
+            yield obtenido
+        finally:
+            if obtenido:
+                try:
+                    await conn.execute(select(func.pg_advisory_unlock(CLAVE_CANDADO_RECORDATORIO)))
+                except Exception:
+                    # Que la conexión no vuelva al pool con el candado puesto.
+                    logger.exception("[recordatorio-diario] No se pudo liberar el candado")
+                    await conn.invalidate()
 
 
 def _dia_semana_manana(hoy_chile: date) -> tuple[str, DiaSemana | None]:
@@ -92,16 +122,20 @@ async def recordatorio_diario(
         )
 
     ahora_chile = _ahora_chile()
-    if not forzar and ahora_chile.hour != HORA_RECORDATORIO:
-        # Ventana horaria fija en hora LOCAL de Chile: al comparar contra
-        # zoneinfo (no contra UTC) el chequeo es inmune a los cambios de
-        # horario de verano, sin ajuste manual del cron. Además de la
-        # idempotencia por fecha (ver telefonos_ya_enviados_hoy más abajo),
-        # esto permite invocar el endpoint varias veces por hora sin
-        # duplicar envíos.
+    hora_inicio = settings.RECORDATORIO_HORA_INICIO
+    hora_fin = settings.RECORDATORIO_HORA_FIN
+    if not forzar and not hora_inicio <= ahora_chile.hour < hora_fin:
+        # Ventana horaria en hora LOCAL de Chile: al comparar contra zoneinfo
+        # (no contra UTC) el chequeo es inmune a los cambios de horario de
+        # verano, sin ajuste manual del cron. Es una ventana y no una hora
+        # exacta porque GitHub retrasa y se salta ejecuciones programadas.
+        # Que se invoque varias veces dentro de ella no duplica envíos: la
+        # idempotencia por fecha (ver telefonos_ya_enviados_hoy más abajo)
+        # deja una sola plantilla por teléfono al día.
         return {
             "status": "skipped",
             "razon": "fuera de la ventana horaria",
+            "ventana": f"{hora_inicio:02d}:00-{hora_fin:02d}:00",
             "hora_actual_chile": ahora_chile.isoformat(),
             "modo_prueba": modo_prueba,
             "prueba_respeta_dia": prueba_respeta_dia,
@@ -127,103 +161,116 @@ async def recordatorio_diario(
             },
         )
 
-    hoy_chile = ahora_chile.date()
-    nombre_dia_manana, dia_enum_manana = _dia_semana_manana(hoy_chile)
-    # Mismo reloj para marcar la conversación y para la idempotencia.
-    ahora_utc = ahora_chile.astimezone(UTC).replace(tzinfo=None)
+    async with _candado_recordatorio() as obtenido:
+        if not obtenido:
+            logger.warning("[recordatorio-diario] Otra ejecución está en curso; se omite esta")
+            return {
+                "status": "skipped",
+                "razon": "otra ejecución en curso",
+                "ventana": f"{hora_inicio:02d}:00-{hora_fin:02d}:00",
+                "hora_actual_chile": ahora_chile.isoformat(),
+                "modo_prueba": modo_prueba,
+                "prueba_respeta_dia": prueba_respeta_dia,
+                "forzar": forzar,
+            }
 
-    clientes: list[Cliente] = []
-    if modo_prueba and not (prueba_respeta_dia and dia_enum_manana is None):
-        # Modo prueba: mantiene activo y opt-out; ignora dia_reparto salvo con
-        # RECORDATORIO_PRUEBA_RESPETAR_DIA (mañana sábado/domingo: nadie).
-        filtros = [
-            Cliente.activo.is_(True),
-            Cliente.opt_out_whatsapp.is_(False),
-            Cliente.telefono.is_not(None),
-        ]
-        if prueba_respeta_dia:
-            filtros.append(Cliente.dia_reparto == dia_enum_manana)
-        async with SessionLocal() as session:
-            result = await session.execute(
-                select(Cliente).where(*filtros).order_by(Cliente.id)
-            )
-            clientes = [
-                cliente
-                for cliente in result.scalars().all()
-                if normalizar_telefono(cliente.telefono) in telefonos_prueba
+        hoy_chile = ahora_chile.date()
+        nombre_dia_manana, dia_enum_manana = _dia_semana_manana(hoy_chile)
+        # Mismo reloj para marcar la conversación y para la idempotencia.
+        ahora_utc = ahora_chile.astimezone(UTC).replace(tzinfo=None)
+
+        clientes: list[Cliente] = []
+        if modo_prueba and not (prueba_respeta_dia and dia_enum_manana is None):
+            # Modo prueba: mantiene activo y opt-out; ignora dia_reparto salvo con
+            # RECORDATORIO_PRUEBA_RESPETAR_DIA (mañana sábado/domingo: nadie).
+            filtros = [
+                Cliente.activo.is_(True),
+                Cliente.opt_out_whatsapp.is_(False),
+                Cliente.telefono.is_not(None),
             ]
-    elif not modo_prueba and dia_enum_manana is not None:
-        async with SessionLocal() as session:
-            result = await session.execute(
-                select(Cliente).where(
-                    Cliente.dia_reparto == dia_enum_manana,
-                    Cliente.activo.is_(True),
-                    Cliente.opt_out_whatsapp.is_(False),
+            if prueba_respeta_dia:
+                filtros.append(Cliente.dia_reparto == dia_enum_manana)
+            async with SessionLocal() as session:
+                result = await session.execute(
+                    select(Cliente).where(*filtros).order_by(Cliente.id)
                 )
-            )
-            clientes = list(result.scalars().all())
-
-    telefonos_enviados: list[str] = []
-    telefonos_ya_enviados_hoy: list[str] = []
-    errores: list[dict] = []
-
-    for cliente in clientes:
-        telefono = cliente.telefono
-        if not telefono:
-            errores.append({"cliente_id": cliente.id, "error": "Cliente sin teléfono registrado"})
-            continue
-
-        try:
-            if not forzar:
-                async with SessionLocal() as session:
-                    result = await session.execute(
-                        select(ConversacionBot).where(ConversacionBot.telefono == telefono)
+                clientes = [
+                    cliente
+                    for cliente in result.scalars().all()
+                    if normalizar_telefono(cliente.telefono) in telefonos_prueba
+                ]
+        elif not modo_prueba and dia_enum_manana is not None:
+            async with SessionLocal() as session:
+                result = await session.execute(
+                    select(Cliente).where(
+                        Cliente.dia_reparto == dia_enum_manana,
+                        Cliente.activo.is_(True),
+                        Cliente.opt_out_whatsapp.is_(False),
                     )
-                    conversacion = result.scalar_one_or_none()
-
-                if (
-                    conversacion is not None
-                    and conversacion.iniciada_en is not None
-                    and _fecha_chile(conversacion.iniciada_en) == hoy_chile
-                ):
-                    telefonos_ya_enviados_hoy.append(telefono)
-                    continue
-
-            nombre = _nombre_para_plantilla(cliente.nombre)
-            respuesta = await send_whatsapp_template(
-                to=telefono,
-                template_name=nombre_plantilla,
-                language_code=idioma_plantilla,
-                body_params=[nombre],
-                texto_registro=_texto_recordatorio(nombre),
-            )
-            if respuesta is None:
-                # No se marca la conversación: así el siguiente cron del día
-                # lo reintenta (la idempotencia mira iniciada_en).
-                errores.append(
-                    {
-                        "cliente_id": cliente.id,
-                        "telefono": telefono,
-                        "error": "Meta rechazó el envío de la plantilla (ver logs)",
-                    }
                 )
+                clientes = list(result.scalars().all())
+
+        telefonos_enviados: list[str] = []
+        telefonos_ya_enviados_hoy: list[str] = []
+        errores: list[dict] = []
+
+        for cliente in clientes:
+            telefono = cliente.telefono
+            if not telefono:
+                errores.append({"cliente_id": cliente.id, "error": "Cliente sin teléfono registrado"})
                 continue
 
-            await marcar_activa(telefono, ahora_utc)
-            telefonos_enviados.append(telefono)
-        except Exception as exc:
-            logger.exception("[recordatorio-diario] Falló el envío para %s", telefono)
-            errores.append({"cliente_id": cliente.id, "telefono": telefono, "error": str(exc)})
+            try:
+                if not forzar:
+                    async with SessionLocal() as session:
+                        result = await session.execute(
+                            select(ConversacionBot).where(ConversacionBot.telefono == telefono)
+                        )
+                        conversacion = result.scalar_one_or_none()
 
-    return {
-        "clientes_evaluados": len(clientes),
-        "mensajes_enviados": len(telefonos_enviados),
-        "ya_enviados_hoy": len(telefonos_ya_enviados_hoy),
-        "dia_manana": nombre_dia_manana,
-        "telefonos_enviados": telefonos_enviados,
-        "telefonos_ya_enviados_hoy": telefonos_ya_enviados_hoy,
-        "errores": errores,
-        "modo_prueba": modo_prueba,
-        "prueba_respeta_dia": prueba_respeta_dia,
-        "forzar": forzar,
-    }
+                    if (
+                        conversacion is not None
+                        and conversacion.iniciada_en is not None
+                        and _fecha_chile(conversacion.iniciada_en) == hoy_chile
+                    ):
+                        telefonos_ya_enviados_hoy.append(telefono)
+                        continue
+
+                nombre = _nombre_para_plantilla(cliente.nombre)
+                respuesta = await send_whatsapp_template(
+                    to=telefono,
+                    template_name=nombre_plantilla,
+                    language_code=idioma_plantilla,
+                    body_params=[nombre],
+                    texto_registro=_texto_recordatorio(nombre),
+                )
+                if respuesta is None:
+                    # No se marca la conversación: así el siguiente cron de la
+                    # ventana lo reintenta (la idempotencia mira iniciada_en).
+                    errores.append(
+                        {
+                            "cliente_id": cliente.id,
+                            "telefono": telefono,
+                            "error": "Meta rechazó el envío de la plantilla (ver logs)",
+                        }
+                    )
+                    continue
+
+                await marcar_activa(telefono, ahora_utc)
+                telefonos_enviados.append(telefono)
+            except Exception as exc:
+                logger.exception("[recordatorio-diario] Falló el envío para %s", telefono)
+                errores.append({"cliente_id": cliente.id, "telefono": telefono, "error": str(exc)})
+
+        return {
+            "clientes_evaluados": len(clientes),
+            "mensajes_enviados": len(telefonos_enviados),
+            "ya_enviados_hoy": len(telefonos_ya_enviados_hoy),
+            "dia_manana": nombre_dia_manana,
+            "telefonos_enviados": telefonos_enviados,
+            "telefonos_ya_enviados_hoy": telefonos_ya_enviados_hoy,
+            "errores": errores,
+            "modo_prueba": modo_prueba,
+            "prueba_respeta_dia": prueba_respeta_dia,
+            "forzar": forzar,
+        }
