@@ -35,6 +35,10 @@ from app.services.conversacion_bot_service import esta_activa, marcar_activa
 from app.services.draft_store import clear_draft, get_draft
 from app.services.order_flow import procesar_mensaje
 
+# Estas pruebas reemplazan send_whatsapp_message por un fake: sin plantilla
+# configurada, el aviso a la ejecutiva también pasa por ese fake (#152).
+settings.WHATSAPP_TEMPLATE_EJECUTIVA_NAME = ""
+
 CHILE = ZoneInfo("America/Santiago")
 DENTRO = datetime(2026, 10, 8, 10, 0, tzinfo=CHILE)  # jueves 10:00
 FUERA = datetime(2026, 10, 8, 21, 0, tzinfo=CHILE)  # jueves 21:00
@@ -43,6 +47,9 @@ RANGO_TELEFONOS_SQL = r"^(56)?933300\d{3}$"
 
 CIERRE = "Por favor revisa y continúa la conversación."
 MARCA = " (fuera de horario)"
+
+PLANTILLA = "aviso_ejecutiva_cliente"
+RESPUESTA_META_OK = {"messages": [{"id": "wamid.fake-plantilla"}]}
 
 LEA_DENTRO = (
     "¡Hola! Soy Lea, tu asistente virtual. Gracias por escribirnos. "
@@ -155,6 +162,24 @@ def _fake_send(enviados: list):
         yield
     finally:
         whatsapp_route.send_whatsapp_message, order_flow.send_whatsapp_message = originales
+
+
+@contextmanager
+def _plantilla(enviadas: list, respuesta_meta: dict | None = None):
+    """Activa la plantilla de la ejecutiva (#152) con un fake de
+    send_whatsapp_template que responde respuesta_meta (None: Meta la rechaza)."""
+    async def fake_template(to, template_name, language_code, body_params, texto_registro):
+        enviadas.append((to, template_name, language_code, body_params, texto_registro))
+        print(f"  [fake template] a {to}: {template_name} {body_params}")
+        return respuesta_meta
+
+    originales = (settings.WHATSAPP_TEMPLATE_EJECUTIVA_NAME, notificacion_ejecutiva.send_whatsapp_template)
+    settings.WHATSAPP_TEMPLATE_EJECUTIVA_NAME = PLANTILLA
+    notificacion_ejecutiva.send_whatsapp_template = fake_template
+    try:
+        yield
+    finally:
+        settings.WHATSAPP_TEMPLATE_EJECUTIVA_NAME, notificacion_ejecutiva.send_whatsapp_template = originales
 
 
 async def _derivar(phone: str, ahora: datetime = DENTRO) -> tuple[str | None, str | None]:
@@ -295,6 +320,60 @@ async def caso_i(v: Verificador) -> None:
     clear_draft(phone)
 
 
+async def caso_j(v: Verificador) -> None:
+    for etiqueta, phone, ahora, parametros in (
+        ("existente, dentro", "56933300001", DENTRO, ["el cliente Mariana Soto Rojas", "+56933300001", "en horario de atención"]),
+        ("nuevo, fuera", TELEFONO_NUEVO, FUERA, ["un cliente nuevo", "+56933300009", "fuera de horario"]),
+        (
+            "duplicado, dentro",
+            "56933300003",
+            DENTRO,
+            ["un teléfono asociado a varios clientes (Laura Pérez, Jorge Muñoz Vera)", "+56933300003", "en horario de atención"],
+        ),
+    ):
+        enviadas = []
+        with _plantilla(enviadas, RESPUESTA_META_OK):
+            al_cliente, notif = await _derivar(phone, ahora)
+        v.check(al_cliente is not None, f"{etiqueta}: el cliente recibe el mensaje de Lea")
+        v.check(notif is None, f"{etiqueta}: no se envía el texto libre a la ejecutiva")
+        v.check(
+            [(to, nombre, idioma, params) for to, nombre, idioma, params, _ in enviadas]
+            == [(settings.EJECUTIVA_PHONE, PLANTILLA, settings.WHATSAPP_TEMPLATE_EJECUTIVA_LANG, parametros)],
+            f"{etiqueta}: plantilla con {parametros}",
+        )
+    v.check(
+        enviadas[0][4]
+        == "Hola, un teléfono asociado a varios clientes (Laura Pérez, Jorge Muñoz Vera) escribió al WhatsApp de "
+        f"pedidos de Agua DM desde el número +56933300003. Recibido en horario de atención. {CIERRE}",
+        "el historial guarda el cuerpo de la plantilla con las variables",
+    )
+
+
+async def caso_k(v: Verificador) -> None:
+    enviadas = []
+    with _plantilla(enviadas, respuesta_meta=None):
+        _, notif = await _derivar("56933300001", FUERA)
+    v.check(len(enviadas) == 1, "intenta primero la plantilla")
+    v.check(
+        notif == _existente("Mariana Soto Rojas", "+56933300001") + MARCA,
+        f"si Meta la rechaza, la ejecutiva recibe el texto libre: {notif!r}",
+    )
+
+
+async def caso_l(v: Verificador) -> None:
+    phone = "56933300003"
+    await marcar_activa(phone)
+    enviados, enviadas = [], []
+    with _fake_send(enviados), _plantilla(enviadas, RESPUESTA_META_OK):
+        await procesar_mensaje(phone=phone, message_type="text", message_text="quiero 2 bidones de 20 litros", location=None)
+    v.check(
+        len(enviadas) == 1 and enviadas[0][3][0] == "un teléfono asociado a varios clientes (Laura Pérez, Jorge Muñoz Vera)",
+        "teléfono duplicado (order_flow): la ejecutiva recibe la plantilla",
+    )
+    v.check(enviados == [], "y no el texto libre")
+    clear_draft(phone)
+
+
 CASOS = [
     ("a", "Cliente existente con nombre y apellidos", caso_a),
     ("b", "Cliente existente sin apellido: sin 'None' ni espacio doble", caso_b),
@@ -305,6 +384,9 @@ CASOS = [
     ("g", "Falla de la BD: texto genérico y el flujo sigue", caso_g),
     ("h", "Flujo completo de mensaje espontáneo (existente y nuevo)", caso_h),
     ("i", "Flujo de teléfono duplicado (order_flow) usa el texto de duplicado", caso_i),
+    ("j", "Con plantilla (#152): variables según tipo de cliente y horario", caso_j),
+    ("k", "Plantilla rechazada por Meta: se envía el texto libre", caso_k),
+    ("l", "Teléfono duplicado (order_flow) con plantilla", caso_l),
 ]
 
 

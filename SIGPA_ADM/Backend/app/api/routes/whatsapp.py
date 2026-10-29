@@ -12,7 +12,11 @@ from app.services.horario_atencion import (
     mensaje_derivacion_ejecutiva,
     presentacion_asistente,
 )
-from app.services.notificacion_ejecutiva import clasificar_remitente, texto_notificacion_ejecutiva
+from app.services.notificacion_ejecutiva import (
+    clasificar_remitente,
+    enviar_plantilla_ejecutiva,
+    texto_notificacion_ejecutiva,
+)
 from app.services.mensaje_whatsapp_service import registrar_mensaje_entrante
 from app.services.order_flow import procesar_mensaje
 from app.services.webhook_queue import encolar, reservar_wamid
@@ -66,12 +70,12 @@ async def _enrutar_a_ejecutiva(phone_number: str, ahora: datetime | None = None)
     ahora = ahora or datetime.now().astimezone()
     await send_whatsapp_message(to=phone_number, message=mensaje_derivacion_ejecutiva(ahora))
     tipo_cliente, nombres = await clasificar_remitente(phone_number)
-    await send_whatsapp_message(
-        to=settings.EJECUTIVA_PHONE,
-        message=texto_notificacion_ejecutiva(
-            tipo_cliente, nombres, phone_number, fuera_de_horario=not en_horario_atencion(ahora)
-        ),
-    )
+    fuera_de_horario = not en_horario_atencion(ahora)
+    if not await enviar_plantilla_ejecutiva(tipo_cliente, nombres, phone_number, fuera_de_horario):
+        await send_whatsapp_message(
+            to=settings.EJECUTIVA_PHONE,
+            message=texto_notificacion_ejecutiva(tipo_cliente, nombres, phone_number, fuera_de_horario),
+        )
 
 
 @router.get("/webhook")

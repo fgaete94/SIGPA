@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     # Teléfono (WhatsApp) de la ejecutiva que recibe las derivaciones. Sin
     # default: se define en el .env / entorno de Render.
     EJECUTIVA_PHONE: str = ""
+    # Historia #152: plantilla Utility aprobada por Meta para avisar a la
+    # ejecutiva aunque no haya escrito al número del bot en las últimas 24 h
+    # (ver notificacion_ejecutiva). Sin nombre se envía el texto libre, que
+    # Meta solo entrega dentro de esa ventana.
+    WHATSAPP_TEMPLATE_EJECUTIVA_NAME: str = ""
+    WHATSAPP_TEMPLATE_EJECUTIVA_LANG: str = "es_CL"
 
     INTERNAL_CRON_SECRET: str = ""
 

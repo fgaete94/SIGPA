@@ -4,15 +4,19 @@ más de un cliente, ver order_flow.py).
 
 El remitente se clasifica por su teléfono normalizado (cliente_lookup) como
 cliente existente, nuevo o teléfono duplicado, y la notificación dice quién
-es. Aquí solo se arma el texto: el envío lo hace quien llama.
+es. Se envía con la plantilla aprobada por Meta (#152) si está configurada
+(enviar_plantilla_ejecutiva); si no, o si Meta la rechaza, quien llama envía
+el texto libre (texto_notificacion_ejecutiva).
 """
 
 import logging
 
+from app.core.config import settings
 from app.core.database import SessionLocal
 from app.models import Cliente
 from app.services.cliente_lookup import buscar_clientes_por_telefono, normalizar_telefono
 from app.services.horario_atencion import MARCA_FUERA_DE_HORARIO
+from app.services.whatsapp_client import send_whatsapp_template
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +37,20 @@ _TEXTOS = {
 
 # Si no se pudo clasificar al remitente (ej. falla de la BD).
 _TEXTO_GENERICO = "Hola, un cliente ({telefono}) escribió al WhatsApp de pedidos. " + _CIERRE
+
+# Cuerpo de la plantilla aviso_ejecutiva_cliente (Utility, es_CL) tal como
+# se aprobó en Meta: {{1}} quién escribió, {{2}} el teléfono y {{3}} si fue
+# en horario. Meta arma el mensaje con su copia; esta solo se usa para el
+# historial de mensaje_whatsapp, así que si cambia en Meta hay que cambiarla aquí.
+_CUERPO_PLANTILLA = (
+    "Hola, {} escribió al WhatsApp de pedidos de Agua DM desde el número {}. Recibido {}. " + _CIERRE
+)
+_QUIEN_ESCRIBIO = {
+    CLIENTE_EXISTENTE: "el cliente {nombres}",
+    CLIENTE_NUEVO: "un cliente nuevo",
+    TELEFONO_DUPLICADO: "un teléfono asociado a varios clientes ({nombres})",
+}
+_QUIEN_ESCRIBIO_GENERICO = "un cliente"
 
 
 def formatear_telefono(telefono: str | None) -> str:
@@ -86,3 +104,43 @@ def texto_notificacion_ejecutiva(
     if fuera_de_horario:
         texto = f"{texto} {MARCA_FUERA_DE_HORARIO}"
     return texto
+
+
+def parametros_plantilla_ejecutiva(
+    tipo_cliente: str | None,
+    nombres: list[str],
+    telefono: str,
+    fuera_de_horario: bool,
+) -> list[str]:
+    """Las 3 variables de la plantilla, con el mismo criterio que
+    texto_notificacion_ejecutiva."""
+    quien = _QUIEN_ESCRIBIO.get(tipo_cliente, _QUIEN_ESCRIBIO_GENERICO).format(nombres=", ".join(nombres))
+    horario = "fuera de horario" if fuera_de_horario else "en horario de atención"
+    return [quien.strip(), formatear_telefono(telefono), horario]
+
+
+async def enviar_plantilla_ejecutiva(
+    tipo_cliente: str | None,
+    nombres: list[str],
+    telefono: str,
+    fuera_de_horario: bool,
+) -> bool:
+    """Avisa a la ejecutiva con la plantilla WHATSAPP_TEMPLATE_EJECUTIVA_NAME.
+    Devuelve False sin enviar nada si no está configurada, y False si Meta
+    rechazó el envío (ver logs): en ambos casos quien llama envía el texto
+    libre, que llega si la ejecutiva escribió al bot en las últimas 24 h."""
+    nombre_plantilla = settings.WHATSAPP_TEMPLATE_EJECUTIVA_NAME.strip()
+    if not nombre_plantilla:
+        return False
+    parametros = parametros_plantilla_ejecutiva(tipo_cliente, nombres, telefono, fuera_de_horario)
+    respuesta = await send_whatsapp_template(
+        to=settings.EJECUTIVA_PHONE,
+        template_name=nombre_plantilla,
+        language_code=settings.WHATSAPP_TEMPLATE_EJECUTIVA_LANG.strip(),
+        body_params=parametros,
+        texto_registro=_CUERPO_PLANTILLA.format(*parametros),
+    )
+    if respuesta is None:
+        logger.warning("[notificacion_ejecutiva] Meta rechazó la plantilla %s: se envía texto libre", nombre_plantilla)
+        return False
+    return True

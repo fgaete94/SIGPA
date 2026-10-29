@@ -30,6 +30,10 @@ from app.core.database import SessionLocal
 from app.services.draft_store import clear_draft, get_draft, save_draft
 from app.services.order_flow import procesar_mensaje
 
+# Estas pruebas reemplazan send_whatsapp_message por un fake: sin plantilla
+# configurada, el aviso a la ejecutiva también pasa por ese fake (#152).
+settings.WHATSAPP_TEMPLATE_EJECUTIVA_NAME = ""
+
 RANGO_TELEFONOS_SQL = r"^(56)?931000\d{3}$"
 
 CLIENTE_EXISTENTE = {
