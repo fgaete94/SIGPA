@@ -5,23 +5,28 @@ _confirmar_pedido evitan que un reintento de webhook duplicado (dos mensajes
 "Si" que llegan "al mismo tiempo") termine creando dos pedidos.
 No es parte del código final.
 
-Nota: PHONE debe ser un número que todavía no exista como Cliente (si ya
-corriste este script antes y el pedido quedó confirmado, usa otro número o
-límpialo en la BD antes de reintentar).
+PHONE debe ser un número que todavía no exista como Cliente. Al empezar, si
+quedó un cliente de una corrida anterior abortada (se reconoce por la
+dirección de prueba) se borra; si el número pertenece a otro cliente, el
+script aborta sin tocarlo. Al terminar (también si falla) borra el cliente
+que creó, con su pedido, detalles, mensajes, conversación y borrador. Las
+filas de auditoria no se borran (son el registro histórico).
 
 Uso: python -m scripts.test_concurrencia
 """
 
 import asyncio
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from app.core.database import SessionLocal
 from app.models import Cliente, Pedido
-from app.services.draft_store import get_draft
+from app.services.draft_store import clear_draft, get_draft
 from app.services.order_flow import procesar_mensaje
 
 PHONE = "56955556666"
+# Dirección que el script le da al cliente que crea (ver TURNOS_BASE).
+DIRECCION_PRUEBA = "Calle Falsa 123"
 
 # Cliente nuevo: productos, ubicación, dirección y nombre (en ese orden)
 # hasta antes de la confirmación final. Nota: a diferencia de
@@ -44,7 +49,7 @@ TURNOS_BASE = [
     },
     {
         "message_type": "text",
-        "message_text": "Calle Falsa 123",
+        "message_text": DIRECCION_PRUEBA,
         "location": None,
     },
     {
@@ -127,7 +132,65 @@ async def _contar_pedidos(phone: str) -> int:
         return result.scalar_one()
 
 
+async def _ejecutar(sql: str, **params):
+    async with SessionLocal() as session:
+        result = await session.execute(text(sql), params)
+        await session.commit()
+        return result
+
+
+_CLIENTES_SQL = (
+    "select id from cliente where regexp_replace(coalesce(telefono,''), '\\D', '', 'g') in (:p, :p_sin_56)"
+)
+
+
+async def _limpiar() -> None:
+    """Borra el cliente de PHONE con todo lo asociado (auditoria no)."""
+    params = {"p": PHONE, "p_sin_56": PHONE[2:]}
+    pedidos_sql = f"select id from pedido where cliente_id in ({_CLIENTES_SQL})"
+    for sql in (
+        f"delete from detalle_pedido where pedido_id in ({pedidos_sql})",
+        f"delete from mensaje_whatsapp where pedido_id in ({pedidos_sql}) or cliente_id in ({_CLIENTES_SQL}) "
+        "or telefono in (:p, :p_sin_56)",
+        f"delete from pedido where cliente_id in ({_CLIENTES_SQL})",
+        f"delete from cliente_producto_habitual where cliente_id in ({_CLIENTES_SQL})",
+        f"delete from cliente where id in ({_CLIENTES_SQL})",
+        "delete from conversacion_bot where telefono in (:p, :p_sin_56)",
+        "delete from borrador_pedido where telefono in (:p, :p_sin_56)",
+    ):
+        await _ejecutar(sql, **params)
+    clear_draft(PHONE)
+
+
+async def _preparar() -> None:
+    """Deja el número libre. Solo borra un cliente previo si es un residuo de
+    este script (dirección de prueba); si es de otra persona, aborta."""
+    existentes = (
+        await _ejecutar(
+            "select id, nombre, direccion from cliente "
+            "where regexp_replace(coalesce(telefono,''), '\\D', '', 'g') in (:p, :p_sin_56)",
+            p=PHONE,
+            p_sin_56=PHONE[2:],
+        )
+    ).all()
+    ajenos = [c for c in existentes if c.direccion != DIRECCION_PRUEBA]
+    if ajenos:
+        raise SystemExit(
+            f"ABORTADO: el teléfono {PHONE} ya pertenece a un cliente que no es de este script: "
+            f"{[(c.id, c.nombre) for c in ajenos]}. No se toca."
+        )
+    await _limpiar()
+
+
 async def main() -> None:
+    await _preparar()
+    try:
+        await _correr()
+    finally:
+        await _limpiar()
+
+
+async def _correr() -> None:
     print("=" * 70)
     print(f"Preparando pedido para phone={PHONE} hasta 'esperando_confirmacion'")
     print("=" * 70)

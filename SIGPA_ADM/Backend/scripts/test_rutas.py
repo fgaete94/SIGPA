@@ -13,9 +13,14 @@ viajes y el backend valida y persiste pedido.viaje junto con orden_entrega.
 Requiere aplicada la migración 20261026120000_agregar_viaje_pedido.sql (si la
 columna pedido.viaje no existe, el script aborta). Para que los casos no
 dependan de la configuración, el script fija RUTA_CAPACIDAD_KG = 10 * w,
-RUTA_UMBRAL_CASA_KG = 6 * w y RUTA_MAX_VIAJES = 3, con w = peso_kg de un
-producto real (solo se leen los productos; ninguno se modifica): un pedido de
-k unidades de ese producto pesa k * w kg.
+RUTA_UMBRAL_CASA_KG = 6 * w y RUTA_MAX_VIAJES = 3, con w = peso_kg del
+producto de prueba TEST_RUTAS_peso: un pedido de k unidades de ese producto
+pesa k * w kg.
+
+Productos de prueba: el script crea los suyos (prefijo TEST_RUTAS_: con peso,
+con otro peso, sin peso, de peso 0 y de peso negativo), así que no depende de
+los pesos que tengan los productos reales ni los modifica. Los borra al
+empezar (por si una corrida anterior abortó) y al terminar, también si falla.
 
 Datos de prueba: clientes en el rango de teléfonos 56932300xxx con sus
 pedidos. Al empezar y al terminar se borran esos clientes, sus pedidos y
@@ -96,7 +101,11 @@ async def _limpiar() -> None:
     await _ejecutar(f"delete from detalle_pedido where pedido_id in ({ids_pedidos})", rango=RANGO_TELEFONOS_SQL)
     await _ejecutar(f"delete from pedido where cliente_id in ({ids_clientes})", rango=RANGO_TELEFONOS_SQL)
     await _ejecutar(f"delete from cliente where id in ({ids_clientes})", rango=RANGO_TELEFONOS_SQL)
-    await _ejecutar("delete from producto where nombre like 'TEST_RUTAS_%'")
+    # Prefijo exacto (en LIKE el "_" sería un comodín). Ningún pedido real
+    # apunta a estos productos; se sueltan los detalles por si quedó alguno.
+    productos_prueba = "select id from producto where left(nombre, 11) = 'TEST_RUTAS_'"
+    await _ejecutar(f"delete from detalle_pedido where producto_id in ({productos_prueba})")
+    await _ejecutar(f"delete from producto where id in ({productos_prueba})")
 
 
 async def _crear_cliente(datos: dict) -> int:
@@ -1446,8 +1455,13 @@ async def caso_ax(ctx: dict, v: Verificador) -> None:
         len(choques) == 1 and choques[0]["viaje"] == 1 and choques[0]["orden_entrega"] == 1 and "viaje 1" in choques[0]["mensaje"],
         "advertencia por (viaje, orden_entrega) repetido, con el viaje",
     )
+    # Solo cuentan los choques con los pedidos de prueba de otro viaje: un
+    # pedido real que ya esté en (viaje 2, orden 1) sí es un duplicado legítimo.
     v.check(
-        not any(ctx["p2"] in a["pedido_ids"] for a in cuerpo["advertencias"]),
+        not any(
+            ctx["p2"] in a["pedido_ids"] and {ctx["p1"], ctx["p3"]} & set(a["pedido_ids"])
+            for a in cuerpo["advertencias"]
+        ),
         "mismo orden en otro viaje (p2: viaje 2, orden 1) no es duplicado",
     )
     await _ejecutar("update pedido set estado = 'pendiente', orden_entrega = null, viaje = null where id = any(:ids)", ids=ids)
@@ -1621,9 +1635,8 @@ CASOS = [
 ]
 
 
-async def _verificar_esquema() -> dict:
-    """Aborta con un mensaje claro si falta la migración de viaje; devuelve los
-    productos de referencia (solo lectura)."""
+async def _verificar_esquema() -> None:
+    """Aborta con un mensaje claro si falta la migración de viaje."""
     existe = await _ejecutar(
         "select count(*) from information_schema.columns where table_schema = 'public' "
         "and table_name = 'pedido' and column_name = 'viaje'"
@@ -1633,24 +1646,16 @@ async def _verificar_esquema() -> dict:
             "ABORTADO: la columna pedido.viaje no existe. Aplica primero la migración "
             "supabase/migrations/20261026120000_agregar_viaje_pedido.sql (la aplica Julio en Supabase)."
         )
-    con_peso = (await _ejecutar("select id, peso_kg from producto where peso_kg > 0 order by id")).all()
-    sin_peso = (await _ejecutar("select id, nombre from producto where peso_kg is null order by id")).all()
-    if not con_peso or not sin_peso:
-        raise SystemExit(
-            "ABORTADO: se necesita al menos un producto con peso_kg > 0 y otro con peso_kg NULL en la tabla producto."
-        )
-    return {
-        "prod": con_peso[0].id,
-        "w": con_peso[0].peso_kg,
-        "prod_b": con_peso[-1].id,
-        "w_b": con_peso[-1].peso_kg,
-        "prod_sin_peso": sin_peso[0].id,
-        "nombre_sin_peso": sin_peso[0].nombre,
-    }
+
+
+# Productos de prueba (nombre, peso_kg). "peso" y "peso_b" fijan w y w_b.
+PESO_PRODUCTO = 12
+PESO_PRODUCTO_B = 40
 
 
 async def _crear_producto_temporal(nombre: str, peso_kg: int) -> int:
-    """Producto de prueba (se borra en _limpiar): los reales no se modifican."""
+    """Producto de prueba (se borra en _limpiar): los reales no se modifican.
+    peso_kg None = sin peso."""
     result = await _ejecutar(
         "insert into producto (nombre, precio_unitario, stock, peso_kg) values (:nombre, 1000, 0, :peso) returning id",
         nombre=nombre,
@@ -1660,38 +1665,43 @@ async def _crear_producto_temporal(nombre: str, peso_kg: int) -> int:
 
 
 async def main() -> None:
-    productos = await _verificar_esquema()
+    await _verificar_esquema()
     await _limpiar()
-    ctx = dict(productos)
-    ctx["prod_cero"] = await _crear_producto_temporal("TEST_RUTAS_cero", 0)
-    ctx["prod_negativo"] = await _crear_producto_temporal("TEST_RUTAS_negativo", -5)
-    ctx["c1"] = await _crear_cliente(CLIENTE_CON_COORDS)
-    ctx["c2"] = await _crear_cliente(CLIENTE_SIN_COORDS)
-    ctx["c3"] = await _crear_cliente(CLIENTE_SIN_DIRECCION)
-    ctx["p1"] = await _crear_pedido(CLIENTE_CON_COORDS, ctx["c1"], "pendiente")
-    ctx["p2"] = await _crear_pedido(CLIENTE_SIN_COORDS, ctx["c2"], "pendiente", con_coords=False)
-    ctx["p3"] = await _crear_pedido(CLIENTE_CON_COORDS, ctx["c1"], "pendiente")
-    ctx["fuera"] = await _crear_pedido(CLIENTE_CON_COORDS, ctx["c1"], "confirmado", orden=7)
-    ctx["cancelado"] = await _crear_pedido(CLIENTE_CON_COORDS, ctx["c1"], "cancelado")
-    ctx["entregado"] = await _crear_pedido(CLIENTE_CON_COORDS, ctx["c1"], "entregado")
-    ctx["sin_direccion"] = await _crear_pedido(CLIENTE_SIN_DIRECCION, ctx["c3"], "confirmado", orden=8)
-    for clave in ("p1", "p2", "p3", "fuera", "cancelado", "entregado", "sin_direccion"):
-        await _poner_items(ctx[clave], [(ctx["prod"], 1)])
-    ctx["propios"] = {ctx[k] for k in ("p1", "p2", "p3", "fuera", "cancelado", "entregado", "sin_direccion")}
-    ctx["cliente_antes"] = {cid: await _cliente(cid) for cid in (ctx["c1"], ctx["c2"])}
-    print(f"Datos de prueba: {ctx}")
-
+    ctx: dict = {}
     original = (settings.N8N_ROUTE_WEBHOOK_URL, settings.N8N_ROUTE_WEBHOOK_SECRET, ruta_service._cliente_http)
     reglas_originales = (settings.RUTA_CAPACIDAD_KG, settings.RUTA_UMBRAL_CASA_KG, settings.RUTA_MAX_VIAJES)
-    settings.RUTA_CAPACIDAD_KG, settings.RUTA_UMBRAL_CASA_KG, settings.RUTA_MAX_VIAJES = 10 * ctx["w"], 6 * ctx["w"], 3
-    ctx["n8n"] = N8nFalso()
-    settings.N8N_ROUTE_WEBHOOK_URL = URL_N8N_PRUEBA
-    settings.N8N_ROUTE_WEBHOOK_SECRET = SECRETO_N8N_PRUEBA
-    ruta_service._cliente_http = ctx["n8n"].cliente
-    app.dependency_overrides[get_current_user] = _usuario_prueba
-
     resultados = []
     try:
+        ctx["w"], ctx["w_b"] = PESO_PRODUCTO, PESO_PRODUCTO_B
+        ctx["prod"] = await _crear_producto_temporal("TEST_RUTAS_peso", PESO_PRODUCTO)
+        ctx["prod_b"] = await _crear_producto_temporal("TEST_RUTAS_peso_b", PESO_PRODUCTO_B)
+        ctx["nombre_sin_peso"] = "TEST_RUTAS_sin_peso"
+        ctx["prod_sin_peso"] = await _crear_producto_temporal(ctx["nombre_sin_peso"], None)
+        ctx["prod_cero"] = await _crear_producto_temporal("TEST_RUTAS_cero", 0)
+        ctx["prod_negativo"] = await _crear_producto_temporal("TEST_RUTAS_negativo", -5)
+        ctx["c1"] = await _crear_cliente(CLIENTE_CON_COORDS)
+        ctx["c2"] = await _crear_cliente(CLIENTE_SIN_COORDS)
+        ctx["c3"] = await _crear_cliente(CLIENTE_SIN_DIRECCION)
+        ctx["p1"] = await _crear_pedido(CLIENTE_CON_COORDS, ctx["c1"], "pendiente")
+        ctx["p2"] = await _crear_pedido(CLIENTE_SIN_COORDS, ctx["c2"], "pendiente", con_coords=False)
+        ctx["p3"] = await _crear_pedido(CLIENTE_CON_COORDS, ctx["c1"], "pendiente")
+        ctx["fuera"] = await _crear_pedido(CLIENTE_CON_COORDS, ctx["c1"], "confirmado", orden=7)
+        ctx["cancelado"] = await _crear_pedido(CLIENTE_CON_COORDS, ctx["c1"], "cancelado")
+        ctx["entregado"] = await _crear_pedido(CLIENTE_CON_COORDS, ctx["c1"], "entregado")
+        ctx["sin_direccion"] = await _crear_pedido(CLIENTE_SIN_DIRECCION, ctx["c3"], "confirmado", orden=8)
+        for clave in ("p1", "p2", "p3", "fuera", "cancelado", "entregado", "sin_direccion"):
+            await _poner_items(ctx[clave], [(ctx["prod"], 1)])
+        ctx["propios"] = {ctx[k] for k in ("p1", "p2", "p3", "fuera", "cancelado", "entregado", "sin_direccion")}
+        ctx["cliente_antes"] = {cid: await _cliente(cid) for cid in (ctx["c1"], ctx["c2"])}
+        print(f"Datos de prueba: {ctx}")
+
+        settings.RUTA_CAPACIDAD_KG, settings.RUTA_UMBRAL_CASA_KG, settings.RUTA_MAX_VIAJES = 10 * ctx["w"], 6 * ctx["w"], 3
+        ctx["n8n"] = N8nFalso()
+        settings.N8N_ROUTE_WEBHOOK_URL = URL_N8N_PRUEBA
+        settings.N8N_ROUTE_WEBHOOK_SECRET = SECRETO_N8N_PRUEBA
+        ruta_service._cliente_http = ctx["n8n"].cliente
+        app.dependency_overrides[get_current_user] = _usuario_prueba
+
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as http:
             ctx["http"] = http
             for letra, descripcion, caso in CASOS:

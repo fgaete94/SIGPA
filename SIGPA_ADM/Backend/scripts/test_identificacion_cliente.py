@@ -6,8 +6,9 @@ app/services/order_flow.py).
 No es parte del código final: solo para validar manualmente el comportamiento.
 
 Datos de prueba: todos los teléfonos usados están en el rango 56931000xxx.
-Al empezar, el script BORRA los clientes de ese rango (con sus pedidos y
-detalles) y vuelve a crear el cliente existente de prueba CLIENTE_EXISTENTE,
+Al empezar y al terminar (también si falla), el script BORRA los clientes de
+ese rango (con sus pedidos, detalles, mensajes, conversación y borrador) y
+vuelve a crear el cliente existente de prueba CLIENTE_EXISTENTE,
 guardado con "+" a propósito para probar la normalización del teléfono (los
 mensajes llegan sin "+", como desde WhatsApp). Los casos que modifican al
 cliente existente lo restauran antes de correr. Las filas de auditoria no se
@@ -76,13 +77,22 @@ async def _ejecutar(sql: str, **params):
 
 
 async def _limpiar_rango() -> None:
+    """Borra los clientes de prueba (rango de teléfonos) con todo lo asociado:
+    pedidos, detalles, mensajes, productos habituales, conversación y
+    borrador. Las filas de auditoria no se borran."""
     ids_sql = "select id from cliente where regexp_replace(coalesce(telefono,''), '\\D', '', 'g') ~ :rango"
-    await _ejecutar(
-        f"delete from detalle_pedido where pedido_id in (select id from pedido where cliente_id in ({ids_sql}))",
-        rango=RANGO_TELEFONOS_SQL,
-    )
-    await _ejecutar(f"delete from pedido where cliente_id in ({ids_sql})", rango=RANGO_TELEFONOS_SQL)
-    await _ejecutar(f"delete from cliente where id in ({ids_sql})", rango=RANGO_TELEFONOS_SQL)
+    pedidos_sql = f"select id from pedido where cliente_id in ({ids_sql})"
+    tel_sql = "regexp_replace(telefono, '\\D', '', 'g') ~ :rango"
+    for sql in (
+        f"delete from detalle_pedido where pedido_id in ({pedidos_sql})",
+        f"delete from mensaje_whatsapp where pedido_id in ({pedidos_sql}) or cliente_id in ({ids_sql}) or {tel_sql}",
+        f"delete from pedido where cliente_id in ({ids_sql})",
+        f"delete from cliente_producto_habitual where cliente_id in ({ids_sql})",
+        f"delete from cliente where id in ({ids_sql})",
+        f"delete from conversacion_bot where {tel_sql}",
+        f"delete from borrador_pedido where {tel_sql}",
+    ):
+        await _ejecutar(sql, rango=RANGO_TELEFONOS_SQL)
 
 
 async def _crear_cliente_existente() -> int:
@@ -441,24 +451,29 @@ CASOS = [
 
 async def main() -> None:
     await _limpiar_rango()
-    ctx = {"cliente_existente_id": await _crear_cliente_existente()}
-    print(f"Cliente existente de prueba: id={ctx['cliente_existente_id']} {CLIENTE_EXISTENTE}")
-
     resultados = []
-    for letra, descripcion, caso in CASOS:
-        print("#" * 70)
-        print(f"Caso {letra}: {descripcion}")
-        print("#" * 70)
+    try:
+        ctx = {"cliente_existente_id": await _crear_cliente_existente()}
+        print(f"Cliente existente de prueba: id={ctx['cliente_existente_id']} {CLIENTE_EXISTENTE}")
+
+        for letra, descripcion, caso in CASOS:
+            print("#" * 70)
+            print(f"Caso {letra}: {descripcion}")
+            print("#" * 70)
+            for phone in TELEFONOS_PRUEBA:
+                clear_draft(phone)
+            v = Verificador()
+            try:
+                await caso(ctx, v)
+            except Exception as exc:
+                print(f"    [ERROR] {exc!r}")
+                v.errores.append(repr(exc))
+            resultados.append((letra, descripcion, not v.errores))
+            print()
+    finally:
         for phone in TELEFONOS_PRUEBA:
             clear_draft(phone)
-        v = Verificador()
-        try:
-            await caso(ctx, v)
-        except Exception as exc:
-            print(f"    [ERROR] {exc!r}")
-            v.errores.append(repr(exc))
-        resultados.append((letra, descripcion, not v.errores))
-        print()
+        await _limpiar_rango()
 
     print("=" * 70)
     print("Resumen final:")

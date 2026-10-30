@@ -7,8 +7,9 @@ No es parte del código final: solo para validar manualmente el comportamiento.
 
 Datos de prueba: todos los teléfonos usados están en el rango 56931002xxx
 (distinto del de test_identificacion_cliente.py, que usa 56931000xxx). Al
-empezar, el script BORRA los clientes de ese rango (con sus pedidos y
-detalles) y crea tres clientes de prueba:
+empezar y al terminar (también si falla), el script BORRA los clientes de
+ese rango (con sus pedidos, detalles, mensajes, conversación y borrador) y
+crea tres clientes de prueba:
 - CON_HISTORIAL: dos pedidos entregados (el más reciente es el que se debe
   ofrecer) y un pedido pendiente más nuevo (que NO cuenta como historial).
 - SIN_HISTORIAL: cliente existente sin pedidos.
@@ -81,13 +82,22 @@ async def _ejecutar(sql: str, **params):
 
 
 async def _limpiar_rango() -> None:
+    """Borra los clientes de prueba (rango de teléfonos) con todo lo asociado:
+    pedidos, detalles, mensajes, productos habituales, conversación y
+    borrador. Las filas de auditoria no se borran."""
     ids_sql = "select id from cliente where regexp_replace(coalesce(telefono,''), '\\D', '', 'g') ~ :rango"
-    await _ejecutar(
-        f"delete from detalle_pedido where pedido_id in (select id from pedido where cliente_id in ({ids_sql}))",
-        rango=RANGO_TELEFONOS_SQL,
-    )
-    await _ejecutar(f"delete from pedido where cliente_id in ({ids_sql})", rango=RANGO_TELEFONOS_SQL)
-    await _ejecutar(f"delete from cliente where id in ({ids_sql})", rango=RANGO_TELEFONOS_SQL)
+    pedidos_sql = f"select id from pedido where cliente_id in ({ids_sql})"
+    tel_sql = "regexp_replace(telefono, '\\D', '', 'g') ~ :rango"
+    for sql in (
+        f"delete from detalle_pedido where pedido_id in ({pedidos_sql})",
+        f"delete from mensaje_whatsapp where pedido_id in ({pedidos_sql}) or cliente_id in ({ids_sql}) or {tel_sql}",
+        f"delete from pedido where cliente_id in ({ids_sql})",
+        f"delete from cliente_producto_habitual where cliente_id in ({ids_sql})",
+        f"delete from cliente where id in ({ids_sql})",
+        f"delete from conversacion_bot where {tel_sql}",
+        f"delete from borrador_pedido where {tel_sql}",
+    ):
+        await _ejecutar(sql, rango=RANGO_TELEFONOS_SQL)
 
 
 async def _crear_cliente(datos: dict) -> int:
@@ -287,31 +297,36 @@ CASOS = [
 
 async def main() -> None:
     await _limpiar_rango()
-    ctx = {"con_historial_id": await _crear_cliente(CON_HISTORIAL)}
-    await _crear_cliente(SIN_HISTORIAL)
-    solo_pendiente_id = await _crear_cliente(SOLO_PENDIENTE)
-
-    await _crear_pedido(ctx["con_historial_id"], "entregado", 10, {"Dispensador USB": 1})
-    await _crear_pedido(ctx["con_historial_id"], "entregado", 3, ULTIMO_PEDIDO)
-    await _crear_pedido(ctx["con_historial_id"], "pendiente", 1, {"Bidón 12L Recarga": 5})
-    await _crear_pedido(solo_pendiente_id, "pendiente", 1, {"Bidón 20L Recarga": 1})
-    print(f"Clientes de prueba creados (historial id={ctx['con_historial_id']})")
-
     resultados = []
-    for letra, descripcion, caso in CASOS:
-        print("#" * 70)
-        print(f"Caso {letra}: {descripcion}")
-        print("#" * 70)
+    try:
+        ctx = {"con_historial_id": await _crear_cliente(CON_HISTORIAL)}
+        await _crear_cliente(SIN_HISTORIAL)
+        solo_pendiente_id = await _crear_cliente(SOLO_PENDIENTE)
+
+        await _crear_pedido(ctx["con_historial_id"], "entregado", 10, {"Dispensador USB": 1})
+        await _crear_pedido(ctx["con_historial_id"], "entregado", 3, ULTIMO_PEDIDO)
+        await _crear_pedido(ctx["con_historial_id"], "pendiente", 1, {"Bidón 12L Recarga": 5})
+        await _crear_pedido(solo_pendiente_id, "pendiente", 1, {"Bidón 20L Recarga": 1})
+        print(f"Clientes de prueba creados (historial id={ctx['con_historial_id']})")
+
+        for letra, descripcion, caso in CASOS:
+            print("#" * 70)
+            print(f"Caso {letra}: {descripcion}")
+            print("#" * 70)
+            for phone in TELEFONOS_PRUEBA:
+                clear_draft(phone)
+            v = Verificador()
+            try:
+                await caso(ctx, v)
+            except Exception as exc:
+                print(f"    [ERROR] {exc!r}")
+                v.errores.append(repr(exc))
+            resultados.append((letra, descripcion, not v.errores))
+            print()
+    finally:
         for phone in TELEFONOS_PRUEBA:
             clear_draft(phone)
-        v = Verificador()
-        try:
-            await caso(ctx, v)
-        except Exception as exc:
-            print(f"    [ERROR] {exc!r}")
-            v.errores.append(repr(exc))
-        resultados.append((letra, descripcion, not v.errores))
-        print()
+        await _limpiar_rango()
 
     print("=" * 70)
     print("Resumen final:")
