@@ -11,6 +11,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from app.core.database import SessionLocal
 from app.models.conversacion_bot import ConversacionBot
 from app.models.mensaje_whatsapp import MensajeWhatsApp
+from app.services.draft_store import descartar_draft
 
 ZONA_HORARIA_CHILE = ZoneInfo("America/Santiago")
 
@@ -36,7 +37,8 @@ async def marcar_activa(phone: str, ahora: datetime | None = None) -> None:
     """Deja la conversación de este teléfono como activa. La usa el cron del
     recordatorio (internal.py) para "abrir" la conversación antes de que el
     cliente escriba. ahora (UTC naive) permite que el recordatorio use el
-    mismo reloj con el que evalúa su idempotencia; por defecto, utcnow()."""
+    mismo reloj con el que evalúa su idempotencia; por defecto, utcnow().
+    Además descarta el borrador de pedido anterior del teléfono (#150)."""
     ahora = ahora or datetime.utcnow()
     stmt = pg_insert(ConversacionBot).values(
         telefono=phone,
@@ -51,6 +53,10 @@ async def marcar_activa(phone: str, ahora: datetime | None = None) -> None:
     async with SessionLocal() as session:
         await session.execute(stmt)
         await session.commit()
+    # Conversación nueva: un borrador de un pedido anterior no se retoma.
+    # Después del upsert y sin propagar errores (descartar_draft los loguea),
+    # para que un fallo aquí no impida marcar la conversación.
+    await descartar_draft(phone)
 
 
 async def marcar_inactiva(phone: str) -> None:

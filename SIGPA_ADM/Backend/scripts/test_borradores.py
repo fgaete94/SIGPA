@@ -24,6 +24,7 @@ Uso: python -m scripts.test_borradores
 
 import asyncio
 import json
+import logging
 from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -33,6 +34,7 @@ from sqlalchemy import text
 import app.services.draft_store as draft_store
 from app.core.config import settings
 from app.core.database import SessionLocal
+from app.services.conversacion_bot_service import marcar_activa
 from app.services.draft_store import (
     cargar_draft,
     clear_draft,
@@ -57,6 +59,7 @@ TEL_TTL_VENCIDO = "56933300405"
 TEL_TTL_VIGENTE = "56933300406"
 TEL_REDUNDANTE = "56933300407"
 TEL_ROUNDTRIP = "56933300408"
+TEL_NUEVA_CONV = "56933300409"
 
 CLIENTES = [
     ("Borrador A", TEL_A, "Av. Borradores 100, Viña del Mar"),
@@ -168,10 +171,12 @@ def _es_resumen(texto: str) -> bool:
 
 
 async def _detalles_pedido(telefono: str) -> dict[str, int]:
+    """Detalle del último pedido del cliente."""
     result = await _ejecutar(
         "select p.nombre, d.cantidad_solicitada from detalle_pedido d "
         "join producto p on p.id = d.producto_id join pedido pe on pe.id = d.pedido_id "
-        "join cliente c on c.id = pe.cliente_id where c.telefono = :t",
+        "join cliente c on c.id = pe.cliente_id where c.telefono = :t "
+        "and pe.id = (select max(p2.id) from pedido p2 where p2.cliente_id = c.id)",
         t=telefono,
     )
     return {nombre: cantidad for nombre, cantidad in result.all()}
@@ -511,6 +516,100 @@ async def caso_g(v: Verificador) -> None:
     await _conversar(v, TEL_A, ["cancelar"])
 
 
+@contextmanager
+def _capturar_errores():
+    registros: list[str] = []
+
+    class Capturador(logging.Handler):
+        def emit(self, record):
+            registros.append(record.getMessage())
+
+    manejador = Capturador(level=logging.ERROR)
+    logger = logging.getLogger("app.services.draft_store")
+    logger.addHandler(manejador)
+    try:
+        yield registros
+    finally:
+        logger.removeHandler(manejador)
+
+
+async def _conversacion_activa(telefono: str):
+    result = await _ejecutar("select activa from conversacion_bot where telefono = :t", t=telefono)
+    fila = result.first()
+    return None if fila is None else fila.activa
+
+
+async def caso_h(v: Verificador) -> None:
+    viejo = {
+        "paso": "producto",
+        "estado": "armando",
+        "intencion": "pedido",
+        "productos": [{"nombre_producto": "Bidón 20L Recarga", "cantidad": 3}],
+    }
+    await _ejecutar(
+        "insert into borrador_pedido (telefono, datos, actualizado_en) values "
+        "(:t, cast(:d as jsonb), now() - interval '20 hours')",
+        t=TEL_A,
+        d=json.dumps(serializar(viejo)),
+    )
+    await cargar_draft(TEL_A)
+    v.check(_productos(TEL_A) == {"Bidón 20L Recarga": 3}, "el borrador de ayer está en memoria (vigente por TTL)")
+    await marcar_activa(TEL_A)
+    v.check(get_draft(TEL_A) is None, "tras marcar_activa no hay borrador en memoria")
+    v.check(await _fila(TEL_A) is None, "ni en la tabla")
+    v.check(await _conversacion_activa(TEL_A) is True, "y la conversación quedó activa")
+    # También con la memoria vacía (el proceso se reinició después del borrador).
+    await _ejecutar(
+        "insert into borrador_pedido (telefono, datos, actualizado_en) values "
+        "(:t, cast(:d as jsonb), now() - interval '20 hours')",
+        t=TEL_A,
+        d=json.dumps(serializar(viejo)),
+    )
+    reiniciar()
+    await marcar_activa(TEL_A)
+    v.check(await _fila(TEL_A) is None, "con la memoria vacía también se borra la fila")
+    await _conversar(v, TEL_A, ["quiero 1 bidón de 12 nuevo"])
+    v.check(_productos(TEL_A) == {"Bidón 12L Nuevo": 1}, f"la conversación nueva parte limpia: {_productos(TEL_A)}")
+    await _conversar(v, TEL_A, ["cancelar"])
+
+
+async def caso_i(v: Verificador) -> None:
+    try:
+        await marcar_activa(TEL_NUEVA_CONV)
+        v.check(True, "marcar_activa sin borrador no falla")
+    except Exception as exc:
+        v.check(False, f"marcar_activa sin borrador no falla: {exc!r}")
+    v.check(await _conversacion_activa(TEL_NUEVA_CONV) is True, "la conversación queda activa")
+    v.check(await _fila(TEL_NUEVA_CONV) is None and get_draft(TEL_NUEVA_CONV) is None, "no se crea ningún borrador")
+    await marcar_activa(TEL_NUEVA_CONV)
+    v.check(await _conversacion_activa(TEL_NUEVA_CONV) is True, "repetirlo tampoco falla")
+
+
+async def caso_j(v: Verificador) -> None:
+    viejo = {"paso": "producto", "estado": "armando", "productos": [{"nombre_producto": "Bidón 20L Recarga", "cantidad": 3}]}
+    await _ejecutar(
+        "insert into borrador_pedido (telefono, datos) values (:t, cast(:d as jsonb))",
+        t=TEL_FALLOS,
+        d=json.dumps(serializar(viejo)),
+    )
+    await cargar_draft(TEL_FALLOS)
+    v.check(get_draft(TEL_FALLOS) == viejo, "hay un borrador previo en memoria y en la tabla")
+    with _capturar_errores() as errores, _bd_caida():
+        try:
+            await marcar_activa(TEL_FALLOS)
+            v.check(True, "con el descarte fallando, marcar_activa no lanza")
+        except Exception as exc:
+            v.check(False, f"con el descarte fallando, marcar_activa no lanza: {exc!r}")
+    v.check(await _conversacion_activa(TEL_FALLOS) is True, "la conversación queda activa igual")
+    v.check(any(TEL_FALLOS in e for e in errores), "el error se loguea")
+    v.check(get_draft(TEL_FALLOS) is None, "el borrador se descartó al menos en memoria")
+    v.check(await _fila(TEL_FALLOS) is not None, "la fila quedó (el delete falló)")
+    # Con la BD de vuelta, la fila vieja no revive y el primer mensaje parte limpio.
+    await _conversar(v, TEL_FALLOS, ["quiero 1 bidón de 12 nuevo"])
+    v.check(_productos(TEL_FALLOS) == {"Bidón 12L Nuevo": 1}, f"el borrador viejo no revive: {_productos(TEL_FALLOS)}")
+    await _conversar(v, TEL_FALLOS, ["cancelar"])
+
+
 CASOS = [
     ("a", "Ida y vuelta de serialización con borradores de cada paso", caso_a),
     ("b", "Persistencia: fila tras el mensaje; sin fila al confirmar o cancelar", caso_b),
@@ -519,6 +618,9 @@ CASOS = [
     ("e", "Fallos de la BD: la conversación sigue, sin mensaje genérico", caso_e),
     ("f", "Sin escrituras redundantes", caso_f),
     ("g", "Dos teléfonos no se mezclan", caso_g),
+    ("h", "marcar_activa descarta el borrador de ayer; la conversación parte limpia", caso_h),
+    ("i", "marcar_activa sin borrador no falla", caso_i),
+    ("j", "Si el descarte falla, marcar_activa igual activa la conversación", caso_j),
 ]
 
 
