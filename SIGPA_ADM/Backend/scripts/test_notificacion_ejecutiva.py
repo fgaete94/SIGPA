@@ -51,12 +51,13 @@ MARCA = " (fuera de horario)"
 PLANTILLA = "aviso_ejecutiva_cliente"
 RESPUESTA_META_OK = {"messages": [{"id": "wamid.fake-plantilla"}]}
 
-LEA_DENTRO = (
-    "¡Hola! Soy Lea, tu asistente virtual. Gracias por escribirnos. "
+# El nombre sale de settings.NOMBRE_ASISTENTE: los textos esperados no lo repiten a mano.
+ASISTENTE_DENTRO = (
+    f"¡Hola! Soy {settings.NOMBRE_ASISTENTE}, tu asistente virtual. Gracias por escribirnos. "
     "Una ejecutiva revisará tu mensaje y te contactará a la brevedad."
 )
-LEA_FUERA = (
-    "¡Hola! Soy Lea, tu asistente virtual. Gracias por escribirnos. "
+ASISTENTE_FUERA = (
+    f"¡Hola! Soy {settings.NOMBRE_ASISTENTE}, tu asistente virtual. Gracias por escribirnos. "
     "Nuestro horario de atención es de 09:00 a 18:00 hrs. "
     "Una ejecutiva se pondrá en contacto contigo dentro del horario de atención."
 )
@@ -262,16 +263,16 @@ async def caso_g(v: Verificador) -> None:
         al_cliente, notif = await _derivar("56933300001", FUERA)
     finally:
         notificacion_ejecutiva.SessionLocal = original
-    v.check(al_cliente == LEA_FUERA, "el cliente recibe igual el mensaje de Lea")
+    v.check(al_cliente == ASISTENTE_FUERA, "el cliente recibe igual el mensaje del asistente")
     v.check(notif == _generico("+56933300001") + MARCA, f"la ejecutiva recibe el texto genérico: {notif!r}")
     _, notif = await _derivar("56933300001")
     v.check(notif == _existente("Mariana Soto Rojas", "+56933300001"), "con la BD de vuelta, vuelve al texto con nombre")
 
 
 async def caso_h(v: Verificador) -> None:
-    for etiqueta, phone, ahora, lea, notif_esperada in (
-        ("existente, dentro", "56933300001", DENTRO, LEA_DENTRO, _existente("Mariana Soto Rojas", "+56933300001")),
-        ("nuevo, fuera", TELEFONO_NUEVO, FUERA, LEA_FUERA, _nuevo("+56933300009") + MARCA),
+    for etiqueta, phone, ahora, mensaje_asistente, notif_esperada in (
+        ("existente, dentro", "56933300001", DENTRO, ASISTENTE_DENTRO, _existente("Mariana Soto Rojas", "+56933300001")),
+        ("nuevo, fuera", TELEFONO_NUEVO, FUERA, ASISTENTE_FUERA, _nuevo("+56933300009") + MARCA),
     ):
         v.check(not await esta_activa(phone), f"{etiqueta}: no hay conversación activa")
         enviados = []
@@ -283,7 +284,7 @@ async def caso_h(v: Verificador) -> None:
         }
         with _fake_send(enviados):
             await whatsapp_route._procesar_mensaje_entrante(mensaje, ahora)
-        v.check(enviados[:1] == [(phone, lea)], f"{etiqueta}: el cliente recibe el mensaje de Lea correcto")
+        v.check(enviados[:1] == [(phone, mensaje_asistente)], f"{etiqueta}: el cliente recibe el mensaje del asistente correcto")
         v.check(
             enviados[1:] == [(settings.EJECUTIVA_PHONE, notif_esperada)],
             f"{etiqueta}: la ejecutiva recibe el texto correcto",
@@ -310,7 +311,7 @@ async def caso_i(v: Verificador) -> None:
             )
     finally:
         order_flow.datetime = datetime_original
-    v.check(respuesta == LEA_FUERA, "el cliente recibe el mensaje de Lea (fuera de horario)")
+    v.check(respuesta == ASISTENTE_FUERA, "el cliente recibe el mensaje del asistente (fuera de horario)")
     v.check(
         enviados == [(settings.EJECUTIVA_PHONE, _duplicado("+56933300003", "Laura Pérez, Jorge Muñoz Vera") + MARCA)],
         "la ejecutiva recibe el texto de duplicado con la marca",
@@ -334,7 +335,7 @@ async def caso_j(v: Verificador) -> None:
         enviadas = []
         with _plantilla(enviadas, RESPUESTA_META_OK):
             al_cliente, notif = await _derivar(phone, ahora)
-        v.check(al_cliente is not None, f"{etiqueta}: el cliente recibe el mensaje de Lea")
+        v.check(al_cliente is not None, f"{etiqueta}: el cliente recibe el mensaje del asistente")
         v.check(notif is None, f"{etiqueta}: no se envía el texto libre a la ejecutiva")
         v.check(
             [(to, nombre, idioma, params) for to, nombre, idioma, params, _ in enviadas]

@@ -39,7 +39,7 @@ _PATRON_SALUDO_ABIERTO = re.compile(r"^\s*¡?\s*hola\b[^!.?,\n]*[,!.]?\s*", re.I
 
 
 def _presentar_asistente(texto: str) -> str:
-    """Agrega la presentación del asistente ("Soy Lea, tu asistente
+    """Agrega la presentación del asistente ("Soy MarIA, tu asistente
     virtual.") al primer mensaje de la conversación, sin duplicar el saludo:
     va justo después del "¡Hola...!" con que empiece el texto, o con un
     "¡Hola!" adelante si no empieza con saludo. Si el texto ya nombra al

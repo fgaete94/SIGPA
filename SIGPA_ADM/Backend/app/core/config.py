@@ -75,7 +75,7 @@ class Settings(BaseSettings):
     # Asistente virtual y horario de atención de las ejecutivas (hora de
     # Chile), ver app/services/horario_atencion.py. DIAS_ATENCION: días
     # separados por coma o un rango, ej. "lunes-viernes".
-    NOMBRE_ASISTENTE: str = "Lea"
+    NOMBRE_ASISTENTE: str = "MarIA"
     HORARIO_ATENCION_INICIO: str = "09:00"
     HORARIO_ATENCION_FIN: str = "18:00"
     DIAS_ATENCION: str = "lunes,martes,miercoles,jueves,viernes,sabado,domingo"

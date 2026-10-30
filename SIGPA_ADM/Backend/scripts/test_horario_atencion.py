@@ -2,7 +2,7 @@
 Script temporal para validar el horario de atención y los mensajes de
 derivación a la ejecutiva (app/services/horario_atencion.py), su uso en el
 mensaje espontáneo (whatsapp.py) y en el teléfono duplicado (order_flow.py),
-y la presentación del asistente (Lea) en una conversación activa.
+y la presentación del asistente (MarIA) en una conversación activa.
 No es parte del código final: solo para validar manualmente el comportamiento.
 
 La hora siempre se inyecta (nunca depende del reloj real) y la configuración
@@ -31,7 +31,7 @@ from sqlalchemy import text
 
 import app.api.routes.whatsapp as whatsapp_route
 import app.services.order_flow as order_flow
-from app.core.config import settings
+from app.core.config import Settings, settings
 from app.core.database import SessionLocal
 from app.services.conversacion_bot_service import esta_activa, marcar_activa
 from app.services.draft_store import clear_draft, get_draft
@@ -54,12 +54,13 @@ TELEFONO_ACTIVO = "56933200002"
 TELEFONO_DUPLICADO = "56933200003"
 TELEFONOS_PRUEBA = (TELEFONO_ESPONTANEO, TELEFONO_ACTIVO, TELEFONO_DUPLICADO)
 
+# El nombre sale de settings.NOMBRE_ASISTENTE: los textos esperados no lo repiten a mano.
 MENSAJE_DENTRO = (
-    "¡Hola! Soy Lea, tu asistente virtual. Gracias por escribirnos. "
+    f"¡Hola! Soy {settings.NOMBRE_ASISTENTE}, tu asistente virtual. Gracias por escribirnos. "
     "Una ejecutiva revisará tu mensaje y te contactará a la brevedad."
 )
 MENSAJE_FUERA = (
-    "¡Hola! Soy Lea, tu asistente virtual. Gracias por escribirnos. "
+    f"¡Hola! Soy {settings.NOMBRE_ASISTENTE}, tu asistente virtual. Gracias por escribirnos. "
     "Nuestro horario de atención es de 09:00 a 18:00 hrs. "
     "Una ejecutiva se pondrá en contacto contigo dentro del horario de atención."
 )
@@ -238,12 +239,12 @@ async def caso_g(v: Verificador) -> None:
 async def caso_h(v: Verificador) -> None:
     v.check(
         mensaje_derivacion_ejecutiva(_chile(JUEVES, 10, 0))
-        == "¡Hola! Soy Lea, tu asistente virtual. Gracias por escribirnos. Una ejecutiva revisará tu mensaje y te contactará a la brevedad.",
+        == f"¡Hola! Soy {settings.NOMBRE_ASISTENTE}, tu asistente virtual. Gracias por escribirnos. Una ejecutiva revisará tu mensaje y te contactará a la brevedad.",
         "texto dentro de horario exacto",
     )
     v.check(
         mensaje_derivacion_ejecutiva(_chile(JUEVES, 20, 0))
-        == "¡Hola! Soy Lea, tu asistente virtual. Gracias por escribirnos. Nuestro horario de atención es de 09:00 a 18:00 hrs. Una ejecutiva se pondrá en contacto contigo dentro del horario de atención.",
+        == f"¡Hola! Soy {settings.NOMBRE_ASISTENTE}, tu asistente virtual. Gracias por escribirnos. Nuestro horario de atención es de 09:00 a 18:00 hrs. Una ejecutiva se pondrá en contacto contigo dentro del horario de atención.",
         "texto fuera de horario exacto",
     )
     with _config(HORARIO_ATENCION_INICIO="08:30", HORARIO_ATENCION_FIN="17:00"):
@@ -355,7 +356,7 @@ async def caso_i(v: Verificador) -> None:
 
 
 async def caso_j(v: Verificador) -> None:
-    """La presentación de Lea aparece una sola vez en la conversación activa
+    """La presentación del asistente aparece una sola vez en la conversación activa
     (sigue la conversación del caso i)."""
     phone = TELEFONO_ACTIVO
     previos = await _ejecutar(
@@ -371,17 +372,19 @@ async def caso_j(v: Verificador) -> None:
         "select count(*) from mensaje_whatsapp where telefono = :t and direccion = 'entrante'", t=phone
     )
     v.check(primera.scalar_one() == 3, "hay 3 mensajes entrantes en la conversación")
-    v.check(all("Lea" not in mensaje for _, mensaje in enviados), "las respuestas siguientes no repiten la presentación")
+    v.check(all(settings.NOMBRE_ASISTENTE not in mensaje for _, mensaje in enviados), "las respuestas siguientes no repiten la presentación")
     clear_draft(phone)
 
     # Funciones puras: inserción natural y sin saludos duplicados.
     presentar = whatsapp_route._presentar_asistente
+    nombre = settings.NOMBRE_ASISTENTE
     casos = [
-        ("¡Hola, Felipe! ¿Qué producto quieres?", "¡Hola, Felipe! Soy Lea, tu asistente virtual. ¿Qué producto quieres?"),
-        ("¡Hola! ¿Qué producto quieres?", "¡Hola! Soy Lea, tu asistente virtual. ¿Qué producto quieres?"),
-        ("Hola Felipe, ¿qué producto quieres?", "¡Hola! Soy Lea, tu asistente virtual. ¿Qué producto quieres?"),
-        ("Perfecto, anoté 2 bidones.", "¡Hola! Soy Lea, tu asistente virtual. Perfecto, anoté 2 bidones."),
-        ("¡Hola, Leandro! ¿Qué quieres?", "¡Hola, Leandro! Soy Lea, tu asistente virtual. ¿Qué quieres?"),
+        ("¡Hola, Felipe! ¿Qué producto quieres?", f"¡Hola, Felipe! Soy {nombre}, tu asistente virtual. ¿Qué producto quieres?"),
+        ("¡Hola! ¿Qué producto quieres?", f"¡Hola! Soy {nombre}, tu asistente virtual. ¿Qué producto quieres?"),
+        ("Hola Felipe, ¿qué producto quieres?", f"¡Hola! Soy {nombre}, tu asistente virtual. ¿Qué producto quieres?"),
+        ("Perfecto, anoté 2 bidones.", f"¡Hola! Soy {nombre}, tu asistente virtual. Perfecto, anoté 2 bidones."),
+        # Un nombre que empieza como el del asistente no cuenta como mención.
+        (f"¡Hola, {nombre}ndro! ¿Qué quieres?", f"¡Hola, {nombre}ndro! Soy {nombre}, tu asistente virtual. ¿Qué quieres?"),
         (MENSAJE_DENTRO, MENSAJE_DENTRO),
     ]
     for entrada, esperado in casos:
@@ -403,15 +406,46 @@ async def caso_j_primer_mensaje(v: Verificador) -> None:
     respuestas = [mensaje for to, mensaje in enviados if to == phone]
     v.check(len(respuestas) == 2, "2 respuestas al cliente")
     v.check(
-        bool(respuestas) and "Soy Lea, tu asistente virtual." in respuestas[0] and respuestas[0].lower().count("hola") == 1,
-        "la primera respuesta presenta a Lea, con un solo saludo",
+        bool(respuestas) and f"Soy {settings.NOMBRE_ASISTENTE}, tu asistente virtual." in respuestas[0] and respuestas[0].lower().count("hola") == 1,
+        "la primera respuesta presenta al asistente, con un solo saludo",
     )
-    v.check(all("Lea" not in r for r in respuestas[1:]), "la segunda respuesta no repite la presentación")
+    v.check(all(settings.NOMBRE_ASISTENTE not in r for r in respuestas[1:]), "la segunda respuesta no repite la presentación")
     v.check(
-        sum(r.count("Soy Lea") for r in respuestas) == 1,
+        sum(r.count(f"Soy {settings.NOMBRE_ASISTENTE}") for r in respuestas) == 1,
         "la presentación aparece exactamente una vez en la conversación",
     )
     clear_draft(phone)
+
+
+async def caso_k(v: Verificador) -> None:
+    """El nombre por defecto es MarIA y la presentación única funciona con él:
+    la búsqueda de palabra completa distingue mayúsculas (María no es MarIA)."""
+    v.check(Settings.model_fields["NOMBRE_ASISTENTE"].default == "MarIA", "el nombre por defecto del asistente es MarIA")
+    presentar = whatsapp_route._presentar_asistente
+    presentacion = "Soy MarIA, tu asistente virtual."
+    with _config(NOMBRE_ASISTENTE="MarIA"):
+        ya_presentada = f"¡Hola! {presentacion} ¿Qué producto quieres?"
+        salida = presentar(ya_presentada)
+        v.check(salida == ya_presentada and salida.count("MarIA") == 1, "si la respuesta ya contiene MarIA, no se duplica la presentación")
+        casos = [
+            ("¡Hola! ¿Qué producto quieres?", f"¡Hola! {presentacion} ¿Qué producto quieres?"),
+            ("Perfecto, anoté 2 bidones.", f"¡Hola! {presentacion} Perfecto, anoté 2 bidones."),
+            # Una clienta llamada María no se confunde con el asistente.
+            ("¡Hola, María! ¿Qué producto quieres?", f"¡Hola, María! {presentacion} ¿Qué producto quieres?"),
+            ("¡Hola, Maria! ¿Qué producto quieres?", f"¡Hola, Maria! {presentacion} ¿Qué producto quieres?"),
+            ("¡Hola, MarIAna! ¿Qué quieres?", f"¡Hola, MarIAna! {presentacion} ¿Qué quieres?"),
+        ]
+        for entrada, esperado in casos:
+            salida = presentar(entrada)
+            v.check(salida == esperado and salida.count("MarIA,") == 1, f"{entrada!r} -> {salida!r}")
+        v.check(
+            mensaje_derivacion_ejecutiva(_chile(JUEVES, 10, 0)).startswith(f"¡Hola! {presentacion} Gracias por escribirnos."),
+            "el mensaje de derivación presenta a MarIA",
+        )
+        v.check(
+            presentar(mensaje_derivacion_ejecutiva(_chile(JUEVES, 10, 0))) == mensaje_derivacion_ejecutiva(_chile(JUEVES, 10, 0)),
+            "y no se vuelve a presentar encima",
+        )
 
 
 CASOS = [
@@ -426,8 +460,9 @@ CASOS = [
     ("h2", "Flujo mensaje espontáneo dentro y fuera de horario", caso_flujo_espontaneo),
     ("h3", "Flujo teléfono duplicado dentro y fuera de horario", caso_flujo_duplicado),
     ("i", "Conversación activa fuera de horario sigue tomando pedidos", caso_i),
-    ("j", "Presentación de Lea: no se repite en los mensajes siguientes", caso_j),
-    ("j2", "Presentación de Lea: una sola vez en una conversación nueva", caso_j_primer_mensaje),
+    ("j", "Presentación del asistente: no se repite en los mensajes siguientes", caso_j),
+    ("j2", "Presentación del asistente: una sola vez en una conversación nueva", caso_j_primer_mensaje),
+    ("k", "Nombre MarIA: presentación única con búsqueda de palabra completa", caso_k),
 ]
 
 
