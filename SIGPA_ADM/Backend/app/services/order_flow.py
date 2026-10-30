@@ -2966,6 +2966,75 @@ async def _ultimo_pedido_entregado(cliente_id: int) -> list[dict]:
     ]
 
 
+# Historia #169: agradecimiento "puro" ("gracias", "ok gracias", "muchas
+# gracias!"). Se detecta en código, sin LLM: un "gracias" nunca confirma ni
+# avanza un pedido, y tampoco debe reiniciar la conversación.
+MAX_PALABRAS_AGRADECIMIENTO = 6
+MENSAJE_CON_GUSTO = "¡Con gusto!"
+MENSAJE_AGRADECIMIENTO_SIN_BORRADOR = (
+    f"{MENSAJE_CON_GUSTO} Si necesitas recarga para tu próxima visita, cuéntame qué producto y cantidad."
+)
+
+_PATRON_AGRADECIMIENTO = re.compile(r"\b(gracias+|grasias|graxias|grax|muy amable)\b")
+# Lo que saca a un mensaje de ser solo un agradecimiento: una respuesta a lo
+# que preguntó el bot ("no, gracias", "sí gracias" confirman o niegan) o la
+# intención de pedir, agregar o cambiar algo ("gracias, quiero 2 más").
+_PATRON_NO_ES_AGRADECIMIENTO = re.compile(
+    r"\b(si|no|nop|nope|dale|confirm\w*|quier\w*|quisier\w*|necesit\w*|agreg\w*|anad\w*|sum\w*"
+    r"|pedir|pido|pedimos|dam\w*|mand\w*|enviar|enviame|cambi\w*|modific\w*|quit\w*|elimin\w*"
+    r"|cancel\w*|falt\w*|pero|tambien|ademas|mas|otr[oa]s?|reemplaz\w*)\b"
+)
+
+
+_PATRON_REPETICION_AGRADECIMIENTO = re.compile(r"\b(de nuevo|otra vez|nuevamente)\b")
+
+
+def es_agradecimiento_puro(texto: str | None) -> bool:
+    """El mensaje es solo un agradecimiento corto: sin pregunta, sin dígitos,
+    sin mención de un producto y sin intención de pedir o cambiar algo."""
+    if not texto or "?" in texto or "¿" in texto or any(c.isdigit() for c in texto):
+        return False
+    normalizado = _normalizar_texto(texto)
+    if not normalizado or len(normalizado.split()) > MAX_PALABRAS_AGRADECIMIENTO:
+        return False
+    # "gracias de nuevo" / "otra vez" repiten el agradecimiento: no piden "otro".
+    normalizado = _PATRON_REPETICION_AGRADECIMIENTO.sub(" ", normalizado)
+    return bool(
+        _PATRON_AGRADECIMIENTO.search(normalizado)
+        and not _PATRON_NO_ES_AGRADECIMIENTO.search(normalizado)
+        and not _menciona_algun_producto(normalizado)
+    )
+
+
+def _pregunta_paso_actual(draft: dict, cliente: dict | None) -> str:
+    """Repite la pregunta pendiente del borrador SIN modificarlo (no avanza,
+    no vuelve a armar el resumen y no confirma nada)."""
+    lineas = draft.get("oferta_repetir")
+    if lineas:
+        return f"¿Quieres repetir tu último pedido ({_resumen_productos_corto(lineas)})? Responde SÍ, o cuéntame qué necesitas."
+    oferta = draft.get("oferta_habitual")
+    if oferta:
+        if oferta.get("preguntas", 0) > 0:
+            return f"¿Cuántos {oferta['producto']} necesitas?"
+        return f"¿Necesitas tu {oferta['producto']} de siempre? Dime cuántos o cuéntame qué necesitas."
+    faltantes = _datos_faltantes(draft, cliente)
+    if faltantes:
+        return _texto_paso(faltantes[0], faltantes, draft, cliente, None, False)
+    if draft.get("estado") == ESTADO_ESPERANDO_MODIFICACION:
+        return MENSAJE_NO_CONFIRMADO
+    resumen = draft.get("resumen")
+    return resumen["texto_resumen"] if resumen else PREGUNTA_PRODUCTO
+
+
+def _responder_agradecimiento(draft: dict | None, cliente: dict | None) -> str:
+    """Respuesta a un agradecimiento en una conversación activa: "¡Con
+    gusto!" más la pregunta pendiente del borrador, o un mensaje breve si no
+    hay borrador. No toca el borrador."""
+    if draft is None:
+        return MENSAJE_AGRADECIMIENTO_SIN_BORRADOR
+    return f"{MENSAJE_CON_GUSTO} {_pregunta_paso_actual(draft, cliente)}"
+
+
 def _es_saludo(texto: str | None) -> bool:
     return _empieza_con(_normalizar_texto(texto), ("hola", "holi", "buenas", "buenos", "buen dia", "hey"))
 
@@ -3217,6 +3286,10 @@ async def _procesar_mensaje_interno(
 
     draft = get_draft(phone)
     estado = draft.get("estado") if draft else None
+
+    # Historia #169: un agradecimiento no se interpreta ni cambia el borrador.
+    if message_type == "text" and es_agradecimiento_puro(message_text):
+        return _responder_agradecimiento(draft, cliente)
 
     # Historia #64: respuesta a la oferta de repetir el último pedido.
     if draft is not None and draft.get("oferta_repetir") and message_type == "text":

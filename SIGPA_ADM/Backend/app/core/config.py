@@ -72,6 +72,11 @@ class Settings(BaseSettings):
     # (borrador_pedido) sigue vigente; pasado ese tiempo no se retoma.
     BORRADOR_TTL_HORAS: int = 24
 
+    # Historia #169: horas después de confirmar un pedido en las que un
+    # agradecimiento recibe el cierre propio (en vez de la derivación a la
+    # ejecutiva).
+    AGRADECIMIENTO_VENTANA_HORAS: int = 12
+
     # Asistente virtual y horario de atención de las ejecutivas (hora de
     # Chile), ver app/services/horario_atencion.py. DIAS_ATENCION: días
     # separados por coma o un rango, ej. "lunes-viernes".

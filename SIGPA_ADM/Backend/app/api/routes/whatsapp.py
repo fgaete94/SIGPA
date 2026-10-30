@@ -1,11 +1,16 @@
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import PlainTextResponse
+from sqlalchemy import func, select
 
 from app.core.config import settings
+from app.core.database import SessionLocal
+from app.models import MensajeWhatsApp, Pedido
+from app.models.enums import EstadoPedido
+from app.services.cliente_lookup import buscar_clientes_por_telefono
 from app.services.conversacion_bot_service import es_primer_mensaje_conversacion, esta_activa
 from app.services.horario_atencion import (
     en_horario_atencion,
@@ -18,7 +23,7 @@ from app.services.notificacion_ejecutiva import (
     texto_notificacion_ejecutiva,
 )
 from app.services.mensaje_whatsapp_service import registrar_mensaje_entrante
-from app.services.order_flow import procesar_mensaje
+from app.services.order_flow import es_agradecimiento_puro, procesar_mensaje
 from app.services.webhook_queue import encolar, reservar_wamid
 from app.services.whatsapp_client import send_whatsapp_message
 
@@ -29,6 +34,13 @@ router = APIRouter(tags=["whatsapp"])
 MENSAJE_ERROR_GENERICO = (
     "Ocurrió un problema procesando tu mensaje, por favor intenta de nuevo o contacta a un ejecutivo."
 )
+
+# Historia #169: cierre propio al agradecimiento que llega después de confirmar
+# un pedido (conversación ya cerrada).
+MENSAJE_CIERRE_AGRADECIMIENTO = (
+    "¡De nada! Tu pedido #{pedido_id} quedó registrado y te contactaremos para coordinar la entrega."
+)
+MENSAJE_AGRADECIMIENTO_REPETIDO = "¡Con gusto!"
 
 MENSAJE_TIPO_NO_SOPORTADO = "Por ahora solo puedo procesar mensajes de texto o de ubicación."
 
@@ -53,6 +65,41 @@ def _presentar_asistente(texto: str) -> str:
     resto = _PATRON_SALUDO_ABIERTO.sub("", texto, count=1)
     resto = re.sub(r"^([¿¡\s]*)(\w)", lambda m: m.group(1) + m.group(2).upper(), resto, count=1)
     return f"¡Hola! {presentacion} {resto}".rstrip()
+
+
+async def _cierre_por_agradecimiento(phone_number: str) -> str | None:
+    """Respuesta a un agradecimiento puro cuando no hay conversación activa:
+    si el cliente (identificado por teléfono, uno solo) tiene un pedido
+    creado dentro de AGRADECIMIENTO_VENTANA_HORAS que no esté cancelado, el
+    cierre con el número del pedido; si ya se le cerró y vuelve a agradecer,
+    un "¡Con gusto!" breve. None si no corresponde (el mensaje sigue el flujo
+    de siempre: derivación a la ejecutiva)."""
+    ventana = timedelta(hours=settings.AGRADECIMIENTO_VENTANA_HORAS)
+    async with SessionLocal() as session:
+        clientes = await buscar_clientes_por_telefono(session, phone_number)
+        if len(clientes) != 1:
+            return None
+        pedido = (
+            await session.execute(
+                select(Pedido)
+                .where(Pedido.cliente_id == clientes[0].id, Pedido.creado_en >= func.now() - ventana)
+                .order_by(Pedido.creado_en.desc(), Pedido.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if pedido is None or pedido.estado == EstadoPedido.CANCELADO:
+            return None
+        ultimo_saliente = (
+            await session.execute(
+                select(MensajeWhatsApp.contenido)
+                .where(MensajeWhatsApp.telefono == phone_number, MensajeWhatsApp.direccion == "saliente")
+                .order_by(MensajeWhatsApp.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+    if ultimo_saliente and ultimo_saliente.startswith(("¡De nada!", MENSAJE_AGRADECIMIENTO_REPETIDO)):
+        return MENSAJE_AGRADECIMIENTO_REPETIDO
+    return MENSAJE_CIERRE_AGRADECIMIENTO.format(pedido_id=pedido.id)
 
 
 async def _enrutar_a_ejecutiva(phone_number: str, ahora: datetime | None = None) -> None:
@@ -132,6 +179,16 @@ async def _procesar_mensaje_entrante(message: dict, ahora: datetime | None = Non
         return
 
     if not await esta_activa(phone_number):
+        if message_type == "text" and es_agradecimiento_puro(message_text):
+            try:
+                cierre = await _cierre_por_agradecimiento(phone_number)
+            except Exception:
+                logger.exception("[WhatsApp] Falló el cierre por agradecimiento de %s", phone_number)
+                cierre = None
+            if cierre is not None:
+                # Sin saludo, sin derivación y sin avisar a la ejecutiva.
+                await send_whatsapp_message(to=phone_number, message=cierre)
+                return
         await _enrutar_a_ejecutiva(phone_number, ahora)
         return
 
