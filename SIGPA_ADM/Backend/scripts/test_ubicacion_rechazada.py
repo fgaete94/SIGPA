@@ -25,7 +25,7 @@ Uso: python -m scripts.test_ubicacion_rechazada
 
 import asyncio
 
-from app.services.draft_store import get_draft
+from app.services.draft_store import descartar_draft, get_draft
 from app.services.order_flow import _es_cliente_nuevo, procesar_mensaje
 
 MENSAJE_INICIAL = "Quiero 1 Dispensador USB, soy Pedro"
@@ -152,52 +152,63 @@ CASOS = [
 ]
 
 
+async def _descartar_borradores() -> None:
+    """Descarta el borrador (caché y fila de borrador_pedido) de cada teléfono
+    de CASOS: no tienen cliente, así que nadie más los limpia."""
+    for caso in CASOS:
+        await descartar_draft(caso["phone"])
+
+
 async def main() -> None:
     resultados = []
+    await _descartar_borradores()
 
-    for i, caso in enumerate(CASOS, start=1):
-        phone = caso["phone"]
-        print("#" * 70)
-        print(f"Caso {i}/{len(CASOS)}: {caso['descripcion']}")
-        print(f"Phone: {phone}")
-        print("#" * 70)
+    try:
+        for i, caso in enumerate(CASOS, start=1):
+            phone = caso["phone"]
+            print("#" * 70)
+            print(f"Caso {i}/{len(CASOS)}: {caso['descripcion']}")
+            print(f"Phone: {phone}")
+            print("#" * 70)
 
-        if not await _es_cliente_nuevo(phone):
-            print(
-                f"[ADVERTENCIA] {phone} ya existe como Cliente en la BD; "
-                "este caso necesita un teléfono nuevo para probar el flujo "
-                "de cliente nuevo. Cambia el número en CASOS y vuelve a correr."
-            )
-            resultados.append((caso["descripcion"], False))
+            if not await _es_cliente_nuevo(phone):
+                print(
+                    f"[ADVERTENCIA] {phone} ya existe como Cliente en la BD; "
+                    "este caso necesita un teléfono nuevo para probar el flujo "
+                    "de cliente nuevo. Cambia el número en CASOS y vuelve a correr."
+                )
+                resultados.append((caso["descripcion"], False))
+                print()
+                continue
+
+            respuestas = []
+            for j, mensaje in enumerate(caso["turnos"], start=1):
+                print(f"--- Turno {j}/{len(caso['turnos'])} ---")
+                print(f"Cliente: {mensaje}")
+                respuesta = await procesar_mensaje(
+                    phone=phone,
+                    message_type="text",
+                    message_text=mensaje,
+                    location=None,
+                )
+                print(f"Bot: {respuesta}")
+                respuestas.append(respuesta)
+
+            draft = get_draft(phone)
+            print(f"Draft resultante: {draft}")
+            print(f"Esperado: {caso['esperado']}")
+
+            try:
+                ok = bool(caso["verificar"](draft, respuestas))
+            except Exception as exc:
+                print(f"[ERROR] Falló la verificación del caso: {exc!r}")
+                ok = False
+
+            print(f"Resultado: {'OK' if ok else 'FALLO'}")
+            resultados.append((caso["descripcion"], ok))
             print()
-            continue
-
-        respuestas = []
-        for j, mensaje in enumerate(caso["turnos"], start=1):
-            print(f"--- Turno {j}/{len(caso['turnos'])} ---")
-            print(f"Cliente: {mensaje}")
-            respuesta = await procesar_mensaje(
-                phone=phone,
-                message_type="text",
-                message_text=mensaje,
-                location=None,
-            )
-            print(f"Bot: {respuesta}")
-            respuestas.append(respuesta)
-
-        draft = get_draft(phone)
-        print(f"Draft resultante: {draft}")
-        print(f"Esperado: {caso['esperado']}")
-
-        try:
-            ok = bool(caso["verificar"](draft, respuestas))
-        except Exception as exc:
-            print(f"[ERROR] Falló la verificación del caso: {exc!r}")
-            ok = False
-
-        print(f"Resultado: {'OK' if ok else 'FALLO'}")
-        resultados.append((caso["descripcion"], ok))
-        print()
+    finally:
+        await _descartar_borradores()
 
     print("=" * 70)
     print("Resumen final:")

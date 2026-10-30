@@ -34,7 +34,7 @@ import app.services.order_flow as order_flow
 from app.core.config import Settings, settings
 from app.core.database import SessionLocal
 from app.services.conversacion_bot_service import esta_activa, marcar_activa
-from app.services.draft_store import clear_draft, get_draft
+from app.services.draft_store import clear_draft, descartar_draft, get_draft
 from app.services.horario_atencion import (
     en_horario_atencion,
     mensaje_derivacion_ejecutiva,
@@ -111,8 +111,9 @@ async def _limpiar_rango() -> None:
     await _ejecutar(f"delete from cliente where id in ({ids_sql})", rango=RANGO_TELEFONOS_SQL)
     await _ejecutar("delete from mensaje_whatsapp where telefono ~ :rango", rango=RANGO_TELEFONOS_SQL)
     await _ejecutar("delete from conversacion_bot where telefono ~ :rango", rango=RANGO_TELEFONOS_SQL)
+    # Los borradores de estos teléfonos exactos: la caché y la fila de borrador_pedido.
     for phone in TELEFONOS_PRUEBA:
-        clear_draft(phone)
+        await descartar_draft(phone)
 
 
 # --------------------------------------------------------------------------

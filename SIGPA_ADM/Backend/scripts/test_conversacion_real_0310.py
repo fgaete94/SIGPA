@@ -47,7 +47,7 @@ from app.services.mensaje_whatsapp_service import (
     INDICE_WAMID_ENTRANTE,
     registrar_mensaje_entrante,
 )
-from app.services.draft_store import clear_draft, get_draft, save_draft
+from app.services.draft_store import clear_draft, descartar_draft, get_draft, save_draft
 from app.services.order_flow import (
     MENSAJE_CORRECCION_RECHAZADA,
     MENSAJE_NO_CONFIRMADO,
@@ -113,6 +113,9 @@ async def _limpiar_rango() -> None:
     await _ejecutar(f"delete from cliente where id in ({ids_sql})", rango=RANGO_TELEFONOS_SQL)
     await _ejecutar("delete from mensaje_whatsapp where telefono ~ :rango", rango=RANGO_TELEFONOS_SQL)
     await _ejecutar("delete from conversacion_bot where telefono ~ :rango", rango=RANGO_TELEFONOS_SQL)
+    # Los borradores de estos teléfonos exactos: la caché y la fila de borrador_pedido.
+    for phone in TELEFONOS_PRUEBA:
+        await descartar_draft(phone)
 
 
 async def _crear_cliente() -> int:
