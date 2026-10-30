@@ -30,7 +30,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.core.database import SessionLocal
-from app.models import Auditoria, Cliente, DetallePedido, Pedido, Producto
+from app.models import Auditoria, Cliente, ClienteProductoHabitual, DetallePedido, Pedido, Producto
 from app.models.enums import EstadoPedido
 from app.services.agent_service import (
     CATALOGO_NOMBRES,
@@ -2970,37 +2970,208 @@ def _es_saludo(texto: str | None) -> bool:
     return _empieza_con(_normalizar_texto(texto), ("hola", "holi", "buenas", "buenos", "buen dia", "hey"))
 
 
+async def _productos_habituales(cliente_id: int) -> list[str]:
+    """Nombres de los productos habituales del cliente (tabla
+    cliente_producto_habitual, sin cantidad) que están en el catálogo."""
+    async with SessionLocal() as session:
+        result = await session.execute(
+            select(Producto.nombre)
+            .join(ClienteProductoHabitual, ClienteProductoHabitual.producto_id == Producto.id)
+            .where(ClienteProductoHabitual.cliente_id == cliente_id)
+            .order_by(Producto.id)
+        )
+    return [nombre for nombre in result.scalars().all() if nombre in CATALOGO_NOMBRES]
+
+
+# Primer mensaje afirmativo que cuenta como respuesta al aviso del recordatorio
+# ("sí", "dale", "sí necesito recarga"): corto, para no confundirlo con un pedido.
+MAX_PALABRAS_AFIRMATIVO_CORTO = 6
+
+_FRASES_HABITUAL = ("el de siempre", "lo de siempre", "lo mismo", "el mismo", "el habitual")
+
+# Palabras que pueden acompañar a la cantidad al responder a la oferta del
+# producto habitual ("sí, 2 bidones por favor", "necesito dos").
+_RELLENO_RESPUESTA_HABITUAL = (
+    {t for frase in _AFIRMATIVAS + _FRASES_HABITUAL for t in frase.split()}
+    | _CORTESIA
+    | {"bidon", "bidones", "unidad", "unidades", "quiero", "necesito", "pedir", "pido", "x", "de", "l", "litros", "litro"}
+    | {"el", "la", "los", "las", "lo", "me", "mandas", "manda", "enviar", "dame"}
+)
+
+PREGUNTA_CANTIDAD_AMBIGUA = "¿Cuántos bidones necesitas? (por ejemplo: 2 bidones)"
+
+
+def _es_afirmativo_corto(mensaje: str | None) -> bool:
+    texto = _normalizar_texto(mensaje)
+    return len(texto.split()) <= MAX_PALABRAS_AFIRMATIVO_CORTO and (
+        _es_afirmativa(mensaje) or _empieza_con(texto, _FRASES_HABITUAL)
+    )
+
+
+def _producto_ajeno(texto_normalizado: str, referencia: str) -> bool:
+    """El mensaje menciona un producto distinto de `referencia`: de otra
+    familia, otra variante ("nuevo" si el habitual es recarga) u otra
+    capacidad ("de 12" si es de 20)."""
+    atributos = _atributos(referencia)
+    familia = _familia(referencia)
+    if (_menciona_tipo("dispensador", texto_normalizado) and familia != "Dispensador") or (
+        _menciona_tipo("promo", texto_normalizado) and familia != "Promo"
+    ):
+        return True
+    tokens = texto_normalizado.split()
+    for j, token in enumerate(tokens):
+        atributo = _atributo_de(token)
+        capacidad = _capacidad_en(tokens, j)
+        if (atributo and atributo not in atributos) or (capacidad is not None and f"{capacidad}l" not in atributos):
+            return True
+    return False
+
+
+def _solo_menciona_producto_de(texto_normalizado: str, referencias: list[str]) -> bool:
+    """El mensaje nombra el producto (o su familia o variante: "recarga",
+    "bidón") sin cantidad y sin pedir otro distinto de las referencias."""
+    return (
+        _menciona_algun_producto(texto_normalizado)
+        and not _cantidades_mensaje(texto_normalizado)
+        and any(not _producto_ajeno(texto_normalizado, referencia) for referencia in referencias)
+    )
+
+
 async def _ofrecer_repetir_pedido(
     phone: str, cliente: dict | None, resultado: dict, mensaje: str | None
 ) -> str | None:
     """Primer mensaje de un cliente existente que todavía no pidió nada: si
-    tiene un pedido entregado, se le ofrece repetirlo. Devuelve el texto de la
-    oferta, o None si no corresponde ofrecerla."""
+    tiene un pedido entregado, se le ofrece repetirlo (#64); si no, y tiene
+    exactamente un producto habitual, se le ofrece ese producto (#90). Devuelve
+    el texto de la oferta, o None si no corresponde ofrecerla.
+
+    Es la respuesta al aviso del recordatorio ("sí", "sí necesito recarga",
+    "recarga"), que el LLM no siempre clasifica como pedido: un afirmativo
+    corto o la sola mención del producto (sin cantidad ni otro producto)
+    también la disparan."""
     texto = _normalizar_texto(mensaje)
     intencion = resultado.get("intencion")
+    afirmativo = _es_afirmativo_corto(mensaje)
+    hay_mencion = _menciona_algun_producto(texto)
+    # El LLM suele leer "sí necesito recarga" o "recarga" como duda_pedido (cree
+    # que habla de un pedido anterior): para el afirmativo corto o la sola
+    # mención del producto esa intención no descarta la oferta, pero sí las
+    # preguntas y reclamos.
+    duda_descartable = intencion == "duda_pedido" and (afirmativo or hay_mencion) and not _es_pregunta_o_reclamo(mensaje)
     if (
         cliente is None
-        or intencion in ("consulta_precio", "consulta_pedidos", "duda_pedido")
-        or not (intencion == "pedido" or _es_saludo(mensaje))
-        or resultado.get("productos")
-        or resultado.get("aclaracion_pendiente")
-        or _menciona_algun_producto(texto)
+        or (intencion in ("consulta_precio", "consulta_pedidos", "duda_pedido") and not duda_descartable)
+        or "?" in (mensaje or "")
+        or not (intencion == "pedido" or _es_saludo(mensaje) or afirmativo or hay_mencion)
+        or (not hay_mencion and (resultado.get("productos") or resultado.get("aclaracion_pendiente")))
     ):
         return None
 
     lineas = await _ultimo_pedido_entregado(cliente["id"])
+    habitual = None
     if not lineas:
+        habituales = await _productos_habituales(cliente["id"])
+        if len(habituales) != 1:
+            return None
+        habitual = habituales[0]
+
+    # Con una mención de producto (que el LLM suele leer como pedido con
+    # aclaración pendiente) solo se ofrece si es el producto de siempre, sin
+    # cantidad: "20 bidones" o "3 de 12 nuevo" van por el flujo normal.
+    referencias = [linea["nombre_producto"] for linea in lineas] or [habitual]
+    if hay_mencion and not _solo_menciona_producto_de(texto, referencias):
         return None
 
     # La oferta queda en el draft (sin productos) hasta que responda.
+    if lineas:
+        save_draft(
+            phone,
+            {"paso": "producto", "estado": "armando", "productos": [], "oferta_repetir": lineas},
+        )
+        return (
+            f"{_saludo(cliente)} ¿Quieres repetir tu último pedido "
+            f"({_resumen_productos_corto(lineas)})? Responde SÍ, o cuéntame qué necesitas."
+        )
+
     save_draft(
         phone,
-        {"paso": "producto", "estado": "armando", "productos": [], "oferta_repetir": lineas},
+        {"paso": "producto", "estado": "armando", "productos": [], "oferta_habitual": {"producto": habitual, "preguntas": 0}},
     )
+    if afirmativo or hay_mencion:
+        # Ya dijo que sí (o nombró el producto): se sigue directo con la cantidad.
+        respuesta = await _responder_a_oferta_habitual(phone, get_draft(phone), cliente, mensaje)
+        if respuesta is not None:
+            return respuesta
     return (
-        f"{_saludo(cliente)} ¿Quieres repetir tu último pedido "
-        f"({_resumen_productos_corto(lineas)})? Responde SÍ, o cuéntame qué necesitas."
+        f"{_saludo(cliente)} ¿Necesitas tu {habitual} de siempre? "
+        "Dime cuántos o cuéntame qué necesitas."
     )
+
+
+async def _responder_a_oferta_habitual(
+    phone: str, draft: dict, cliente: dict | None, mensaje: str | None
+) -> str | None:
+    """Respuesta a la oferta del producto habitual (#90/#91). Devuelve el
+    texto a enviar, o None si el mensaje no responde la oferta (la oferta ya
+    quedó descartada y el mensaje sigue el flujo normal, sin perder lo que
+    dijo). Con una cantidad válida arma el borrador con esa línea y sigue con
+    el flujo estándar: dirección, resumen y confirmación explícita."""
+    oferta = draft["oferta_habitual"]
+    producto, preguntas = oferta["producto"], oferta.get("preguntas", 0)
+    base = {clave: valor for clave, valor in draft.items() if clave != "oferta_habitual"}
+    texto = _normalizar_texto(mensaje)
+
+    if _es_negativa_simple(mensaje):
+        save_draft(phone, base)
+        return f"Entendido. {PREGUNTA_PRODUCTO}"
+
+    cantidades = _cantidades_mensaje(texto)
+    tokens_extra = [
+        t
+        for t in texto.split()
+        if t not in _RELLENO_RESPUESTA_HABITUAL
+        and not t.isdigit()
+        and t not in _NUMEROS_TEXTO
+        and _atributo_de(t) is None
+        and not re.fullmatch(r"\d+l", t)
+    ]
+    aclara = _es_afirmativo_corto(mensaje) or _solo_menciona_producto_de(texto, [producto])
+    if (
+        _producto_ajeno(texto, producto)
+        or "?" in (mensaje or "")
+        or tokens_extra
+        or len(cantidades) > 1
+        or not (cantidades or aclara)
+    ):
+        # Algo distinto (#91), una pregunta u otra cosa: sigue el flujo normal.
+        save_draft(phone, base)
+        return None
+
+    if not cantidades:
+        if preguntas > 0:
+            save_draft(phone, base)
+            return None
+        save_draft(phone, {**base, "oferta_habitual": {"producto": producto, "preguntas": preguntas + 1}})
+        return f"¿Cuántos {producto} necesitas?"
+
+    cantidad = cantidades[0]
+    capacidad = re.search(r"(\d+)L\b", producto)
+    dice_bidones = bool(re.search(r"\bbidon(es)?\b|\bx\b|\dx|x\d", texto))
+    if cantidad < 1:
+        save_draft(phone, base)
+        return None
+    if capacidad and cantidad == int(capacidad.group(1)) and not dice_bidones:
+        # "20" a secas puede ser la capacidad del bidón y no la cantidad.
+        if preguntas >= 2:
+            save_draft(phone, base)
+            return None
+        save_draft(phone, {**base, "oferta_habitual": {"producto": producto, "preguntas": preguntas + 1}})
+        return PREGUNTA_CANTIDAD_AMBIGUA
+
+    nuevo = {**base, "intencion": "pedido", "productos": [{"nombre_producto": producto, "cantidad": cantidad}]}
+    nuevo["unidades_pedidas"] = _unidades_draft(nuevo)
+    _, respuesta = await _responder_siguiente_paso(phone, nuevo, cliente)
+    return f"Perfecto, {cantidad}x {producto}.\n\n{respuesta}"
 
 
 async def _responder_a_oferta_repetir(
@@ -3050,6 +3221,14 @@ async def _procesar_mensaje_interno(
     # Historia #64: respuesta a la oferta de repetir el último pedido.
     if draft is not None and draft.get("oferta_repetir") and message_type == "text":
         respuesta = await _responder_a_oferta_repetir(phone, draft, cliente, message_text)
+        if respuesta is not None:
+            return respuesta
+        draft = get_draft(phone)
+        estado = draft.get("estado") if draft else None
+
+    # Historias #90 y #91: respuesta a la oferta del producto habitual.
+    if draft is not None and draft.get("oferta_habitual") and message_type == "text":
+        respuesta = await _responder_a_oferta_habitual(phone, draft, cliente, message_text)
         if respuesta is not None:
             return respuesta
         draft = get_draft(phone)

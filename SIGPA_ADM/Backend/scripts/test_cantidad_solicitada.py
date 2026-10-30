@@ -19,8 +19,14 @@ from app.core.config import settings
 
 API_BASE_URL = "http://localhost:8000"
 
-EMAIL = "admin@sigpa-test.cl"
-PASSWORD = "123456"
+# Credenciales del usuario de Supabase Auth para estos scripts: se leen del .env
+# local (TEST_ADMIN_EMAIL / TEST_ADMIN_PASSWORD), nunca van en el código.
+EMAIL = settings.TEST_ADMIN_EMAIL.strip()
+PASSWORD = settings.TEST_ADMIN_PASSWORD.strip()
+
+if __name__ == "__main__" and not (EMAIL and PASSWORD):
+    sys.exit("Define TEST_ADMIN_EMAIL y TEST_ADMIN_PASSWORD en tu .env local (ver .env.example)")
+
 
 CLIENTE_ID = 1
 PRODUCTO_ID = 1

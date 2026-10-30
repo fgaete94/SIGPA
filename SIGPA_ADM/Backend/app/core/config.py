@@ -44,6 +44,13 @@ class Settings(BaseSettings):
 
     INTERNAL_CRON_SECRET: str = ""
 
+    # Usuario de Supabase Auth que usan los scripts de prueba locales
+    # (scripts/test_auth.py, test_api_*.py, test_cantidad_solicitada.py). Los
+    # define cada desarrollador en su .env local, que no se versiona. NO deben
+    # definirse en Render: el backend en producción no los usa.
+    TEST_ADMIN_EMAIL: str = ""
+    TEST_ADMIN_PASSWORD: str = ""
+
     # Recordatorio diario (POST /internal/recordatorio-diario): plantilla
     # Utility aprobada por Meta. Sin nombre de plantilla no se envía nada.
     WHATSAPP_TEMPLATE_RECORDATORIO_NAME: str = ""
