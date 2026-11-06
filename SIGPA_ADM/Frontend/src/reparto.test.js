@@ -62,3 +62,32 @@ test('la ruta anterior sin viaje va al final del texto con su propio título', (
     '*Sin viaje · planificados antes de los viajes*', '1. Cliente 2 (pedido #2)',
   ]);
 });
+
+test('lo entregado hoy sigue en la ruta, en su lugar; lo de otro día no', () => {
+  const hoy = '2026-11-06';
+  const pedidos = [
+    pedido(1, 'entregado', 1, { actualizado_en: '2026-11-06T15:00:00' }),
+    pedido(2, 'en_despacho', 2),
+    pedido(3, 'entregado', 3, { actualizado_en: '2026-11-05T15:00:00' }),
+    pedido(4, 'entregado', null, { actualizado_en: '2026-11-06T15:00:00' }),
+  ];
+  assert.deepEqual(rutaEnCurso(pedidos, [], hoy).paradas.map(p => p.id), [1, 2]);
+});
+
+test('el día de la entrega se cuenta en hora de Chile', () => {
+  // 01:00 UTC del 7/11 sigue siendo el 6/11 en Chile.
+  const pedidos = [pedido(1, 'entregado', 1, { actualizado_en: '2026-11-07T01:00:00' })];
+  assert.equal(rutaEnCurso(pedidos, [], '2026-11-06').paradas.length, 1);
+  assert.equal(rutaEnCurso(pedidos, [], '2026-11-07').paradas.length, 0);
+});
+
+test('una ruta nueva del mismo día manda sobre lo entregado con el mismo número y no se avisa como repetido', () => {
+  const pedidos = [
+    pedido(1, 'entregado', 1, { viaje: 1, actualizado_en: '2026-11-06T15:00:00' }),
+    pedido(2, 'entregado', 2, { viaje: 1, actualizado_en: '2026-11-06T15:00:00' }),
+    pedido(3, 'confirmado', 1, { viaje: 1 }),
+  ];
+  const { paradas, repetidos } = rutaEnCurso(pedidos, [], '2026-11-06');
+  assert.deepEqual(paradas.map(p => p.id), [3, 2]);
+  assert.deepEqual(repetidos, []);
+});

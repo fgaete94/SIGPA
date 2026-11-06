@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { COLORES_VIAJE, capasMapa, capasVisibles, claveEncuadre, sinCoordenadas, tieneCoordenadas } from './capasMapa.js';
+import { COLORES_VIAJE, capasMapa, capasVisibles, claveEncuadre, sinCoordenadas, siguienteParada, tieneCoordenadas } from './capasMapa.js';
 
 const parada = (pedido_id, latitud = -33 - pedido_id / 100, longitud = -71.5) => ({ pedido_id, cliente_nombre: `C${pedido_id}`, direccion_texto: `Calle ${pedido_id}`, latitud, longitud });
 
@@ -65,4 +65,25 @@ test('el filtro muestra el viaje elegido y vuelve a todos si queda vacío', () =
   assert.deepEqual(capasVisibles(capas, 1).map(c => c.clave), [1]);
   assert.equal(capasVisibles(capas, 2).length, 2);
   assert.equal(capasVisibles(capas, null).length, 2);
+});
+
+const conEstado = (pedido_id, estado) => ({ ...parada(pedido_id), estado });
+
+test('con avance se marcan las entregadas y la siguiente, también en el viaje que sigue', () => {
+  const capas = capasMapa([
+    { viaje: 1, paradas: [conEstado(1, 'entregado'), conEstado(2, 'entregado')] },
+    { viaje: 2, paradas: [conEstado(3, 'en_despacho'), conEstado(4, 'confirmado')] },
+  ], { avance: true });
+  assert.deepEqual(capas.flatMap(c => c.puntos.map(p => [p.numero, p.tipo])), [[1, 'entregada'], [2, 'entregada'], [1, 'siguiente'], [2, '']]);
+});
+
+test('sin avance se mantienen la primera y la última aunque estén entregadas', () => {
+  const [capa] = capasMapa([{ viaje: 1, paradas: [conEstado(1, 'entregado'), conEstado(2, 'confirmado')] }]);
+  assert.deepEqual(capa.puntos.map(p => p.tipo), ['inicio', 'fin']);
+});
+
+test('siguienteParada es null con todo entregado', () => {
+  const grupos = [{ viaje: 1, paradas: [conEstado(1, 'entregado')] }];
+  assert.equal(siguienteParada(grupos), null);
+  assert.equal(capasMapa(grupos, { avance: true })[0].puntos[0].tipo, 'entregada');
 });

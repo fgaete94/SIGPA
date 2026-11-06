@@ -1,18 +1,24 @@
 // Historia #85: la ruta en curso son los pedidos confirmados o en despacho que tienen orden_entrega
 // (el backend no guarda una tabla de rutas: el orden y el viaje viven en cada pedido).
+// Para seguir el avance, los pedidos entregados hoy siguen en la ruta, en su lugar y marcados.
+import { diaChile, hoyChile } from './fechas.js';
 import { agruparPorViaje, ordenViaje, tituloGrupo } from './viajes.js';
 
 const EN_CURSO = ['confirmado', 'en_despacho'];
 
-export function rutaEnCurso(pedidos, clientes = []) {
+export function rutaEnCurso(pedidos, clientes = [], hoy = hoyChile()) {
   const direccionCliente = new Map(clientes.map(c => [c.id, c.direccion]));
-  const paradas = pedidos
-    .filter(p => EN_CURSO.includes(p.estado) && p.orden_entrega != null)
+  const activos = pedidos.filter(p => EN_CURSO.includes(p.estado) && p.orden_entrega != null);
+  // Sin id de ruta, lo entregado hoy es lo que se considera de esta ruta. Si ya se planificó otra el mismo día, su parada con ese número manda.
+  const lugar = p => `${p.viaje ?? ''}|${p.orden_entrega}`;
+  const ocupados = new Set(activos.map(lugar));
+  const entregadosHoy = pedidos.filter(p => p.estado === 'entregado' && p.orden_entrega != null && p.actualizado_en && diaChile(p.actualizado_en) === hoy && !ocupados.has(lugar(p)));
+  const paradas = [...activos, ...entregadosHoy]
     // Igual que el backend al planificar: la dirección del pedido y, si no tiene, la del cliente.
     .map(p => ({ ...p, direccion: p.direccion_despacho || direccionCliente.get(p.cliente_id) || null }))
     .sort((a, b) => ordenViaje(a, b) || a.id - b.id);
   // Cada planificación numera desde 1 en cada viaje: un número repetido dentro de un viaje indica pedidos de más de una ruta.
-  const repetidos = agruparPorViaje(paradas).flatMap(({ viaje, paradas: delViaje }) => {
+  const repetidos = agruparPorViaje(paradas.filter(p => p.estado !== 'entregado')).flatMap(({ viaje, paradas: delViaje }) => {
     const numeros = delViaje.map(p => p.orden_entrega);
     const r = [...new Set(numeros.filter((n, i) => numeros.indexOf(n) !== i))];
     return r.length ? [{ viaje, numeros: r }] : [];

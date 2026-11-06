@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { login, logout, onSessionExpired, restoreSession } from './auth';
 import { api } from './api';
@@ -88,6 +88,7 @@ function Dashboard({ session, onLogout, onInactividad }) {
     const timer = setInterval(() => { if (!document.hidden) setRevision(r => r + 1); }, 60000);
     return () => clearInterval(timer);
   }, [tab, planning]);
+  const actualizarRuta = useCallback(() => setRevision(r => r + 1), []);
   // El historial (#70) se pide junto al detalle; si falla, el detalle se muestra igual.
   async function view(id) {
     setDetail(null);
@@ -130,7 +131,7 @@ function Dashboard({ session, onLogout, onInactividad }) {
   {tab === 'Clientes' && <section><div className="filters"><input aria-label="Buscar clientes" placeholder="Buscar nombre o teléfono…" value={query} onChange={e=>setQuery(e.target.value)}/><button className="primary" onClick={()=>{setEditing('nuevo'); setAviso('');}}>Nuevo cliente</button></div><TablaClientes clientes={clientes} onEditar={c => { setEditing(c); setAviso(''); }} onVerFicha={id => { setAviso(''); setFicha(id); }}/></section>}
   {tab === 'Productos' && <Productos productos={data.productos} onCambio={() => setRevision(r => r + 1)}/>}
   <div hidden={tab !== 'Reportes'}><Reportes pedidos={data.pedidos} clientes={data.clientes} actualizadoEn={actualizadoEn}/></div>
-  <div hidden={tab !== 'Rutas'}><RutaEnCurso pedidos={data.pedidos} clientes={data.clientes} productos={data.productos} viajes={data.viajes} onActualizar={() => setRevision(r => r + 1)} onEntregar={entregar}/><Rutas pendientes={data.pendientes} clientes={data.clientes} busy={busy} onActualizar={() => setRevision(r => r + 1)} onPlanificando={setPlanning}/></div>
+  <div hidden={tab !== 'Rutas'}><RutaEnCurso pedidos={data.pedidos} clientes={data.clientes} productos={data.productos} viajes={data.viajes} activa={tab === 'Rutas' && !planning} onActualizar={actualizarRuta} onEntregar={entregar}/><Rutas pendientes={data.pendientes} clientes={data.clientes} busy={busy} onActualizar={() => setRevision(r => r + 1)} onPlanificando={setPlanning}/></div>
   </>}{detail && <DetallePedido detail={detail} onClose={()=>setDetail(null)} onEntregar={entregar} onEditar={p => { setDetail(null); setAviso(''); setEditandoPedido(p); }}/>}{editandoPedido && data && <EditarPedido pedido={editandoPedido} cliente={data.clientes.find(c => c.id === editandoPedido.cliente_id)} productos={data.productos} onClose={()=>setEditandoPedido(null)} onSaved={p => { const { lineas, ...pedido } = p; setData(d => ({ ...d, pedidos: d.pedidos.map(x => x.id === pedido.id ? pedido : x) })); setAviso(`Pedido #${p.id} actualizado: ${lineas.map(l => `${l.cantidad_solicitada} × ${l.producto_nombre}`).join(', ')} · ${money(p.total)}.`); setEditandoPedido(null); setRevision(r => r + 1); }}/>}{ficha && <FichaDelCliente clienteId={ficha} onClose={()=>setFicha(null)} onVerPedido={id => { setFicha(null); view(id); }} onEditar={c => { setFicha(null); setEditing(data?.clientes.find(x => x.id === c.id) || c); }}/>}{entregando && <RegistrarEntrega pedidoId={entregando} onClose={()=>setEntregando(null)} onRegistrado={entregaRegistrada}/>}{editing && <FormCliente cliente={editing === 'nuevo' ? null : editing} clientes={data?.clientes || []} onClose={()=>setEditing(null)} onSaved={c=>{setAviso(editing === 'nuevo' ? `Cliente ${name(c)} creado (#${c.id}). Ya puede pedir por WhatsApp desde su número.` : `Cambios de ${name(c)} guardados.`); setEditing(null); setRevision(r=>r+1);}}/>}{creandoPedido && data && <NuevoPedido clientes={data.clientes} productos={data.productos} onClose={()=>setCreandoPedido(false)} onSaved={p=>{setAviso(`Pedido #${p.id} creado para ${p.cliente_nombre || 'el cliente'} por ${money(p.total)}. Quedó pendiente.`); setCreandoPedido(false); setRevision(r=>r+1);}}/>}</div></main></div>;
 }
 

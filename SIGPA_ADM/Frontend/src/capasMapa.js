@@ -5,12 +5,17 @@ export const COLORES_VIAJE = ['#1d3bb3', '#7b2fb3', '#b35c00'];
 
 export const tieneCoordenadas = p => Number.isFinite(p.latitud) && Number.isFinite(p.longitud);
 
+// La próxima parada por entregar: la primera de la lista que no está entregada (null si ya están todas).
+export const siguienteParada = grupos => grupos.flatMap(g => g.paradas).find(p => p.estado !== 'entregado') ?? null;
+
 // grupos: agruparPorViaje (en la vista previa traen además "numero"). Cada capa es un viaje con sus puntos.
 // El número de cada punto es su posición en el viaje, igual que en la lista, aunque otra parada no tenga
 // coordenadas. Los pedidos de la vista previa traen pedido_id y direccion_texto; los guardados, id y direccion.
 // desfase: cuántos puntos anteriores caen en el mismo lugar (varios clientes en una dirección), para no taparlos.
-export function capasMapa(grupos) {
+// avance: marca lo entregado y la siguiente parada en vez de la primera y la última (ruta en curso).
+export function capasMapa(grupos, { avance = false } = {}) {
   const enLugar = new Map();
+  const siguiente = avance ? siguienteParada(grupos) : null;
   return grupos.map((g, i) => {
     const ultimo = g.paradas.length - 1;
     const puntos = g.paradas.flatMap((p, k) => {
@@ -21,7 +26,7 @@ export function capasMapa(grupos) {
       const id = p.pedido_id ?? p.id;
       return [{
         id, numero: k + 1, latitud: p.latitud, longitud: p.longitud, desfase,
-        tipo: k === 0 ? 'inicio' : k === ultimo ? 'fin' : '',
+        tipo: avance ? (p.estado === 'entregado' ? 'entregada' : p === siguiente ? 'siguiente' : '') : k === 0 ? 'inicio' : k === ultimo ? 'fin' : '',
         nombre: p.cliente_nombre || `Pedido #${id}`,
         direccion: p.direccion_texto ?? p.direccion ?? null,
       }];

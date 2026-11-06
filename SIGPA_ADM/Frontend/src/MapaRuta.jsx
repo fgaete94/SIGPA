@@ -3,8 +3,9 @@ import { capasMapa, capasVisibles, claveEncuadre, sinCoordenadas, tieneCoordenad
 
 // El mapa dibuja las paradas de la ruta con el orden de la lista: si se arrastra una parada, se actualiza.
 // grupos: los viajes de la lista. foco: { id, n } para abrir una parada (n cambia con cada clic).
+// avance: marca las paradas entregadas y la siguiente (ruta en curso).
 // Leaflet se carga recién al abrir un mapa, para que la página pública no lo descargue.
-export default function MapaRuta({ grupos, foco }) {
+export default function MapaRuta({ grupos, foco, avance = false }) {
   const [L, setL] = useState(null);
   const [fallo, setFallo] = useState(false);
   const [solo, setSolo] = useState(null);
@@ -15,7 +16,7 @@ export default function MapaRuta({ grupos, foco }) {
   const encuadre = useRef(null);
   const atendido = useRef(null);
 
-  const capas = capasMapa(grupos);
+  const capas = capasMapa(grupos, { avance });
   const visibles = capasVisibles(capas, solo);
   const hayPuntos = capas.some(c => c.puntos.length > 0);
   const faltan = sinCoordenadas(capas);
@@ -51,8 +52,8 @@ export default function MapaRuta({ grupos, foco }) {
     for (const capa of visibles) {
       if (capa.puntos.length > 1) L.polyline(capa.puntos.map(p => [p.latitud, p.longitud]), { color: capa.color, weight: 3, opacity: .75, dashArray: '6 6' }).addTo(dibujo.current);
       for (const p of capa.puntos) {
-        const icono = L.divIcon({ className: '', html: `<div class="marca-mapa ${p.tipo}" style="--color-viaje:${capa.color}">${p.numero}</div>`, iconSize: [26, 26], iconAnchor: [13 - p.desfase * 20, 13] });
-        const marca = L.marker([p.latitud, p.longitud], { icon: icono, title: `${capa.etiqueta}, parada ${p.numero}`, zIndexOffset: 1000 - p.numero }).addTo(dibujo.current).bindPopup(contenidoPopup(capa, p, capas.length > 1));
+        const icono = L.divIcon({ className: '', html: `<div class="marca-mapa ${p.tipo}" style="--color-viaje:${capa.color}">${p.tipo === 'entregada' ? '✓' : p.numero}</div>`, iconSize: [26, 26], iconAnchor: [13 - p.desfase * 20, 13] });
+        const marca = L.marker([p.latitud, p.longitud], { icon: icono, title: `${capa.etiqueta}, parada ${p.numero}${p.tipo === 'entregada' ? ', entregada' : ''}`, zIndexOffset: (p.tipo === 'siguiente' ? 2000 : 1000) - p.numero }).addTo(dibujo.current).bindPopup(contenidoPopup(capa, p, capas.length > 1));
         marcas.current.set(p.id, marca);
       }
     }
@@ -81,7 +82,7 @@ export default function MapaRuta({ grupos, foco }) {
       {capas.map(c => <button type="button" key={c.clave} disabled={!c.puntos.length} aria-pressed={!todos && visibles[0].clave === c.clave} onClick={() => setSolo(c.clave)} style={{ '--color-viaje': c.color }}><i aria-hidden="true"/>{c.etiqueta}</button>)}
     </div>}
     {fallo ? <p role="alert" className="error">No se pudo cargar el mapa. Actualiza la página e inténtalo de nuevo.</p> : <div ref={lienzo} className="mapa-lienzo" role="group" aria-label="Mapa de la ruta"/>}
-    <p className="muted mapa-nota">Verde: primera parada{capas.length > 1 ? ' de cada viaje' : ''}. Rojo: última. Las líneas unen las paradas en orden, no siguen las calles. El depósito no se muestra.</p>
+    <p className="muted mapa-nota">{avance ? 'Verde con ✓: entregada. Anillo amarillo: la siguiente. Se actualiza cada minuto.' : `Verde: primera parada${capas.length > 1 ? ' de cada viaje' : ''}. Rojo: última.`} Las líneas unen las paradas en orden, no siguen las calles. El depósito no se muestra.</p>
     {faltan > 0 && <p className="notice">{faltan === 1 ? '1 parada no tiene coordenadas y no aparece' : `${faltan} paradas no tienen coordenadas y no aparecen`} en el mapa.</p>}
   </div>;
 }
@@ -94,6 +95,7 @@ function contenidoPopup(capa, p, conViajes) {
   const nombre = document.createElement('div');
   nombre.textContent = `${p.nombre} · #${p.id}`;
   caja.append(titulo, nombre);
+  if (p.tipo === 'entregada') { const estado = document.createElement('div'); estado.className = 'popup-entregada'; estado.textContent = '✓ Entregado'; caja.append(estado); }
   if (p.direccion) { const direccion = document.createElement('small'); direccion.textContent = p.direccion; caja.append(direccion); }
   return caja;
 }

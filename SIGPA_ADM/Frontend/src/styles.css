@@ -258,6 +258,14 @@ button.despachar{background:#e3e0fb;border-color:#cdc6f5;color:#3b2f9a}
 .marca-mapa.inicio{background:var(--verde-osc)}
 .marca-mapa.fin{background:#b3261e}
 .mapa-lienzo small{display:block;margin-top:2px;color:var(--gris)}
+/* Avance de la ruta en curso: lo entregado en verde con ✓ y la siguiente parada destacada, en el mapa y en la lista. */
+.marca-mapa.entregada{background:var(--verde-osc);font-size:15px}
+.marca-mapa.siguiente{box-shadow:0 0 0 3px var(--amarillo),0 1px 6px rgba(0,0,0,.5)}
+.popup-entregada{margin-top:2px;color:var(--verde-osc);font-weight:700}
+.badge.siguiente{background:var(--amarillo);color:var(--tinta)}
+.parada-entregada .number{background:var(--verde-osc)}
+.parada-entregada strong,.parada-entregada small{opacity:.7}
+.parada-siguiente{box-shadow:inset 3px 0 0 var(--amarillo)}
 /* El número de una parada con coordenadas es un botón que la muestra en el mapa. */
 button.number{flex:none;border:0;border-radius:8px;background:var(--azul);color:#fff}
 @media (hover:hover) and (pointer:fine){button.number:hover:not(:disabled){background:var(--azul-2)}}
