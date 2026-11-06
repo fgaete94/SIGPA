@@ -3,6 +3,7 @@ import { api } from './api';
 import { ETIQUETA_ESTADO, despachables } from './estados';
 import { fechaCorta } from './fechas';
 import HojaDeRuta from './HojaDeRuta';
+import MapaRuta, { NumeroParada } from './MapaRuta';
 import { enlaceComoLlegar, enlaceWhatsApp, rutaEnCurso, textoRuta } from './reparto';
 import { useArrastre } from './Arrastre';
 import { moverA } from './route';
@@ -18,6 +19,10 @@ export default function RutaEnCurso({ pedidos, clientes, productos, viajes = [],
   const [copiado, setCopiado] = useState('');
   // Copia de las paradas al abrir la hoja de ruta: una recarga de datos no la cambia mientras está abierta.
   const [hoja, setHoja] = useState(null);
+  // El mapa se abre a pedido: la pestaña Rutas se monta oculta y no debe descargar el mapa sin que se use.
+  const [verMapa, setVerMapa] = useState(false);
+  const [foco, setFoco] = useState(null);
+  function verParada(id) { setVerMapa(true); setFoco(f => ({ id, n: (f?.n ?? 0) + 1 })); }
   useEffect(() => setParadas(guardadas), [guardadas]);
   const manual = paradas.some((p, i) => p.id !== guardadas[i]?.id);
   const texto = textoRuta(paradas, fechaCorta(new Date().toISOString()), viajes);
@@ -50,6 +55,7 @@ export default function RutaEnCurso({ pedidos, clientes, productos, viajes = [],
     <div className="title">
       <div><h2>Ruta en curso</h2><p className="muted">{paradas.length === 1 ? '1 parada' : `${paradas.length} paradas`}{contarViajes(grupos) > 1 && ` en ${contarViajes(grupos)} viajes`} · pedidos confirmados o en despacho, en el orden guardado al planificar</p></div>
       {paradas.length > 0 && <div className="acciones no-print">
+        <button aria-expanded={verMapa} onClick={() => setVerMapa(v => !v)}>{verMapa ? 'Ocultar mapa' : 'Ver mapa'}</button>
         <button onClick={() => setHoja({ paradas, viajes })}>Imprimir hoja de ruta</button>
         <a className="boton" href={enlaceWhatsApp(texto)} target="_blank" rel="noopener noreferrer">Enviar por WhatsApp</a>
         <button onClick={copiar}>Copiar ruta</button>
@@ -63,7 +69,8 @@ export default function RutaEnCurso({ pedidos, clientes, productos, viajes = [],
     </div>}
     {repetidos.length > 0 && <p className="notice">Hay pedidos de más de una planificación con el mismo número de parada ({repetidos.map(r => (r.viaje != null ? `viaje ${r.viaje}: ${r.numeros.join(', ')}` : r.numeros.join(', '))).join('; ')}). Revisa el orden antes de entregarla al repartidor o vuelve a planificar esos pedidos.</p>}
     {manual && <p className="notice">Orden cambiado solo para imprimir o enviar. No se guarda en el servidor: al actualizar los datos vuelve al orden planificado. <button className="no-print enlace" onClick={() => setParadas(guardadas)}>Volver al orden planificado</button></p>}
-    {grupos.map(v => <ViajeEnCurso key={v.viaje ?? 'sin-viaje'} viaje={v} titulo={tituloGrupo(v, grupos)} onMover={moverEnViaje(v.viaje)} onEntregar={onEntregar}/>)}
+    {verMapa && paradas.length > 0 && <MapaRuta grupos={grupos} foco={foco}/>}
+    {grupos.map(v => <ViajeEnCurso key={v.viaje ?? 'sin-viaje'} viaje={v} titulo={tituloGrupo(v, grupos)} onMover={moverEnViaje(v.viaje)} onEntregar={onEntregar} onVer={verParada}/>)}
     {!paradas.length && <p>No hay una ruta en curso. Selecciona pedidos en "Preparar ruta" y planifícala.</p>}
     {hoja && <HojaDeRuta paradas={hoja.paradas} viajes={hoja.viajes} clientes={clientes} productos={productos} onClose={() => setHoja(null)}/>}
     {sinUbicacion > 0 && <p className="notice no-print">{sinUbicacion === 1 ? '1 pedido confirmado quedó' : `${sinUbicacion} pedidos confirmados quedaron`} fuera de la ruta por dirección por revisar. Corrige su ubicación más abajo y vuelve a planificar.</p>}
@@ -71,7 +78,7 @@ export default function RutaEnCurso({ pedidos, clientes, productos, viajes = [],
 }
 
 // Un viaje de la ruta en curso: encabezado y paradas, que se pueden reordenar arrastrando dentro del viaje.
-function ViajeEnCurso({ viaje, titulo, onMover, onEntregar }) {
+function ViajeEnCurso({ viaje, titulo, onMover, onEntregar, onVer }) {
   const { paradas } = viaje;
   const { propsFila, propsManilla } = useArrastre(paradas.length, onMover);
   const delViaje = viaje.viaje != null ? ` del viaje ${viaje.viaje}` : '';
@@ -82,7 +89,7 @@ function ViajeEnCurso({ viaje, titulo, onMover, onEntregar }) {
       const fila = propsFila(i);
       return <div key={p.id} {...fila} className={`stop ${fila.className}`}>
         <button {...propsManilla(i, p.cliente_nombre || `pedido ${p.id}`)} className="manilla no-print">⠿</button>
-        <b className="number">{i + 1}</b>
+        <NumeroParada numero={i + 1} parada={p} nombre={p.cliente_nombre || `pedido ${p.id}`} onVer={() => onVer(p.id)}/>
         <span>
           <strong>{p.cliente_nombre || `Cliente ${p.cliente_id}`} · #{p.id}</strong>
           <span className="etiquetas"><span className={`badge ${p.estado}`}>{ETIQUETA_ESTADO[p.estado]}</span></span>

@@ -245,6 +245,22 @@ button.despachar{background:#e3e0fb;border-color:#cdc6f5;color:#3b2f9a}
 .paradas-previa li>span:not(.acciones-parada){flex:1;min-width:0}
 .paradas-previa small{display:block;margin-top:2px;color:var(--gris);font-size:13px}
 .paradas-previa.fuera li{opacity:.8}
+/* Mapa de la ruta (vista previa y ruta en curso). isolation: las capas de Leaflet no se montan sobre el resto de la página. */
+.mapa-ruta{margin:14px 0}
+.mapa-lienzo{height:clamp(300px,55vh,520px);border:1px solid var(--borde);border-radius:12px;background:var(--fondo);isolation:isolate}
+.modal .mapa-lienzo{height:clamp(240px,42vh,380px)}
+.mapa-filtros{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px}
+.mapa-filtros button{margin:0;padding:6px 12px}
+.mapa-filtros button[aria-pressed=true],.mapa-filtros button[aria-pressed=true]:hover:not(:disabled){background:var(--azul);border-color:var(--azul);color:#fff}
+.mapa-filtros i{display:inline-block;width:10px;height:10px;margin-right:6px;border-radius:50%;background:var(--color-viaje);box-shadow:0 0 0 1px #fff}
+.mapa-nota{margin:6px 0 0;font-size:13px}
+.marca-mapa{display:grid;place-items:center;width:26px;height:26px;border:2px solid #fff;border-radius:50%;background:var(--color-viaje);color:#fff;font:700 12px/1 system-ui,sans-serif;box-shadow:0 1px 4px rgba(0,0,0,.4)}
+.marca-mapa.inicio{background:var(--verde-osc)}
+.marca-mapa.fin{background:#b3261e}
+.mapa-lienzo small{display:block;margin-top:2px;color:var(--gris)}
+/* El número de una parada con coordenadas es un botón que la muestra en el mapa. */
+button.number{flex:none;border:0;border-radius:8px;background:var(--azul);color:#fff}
+@media (hover:hover) and (pointer:fine){button.number:hover:not(:disabled){background:var(--azul-2)}}
 /* Encabezado de cada viaje (una carga del camión) en la vista previa y en la ruta en curso. */
 .peso-ruta{margin:8px 0;font-size:15px}
 /* Selector de viaje de cada parada: del ancho de su texto (en una ventana, los select ocupan todo el ancho). */
