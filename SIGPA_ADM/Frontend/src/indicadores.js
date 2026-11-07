@@ -36,6 +36,7 @@ export function pedidosPorComuna(pedidos, { desde = '', hasta = '' } = {}) {
 
 export const AGRUPACIONES = [['dia', 'Día'], ['semana', 'Semana'], ['mes', 'Mes']];
 export const SIN_TIPO = 'sin-tipo';
+export const SIN_SECTOR = 'sin_sector';
 const EN_CURSO = ['pendiente', 'confirmado', 'en_despacho'];
 
 const aUTC = clave => { const [a, m, d = 1] = clave.split('-').map(Number); return new Date(Date.UTC(a, m - 1, d)); };
@@ -54,6 +55,17 @@ export function etiquetaGrupo(clave, agrupar) {
   return `${agrupar === 'semana' ? 'Sem. ' : ''}${formatoDia.format(aUTC(clave))}`;
 }
 
+// Sectores de los clientes, para el filtro de ventas: solo los que tienen clientes y, si hay comuna elegida, los de esa comuna.
+export function opcionesSector(clientes, sectores, comuna = '') {
+  const usados = new Set(clientes.map(c => c.sector_id).filter(id => id != null));
+  const lista = sectores
+    .filter(s => usados.has(s.id) && (!comuna || s.comuna_nombre === comuna))
+    .sort((a, b) => a.nombre.localeCompare(b.nombre, 'es'))
+    .map(s => [String(s.id), s.nombre]);
+  const sinSector = clientes.some(c => c.sector_id == null && (!comuna || (c.comuna_nombre || SIN_COMUNA) === comuna));
+  return sinSector ? [...lista, [SIN_SECTOR, 'Sin sector']] : lista;
+}
+
 // Opciones de los filtros de ventas: comunas presentes en los pedidos y tipos de cliente.
 export function opcionesVentas(pedidos, clientes) {
   const comunas = [...new Set(pedidos.map(p => p.comuna_nombre || SIN_COMUNA))]
@@ -66,13 +78,13 @@ export function opcionesVentas(pedidos, clientes) {
   }
   const listaTipos = [...tipos].sort((a, b) => a[1].localeCompare(b[1], 'es'));
   if (sinTipo) listaTipos.push([SIN_TIPO, 'Sin tipo asignado']);
-  return { comunas, tipos: listaTipos, tipoPorCliente: new Map(clientes.map(c => [c.id, c.tipo_cliente_id])) };
+  return { comunas, tipos: listaTipos, tipoPorCliente: new Map(clientes.map(c => [c.id, c.tipo_cliente_id])), sectorPorCliente: new Map(clientes.map(c => [c.id, c.sector_id])) };
 }
 
 // Historia #71. Venta = pedido entregado: al registrar la entrega el backend recalcula el total con lo
 // realmente entregado. Se agrupa por la fecha del pedido (el backend no guarda la fecha de entrega).
 // "En curso" = pendientes, confirmados y en despacho del mismo filtro (monto solicitado, aún no vendido).
-export function ventasPorPeriodo(pedidos, { desde = '', hasta = '', agrupar = 'dia', comuna = '', tipo = '', tipoPorCliente = new Map() } = {}) {
+export function ventasPorPeriodo(pedidos, { desde = '', hasta = '', agrupar = 'dia', comuna = '', tipo = '', sector = '', tipoPorCliente = new Map(), sectorPorCliente = new Map() } = {}) {
   const grupos = new Map();
   const resumen = { monto: 0, pedidos: 0, enCurso: { pedidos: 0, monto: 0 } };
   let primero = '', ultimo = '';
@@ -81,6 +93,10 @@ export function ventasPorPeriodo(pedidos, { desde = '', hasta = '', agrupar = 'd
     if (tipo) {
       const t = tipoPorCliente.get(p.cliente_id);
       if (tipo === SIN_TIPO ? t != null : String(t) !== tipo) continue;
+    }
+    if (sector) {
+      const s = sectorPorCliente.get(p.cliente_id);
+      if (sector === SIN_SECTOR ? s != null : String(s) !== sector) continue;
     }
     const dia = diaChile(p.creado_en);
     if ((desde && dia < desde) || (hasta && dia > hasta)) continue;

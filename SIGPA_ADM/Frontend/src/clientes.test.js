@@ -65,3 +65,21 @@ test('editar: cambiar de comuna envía también el sector vacío, y un cliente s
   assert.deepEqual(cambiosCliente(conSector, elegirComuna(clienteForm(conSector), '2', SECTORES)), { cambios: { comuna_id: 2, sector_id: null } });
   assert.deepEqual(cambiosCliente(cliente, { ...clienteForm(cliente), activo: false }), { cambios: { activo: false } });
 });
+test('las coordenadas se editan como un solo campo y solo se envían si cambian', () => {
+  const conUbicacion = { ...cliente, latitud: -33.0458, longitud: -71.6197 };
+  assert.equal(clienteForm(conUbicacion).coordenadas, '-33.0458, -71.6197');
+  assert.deepEqual(cambiosCliente(conUbicacion, clienteForm(conUbicacion)), { cambios: {} });
+  assert.deepEqual(cambiosCliente(cliente, { ...clienteForm(cliente), coordenadas: ' -33.01, -71.55 ' }), { cambios: { latitud: -33.01, longitud: -71.55 } });
+  assert.deepEqual(cambiosCliente(conUbicacion, { ...clienteForm(conUbicacion), coordenadas: '' }), { cambios: { latitud: null, longitud: null } });
+});
+
+test('rechaza coordenadas mal escritas o fuera de Chile', () => {
+  assert.match(cambiosCliente(cliente, { ...clienteForm(cliente), coordenadas: 'hola' }).error, /latitud y la longitud/);
+  assert.match(cambiosCliente(cliente, { ...clienteForm(cliente), coordenadas: '33.04, 71.61' }).error, /fuera de Chile/);
+});
+
+test('un cliente nuevo lleva coordenadas solo si se escribieron', () => {
+  const base = { ...clienteForm({}), nombre: 'Ana', telefono: '912345678', comuna_id: '1' };
+  assert.equal('latitud' in nuevoCliente(base).datos, false);
+  assert.equal(nuevoCliente({ ...base, coordenadas: '-33.01, -71.55' }).datos.latitud, -33.01);
+});

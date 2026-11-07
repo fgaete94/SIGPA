@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { api } from './api';
 import { DIAS_REPARTO, cambiosCliente, clienteForm, elegirComuna, nuevoCliente, sectoresDeComuna } from './clientes';
+import { enlaceMapa } from './planificacion';
 import { rutaSugerencia, textoSugerencia } from './sugerenciaDia';
 
 const nombreCompleto = c => [c.nombre, c.apellido_paterno, c.apellido_materno].filter(Boolean).join(' ');
@@ -65,6 +66,8 @@ export default function FormCliente({ cliente, clientes, onClose, onSaved }) {
     </div>
     {resultado.aviso && <p className="notice">{resultado.aviso}</p>}
     {field('direccion', 'Dirección', { placeholder: 'Calle y número, depto o block' })}
+    {field('coordenadas', 'Coordenadas (latitud, longitud)', { inputMode: 'decimal', placeholder: '-33.0458, -71.6197' })}
+    <p className="muted ayuda-coordenadas">Opcional. Sin coordenadas, se busca por la dirección al calcular la ruta. {form.direccion.trim() && <a href={enlaceMapa(form.direccion.trim())} target="_blank" rel="noopener noreferrer">Buscar en Google Maps</a>}</p>
     <div className="campos">
       <label>Comuna<select value={form.comuna_id} required={nuevo} onChange={e => setForm(f => elegirComuna(f, e.target.value, sectores))}><option value="">{nuevo ? 'Elige una comuna' : 'Sin asignar'}</option>{actual(comunas, cliente?.comuna_id, cliente?.comuna_nombre || `Comuna ${cliente?.comuna_id}`)}{comunas.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}</select></label>
       <label>Sector (opcional)<select value={form.sector_id} disabled={!form.comuna_id} onChange={e => set('sector_id', e.target.value)}><option value="">{form.comuna_id ? 'Sin sector' : 'Elige primero la comuna'}</option>{form.sector_id && !sectoresDeComuna(sectores, form.comuna_id).some(s => String(s.id) === form.sector_id) && <option value={form.sector_id}>{`Sector ${form.sector_id}`}</option>}{sectoresDeComuna(sectores, form.comuna_id).map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}</select></label>
@@ -82,7 +85,7 @@ export default function FormCliente({ cliente, clientes, onClose, onSaved }) {
     </div>
     {check('activo', 'Cliente activo')}{check('opt_out_whatsapp', 'No desea recibir recordatorios por WhatsApp')}
     {!form.dia_reparto && form.activo && !form.opt_out_whatsapp && <p className="muted">Sin día de reparto no recibe el recordatorio del día anterior.</p>}
-    {!nuevo && form.direccion.trim() !== (cliente.direccion || '') && <p className="notice">Al cambiar la dirección se borran las coordenadas guardadas del cliente: se volverá a ubicar en la próxima ruta.</p>}
+    {!nuevo && form.direccion.trim() !== (cliente.direccion || '') && !('latitud' in (resultado.cambios || {})) && cliente.latitud != null && <p className="notice">Al cambiar la dirección se borran las coordenadas guardadas, salvo que escribas las nuevas.</p>}
     {error && <p role="alert" className="error">{error}</p>}
     <div className="actions"><button type="button" onClick={onClose} disabled={busy}>Cancelar</button><button className="primary" disabled={busy}>{busy ? 'Guardando…' : nuevo ? 'Crear cliente' : 'Guardar cambios'}</button></div>
   </form></section></div>;

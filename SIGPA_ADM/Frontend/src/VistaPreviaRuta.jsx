@@ -10,7 +10,7 @@ const paradasTexto = n => (n === 1 ? '1 parada' : `${n} paradas`);
 // Historia #87: ruta propuesta por n8n, todavía sin guardar. Se puede reordenar o sacar paradas por
 // factores que el cálculo no conoce (horarios, un accidente, una calle cortada) y recién después confirmar.
 // Las paradas se reordenan arrastrándolas dentro de su viaje y se pueden pasar a otro viaje. Se muestra sobre toda la página (portal): cambiar de pestaña no la oculta.
-export default function VistaPreviaRuta({ estado, onCambiar, onCancelar, onConfirmar, onRecalcular, guardando, error }) {
+export default function VistaPreviaRuta({ estado, onCambiar, onCancelar, onConfirmar, onRecalcular, guardando, error, repartidores = [], repartidorId = '', onRepartidor }) {
   const titulo = useRef(null);
   const [foco, setFoco] = useState(null);
   useEffect(() => { titulo.current?.focus(); }, []);
@@ -23,12 +23,12 @@ export default function VistaPreviaRuta({ estado, onCambiar, onCancelar, onConfi
   return createPortal(<div className="modal" role="dialog" aria-modal="true" aria-labelledby="vista-previa-titulo"><section className="vista-previa">
     <span className="eyebrow">Vista previa · todavía no se guarda nada</span>
     <h2 id="vista-previa-titulo" tabIndex={-1} ref={titulo}>Ruta propuesta</h2>
-    <p>Orden calculado por el servicio de rutas. Ajústalo si hay algo que el cálculo no considera, como horarios del cliente, un accidente o una calle cortada: <strong>mantén presionada una parada y arrástrala</strong> a su nuevo lugar{conViajes.length > 1 && ' dentro de su viaje. Cada viaje es una carga del camión: para cambiar una parada de viaje, elígelo en su lista'}. Después confirma para guardarlo.</p>
+    <p>Orden calculado por el servicio de rutas. Ajústalo si hay algo que el cálculo no considera, como horarios del cliente, un accidente o una calle cortada: <strong>mantén presionada una parada y arrástrala</strong> a su nuevo lugar{conViajes.length > 1 && ' dentro de su ruta. Cada ruta es una carga del camión: para cambiar una parada de ruta, elígela en su lista'}. Después confirma para guardarlo.</p>
     {modificada && <p className="notice">Cambiaste la ruta propuesta. <button type="button" className="enlace" onClick={() => onCambiar(restablecer(estado))}>Volver al orden propuesto</button></p>}
 
     {paradas.length > 0 && <MapaRuta grupos={viajes} foco={foco}/>}
 
-    <h3>{paradasTexto(paradas.length)}{viajes.length > 1 && ` en ${viajes.length} viajes`}</h3>
+    <h3>{paradasTexto(paradas.length)}{viajes.length > 1 && ` en ${viajes.length} rutas`}</h3>
     {!paradas.length && <p className="muted">No queda ninguna parada en la ruta.</p>}
     {viajes.map(v => <ViajePrevia key={v.viaje ?? 'sin-viaje'} viaje={v} viajes={conViajes} guardando={guardando}
       onMover={(desde, hasta) => onCambiar(moverParada(estado, v.viaje, desde, hasta))} onSacar={id => onCambiar(sacar(estado, id))}
@@ -41,7 +41,7 @@ export default function VistaPreviaRuta({ estado, onCambiar, onCancelar, onConfi
       <ul className="paradas-previa fuera">
         {fuera.map(p => <li key={p.pedido_id}>
           <span><strong>{p.cliente_nombre || `Pedido #${p.pedido_id}`} · #{p.pedido_id}</strong><small>{p.direccion_texto || 'Sin dirección registrada'}</small></span>
-          <span className="acciones-parada"><button type="button" disabled={guardando} onClick={() => onCambiar(reponer(estado, p.pedido_id))}>{numeroDe.has(p.viaje) ? `Volver al viaje ${numeroDe.get(p.viaje)}` : 'Volver a la ruta'}</button></span>
+          <span className="acciones-parada"><button type="button" disabled={guardando} onClick={() => onCambiar(reponer(estado, p.pedido_id))}>{numeroDe.has(p.viaje) ? `Volver a la ruta ${numeroDe.get(p.viaje)}` : 'Volver a la ruta'}</button></span>
         </li>)}
       </ul>
     </>}
@@ -52,6 +52,7 @@ export default function VistaPreviaRuta({ estado, onCambiar, onCancelar, onConfi
       <p>Al confirmar quedan confirmadas pero fuera de la ruta, marcadas "Dirección por revisar": corrige su ubicación y vuelve a calcular.</p>
     </div>}
 
+    {repartidores.length > 0 && paradas.length > 0 && <label className="asignar-previa">Asignar la ruta a<select value={repartidorId} disabled={guardando} onChange={e => onRepartidor(e.target.value)}><option value="">Seleccione repartidor</option>{repartidores.map(r => <option key={r.id} value={r.id}>{r.nombre}</option>)}</select></label>}
     {error && <div role="alert" className="error"><strong>{error.mensaje}</strong>{error.detalles?.length > 0 && <ul>{error.detalles.map(d => <li key={d}>{d}</li>)}</ul>}</div>}
     <div className="actions">
       <button type="button" onClick={onCancelar} disabled={guardando}>Cancelar</button>
@@ -69,7 +70,7 @@ function ViajePrevia({ viaje, viajes, guardando, onMover, onSacar, onCambiarViaj
   const { paradas } = viaje;
   const { propsFila, propsManilla } = useArrastre(paradas.length, onMover, { deshabilitado: guardando });
   const titulo = encabezadoViaje({ ...viaje, viaje: viaje.numero });
-  const prefijo = viaje.numero != null ? `del viaje ${viaje.numero} ` : '';
+  const prefijo = viaje.numero != null ? `de la ruta ${viaje.numero} ` : '';
   return <>
     {titulo && <h4 className="viaje-titulo">{titulo}</h4>}
     <ol className="paradas-previa">
@@ -78,8 +79,8 @@ function ViajePrevia({ viaje, viajes, guardando, onMover, onSacar, onCambiarViaj
         <NumeroParada numero={i + 1} parada={p} nombre={p.cliente_nombre || `pedido ${p.pedido_id}`} onVer={() => onVer(p.pedido_id)}/>
         <span><strong>{p.cliente_nombre || `Pedido #${p.pedido_id}`} · #{p.pedido_id}</strong><small>{p.direccion_texto || 'Sin dirección registrada'}{Number.isFinite(p.peso_kg) && ` · ${p.peso_kg} kg`}</small></span>
         <span className="acciones-parada">
-          {viajes.length > 1 && viaje.viaje != null && <select aria-label={`Viaje del pedido ${p.pedido_id}`} value={viaje.viaje} disabled={guardando} onChange={e => onCambiarViaje(p.pedido_id, Number(e.target.value))}>
-            {viajes.map(v => <option key={v.viaje} value={v.viaje}>Viaje {v.numero}</option>)}
+          {viajes.length > 1 && viaje.viaje != null && <select aria-label={`Ruta del pedido ${p.pedido_id}`} value={viaje.viaje} disabled={guardando} onChange={e => onCambiarViaje(p.pedido_id, Number(e.target.value))}>
+            {viajes.map(v => <option key={v.viaje} value={v.viaje}>Ruta {v.numero}</option>)}
           </select>}
           <a className="boton" href={enlacePunto(p)} target="_blank" rel="noopener noreferrer" aria-label={`Abrir en Google Maps la parada ${i + 1} ${prefijo}`.trim()}>Google Maps</a>
           <button type="button" aria-label={`Sacar de la ruta el pedido ${p.pedido_id}`} disabled={guardando} onClick={() => onSacar(p.pedido_id)}>Sacar</button>

@@ -1,9 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { api } from './api';
+import { canceladosEnPeriodo, resumenPeriodo, tramoEfectivo } from './datosPeriodo';
 import { hoyChile, horaCorta } from './fechas';
-import { AGRUPACIONES, PERIODOS, SIN_COMUNA, opcionesVentas, pedidosPorComuna, rangoPeriodo, ventasPorPeriodo } from './indicadores';
+import { AGRUPACIONES, PERIODOS, SIN_COMUNA, opcionesSector, opcionesVentas, pedidosPorComuna, rangoPeriodo, ventasPorPeriodo } from './indicadores';
 import { useOrden } from './Ordenable';
-import { MODOS, csvRanking, nombreArchivo, parametrosRanking, rankingConParticipacion } from './productosVendidos';
+import { csvRanking, nombreArchivo, parametrosRanking, rankingConParticipacion } from './productosVendidos';
+import { EntregasPorFecha } from './ResumenDia';
 
 const porcentaje = new Intl.NumberFormat('es-CL', { style: 'percent', maximumFractionDigits: 1 });
 const dinero = n => new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP' }).format(n);
@@ -18,7 +20,7 @@ const COLUMNAS_COMUNA = {
 };
 
 // Pestaña Reportes: un período común para ventas (#71), productos más vendidos (#72) y pedidos por comuna (#73).
-export default function Reportes({ pedidos, clientes, actualizadoEn }) {
+export default function Reportes({ pedidos, pedidosConAnteriores, clientes, actualizadoEn }) {
   const [periodo, setPeriodo] = useState('30');
   const [rango, setRango] = useState(() => rangoPeriodo('30', hoyChile()));
   const invalido = Boolean(rango.desde && rango.hasta && rango.desde > rango.hasta);
@@ -37,10 +39,35 @@ export default function Reportes({ pedidos, clientes, actualizadoEn }) {
     </section>
     {!invalido && <>
       <Ventas pedidos={pedidos} clientes={clientes} rango={rango}/>
+      <EntregadosNoEntregados pedidos={pedidosConAnteriores} rango={rango}/>
+      <PedidosCancelados pedidos={pedidos} rango={rango}/>
       <ProductosVendidos rango={rango} actualizadoEn={actualizadoEn}/>
       <PorComuna pedidos={pedidos} rango={rango}/>
     </>}
   </>;
+}
+
+// Pedidos entregados y no entregados del período elegido.
+function EntregadosNoEntregados({ pedidos, rango }) {
+  const r = resumenPeriodo(pedidos, tramoEfectivo(pedidos, rango, hoyChile()));
+  return <section className="no-print">
+    <h2>Entregados y no entregados</h2>
+    {r.entregados + r.noEntregados > 0
+      ? <EntregasPorFecha filas={r.filas} entregados={r.entregados} noEntregados={r.noEntregados}/>
+      : <p className="muted">No hay entregas registradas en el período.</p>}
+  </section>;
+}
+
+// Indicador de pedidos cancelados en el período elegido.
+function PedidosCancelados({ pedidos, rango }) {
+  const { cantidad, monto } = canceladosEnPeriodo(pedidos, rango);
+  return <section className="no-print">
+    <h2>Pedidos cancelados</h2>
+    <div className="kpis indices cancelados">
+      <article><span>Pedidos cancelados</span><strong>{cantidad}</strong><small>En el período elegido</small></article>
+      <article><span>Monto cancelado</span><strong>{dinero(monto)}</strong><small>Lo que no se vendió por estas cancelaciones</small></article>
+    </div>
+  </section>;
 }
 
 // Historia #71: ventas (pedidos entregados) por día, semana o mes, con filtro de comuna y tipo de cliente.
@@ -48,8 +75,17 @@ function Ventas({ pedidos, clientes, rango }) {
   const [agrupar, setAgrupar] = useState('dia');
   const [comuna, setComuna] = useState('');
   const [tipo, setTipo] = useState('');
+  const [sector, setSector] = useState('');
+  // El sector es un filtro de apoyo: si /sectores falla, el reporte se ve igual, solo con "Sin sector" si corresponde.
+  const [sectores, setSectores] = useState([]);
+  useEffect(() => {
+    const controller = new AbortController();
+    api('/sectores', { signal: controller.signal }).then(s => { if (Array.isArray(s)) setSectores(s); }).catch(() => {});
+    return () => controller.abort();
+  }, []);
   const opciones = useMemo(() => opcionesVentas(pedidos, clientes), [pedidos, clientes]);
-  const ventas = useMemo(() => ventasPorPeriodo(pedidos, { ...rango, agrupar, comuna, tipo, tipoPorCliente: opciones.tipoPorCliente }), [pedidos, rango, agrupar, comuna, tipo, opciones]);
+  const listaSectores = useMemo(() => opcionesSector(clientes, sectores, comuna), [clientes, sectores, comuna]);
+  const ventas = useMemo(() => ventasPorPeriodo(pedidos, { ...rango, agrupar, comuna, tipo, sector, tipoPorCliente: opciones.tipoPorCliente, sectorPorCliente: opciones.sectorPorCliente }), [pedidos, rango, agrupar, comuna, tipo, sector, opciones]);
   const unidad = AGRUPACIONES.find(([valor]) => valor === agrupar)[1].toLowerCase();
 
   return <section className="ventas">
@@ -57,7 +93,8 @@ function Ventas({ pedidos, clientes, rango }) {
     <p>Suma de los pedidos entregados, según la fecha del pedido. El total de cada pedido es lo realmente entregado.</p>
     <div className="filters periodo">
       <label>Ver por<select value={agrupar} onChange={e => setAgrupar(e.target.value)}>{AGRUPACIONES.map(([valor, texto]) => <option key={valor} value={valor}>{texto}</option>)}</select></label>
-      <label>Comuna<select value={comuna} onChange={e => setComuna(e.target.value)}><option value="">Todas</option>{opciones.comunas.map(c => <option key={c}>{c}</option>)}</select></label>
+      <label>Comuna<select value={comuna} onChange={e => { setComuna(e.target.value); setSector(''); }}><option value="">Todas</option>{opciones.comunas.map(c => <option key={c}>{c}</option>)}</select></label>
+      <label>Sector<select value={sector} onChange={e => setSector(e.target.value)}><option value="">Todos</option>{listaSectores.map(([id, nombre]) => <option key={id} value={id}>{nombre}</option>)}</select></label>
       <label>Tipo de cliente<select value={tipo} onChange={e => setTipo(e.target.value)}><option value="">Todos</option>{opciones.tipos.map(([id, nombre]) => <option key={id} value={id}>{nombre}</option>)}</select></label>
     </div>
     <div className="kpis">
@@ -111,22 +148,21 @@ function GraficoVentas({ serie, unidad }) {
 // Historia #72: ranking de productos para planificar inventario. Las unidades salen de las líneas de los
 // pedidos, que GET /pedidos no trae: se piden a GET /reportes/productos con el mismo período.
 function ProductosVendidos({ rango, actualizadoEn }) {
-  const [contar, setContar] = useState('entregados');
   const [datos, setDatos] = useState(null);
   const [error, setError] = useState('');
   useEffect(() => {
     const controller = new AbortController();
     setError('');
-    api(`/reportes/productos?${parametrosRanking(rango, contar)}`, { signal: controller.signal })
+    api(`/reportes/productos?${parametrosRanking(rango)}`, { signal: controller.signal })
       .then(filas => setDatos(Array.isArray(filas) ? filas : []))
       .catch(e => { if (e.name !== 'AbortError') { setError(e.message); setDatos(null); } });
     return () => controller.abort();
-  }, [rango.desde, rango.hasta, contar, actualizadoEn]);
+  }, [rango.desde, rango.hasta, actualizadoEn]);
   const { total, filas } = useMemo(() => rankingConParticipacion(datos || []), [datos]);
 
   function descargar() {
     // BOM para que Excel lea bien las tildes.
-    const url = URL.createObjectURL(new Blob(['﻿' + csvRanking(filas, rango, contar)], { type: 'text/csv;charset=utf-8' }));
+    const url = URL.createObjectURL(new Blob(['﻿' + csvRanking(filas, rango)], { type: 'text/csv;charset=utf-8' }));
     const enlace = Object.assign(document.createElement('a'), { href: url, download: nombreArchivo(rango) });
     enlace.click();
     URL.revokeObjectURL(url);
@@ -134,10 +170,7 @@ function ProductosVendidos({ rango, actualizadoEn }) {
 
   return <section className="productos-vendidos">
     <div className="title"><h2>Productos más vendidos</h2>{filas.length > 0 && <button onClick={descargar}>Descargar CSV</button>}</div>
-    <p>Ranking por unidades en el período, de mayor a menor.</p>
-    <div className="filters periodo">
-      <label>Contar<select value={contar} onChange={e => setContar(e.target.value)}>{MODOS.map(([valor, texto]) => <option key={valor} value={valor}>{texto}</option>)}</select></label>
-    </div>
+    <p>Ranking por unidades vendidas (pedidos entregados) en el período, de mayor a menor.</p>
     {error && <p role="alert" className="error">No se pudo cargar el ranking: {error}</p>}
     {!datos && !error && <p role="status" className="muted">Cargando…</p>}
     {datos && <>
@@ -149,8 +182,8 @@ function ProductosVendidos({ rango, actualizadoEn }) {
           <strong>{f.unidades}<small>{f.unidades === 1 ? 'unidad' : 'unidades'}</small></strong>
         </li>)}
       </ol>
-      {filas.length > 0 && <p className="muted">{total === 1 ? '1 unidad' : `${total} unidades`} en total.{contar === 'entregados' ? ' Cuenta lo realmente entregado (registro de entrega).' : ' En los pedidos entregados cuenta lo entregado; en el resto, lo pedido.'}</p>}
-      {!filas.length && <p>{contar === 'entregados' ? 'No hay pedidos entregados en el período. Las entregas se registran desde Ruta en curso o Despacho; mientras tanto puedes ver lo pedido.' : 'No hay pedidos en el período elegido.'}</p>}
+      {filas.length > 0 && <p className="muted">{total === 1 ? '1 unidad' : `${total} unidades`} en total. Cuenta lo realmente entregado (registro de entrega).</p>}
+      {!filas.length && <p>No hay pedidos entregados en el período. Las entregas se registran desde Ruta en curso o Despachos.</p>}
     </>}
   </section>;
 }

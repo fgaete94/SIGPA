@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from './api';
 import { fechaHora, hoyChile } from './fechas';
-import { cargaRuta, columnasProductos, etiquetaProducto, fechaHoja, filasHoja, totalPorCobrar } from './hojaRuta';
+import { cargaRuta, columnasProductos, etiquetaProducto, fechaHoja, filasHoja, nombreArchivoHoja, totalPorCobrar } from './hojaRuta';
 import { SIN_VIAJE, agruparPorViaje, tituloGrupo } from './viajes';
 
 const dinero = n => new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP', maximumFractionDigits: 0 }).format(n);
@@ -16,10 +16,20 @@ function recordarConductor(nombre) {
   try { localStorage.setItem(CLAVE_CONDUCTOR, nombre); } catch { /* sin almacenamiento se vuelve a escribir la próxima vez */ }
 }
 
-// Hoja de ruta para el conductor: vista previa a pantalla completa e impresión en horizontal.
+// El generador de PDF no dibuja un SVG sin tamaño propio: se le da uno. Si falla, el PDF sale igual, sin el logo.
+async function prepararLogo(img) {
+  if (img.src.startsWith('data:')) return;
+  try {
+    const svg = await (await fetch(img.src)).text();
+    img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg.replace('<svg ', '<svg width="464" height="456" '))}`;
+    await img.decode();
+  } catch { /* sin logo */ }
+}
+
+// Hoja de ruta para el conductor: vista previa a pantalla completa y descarga en PDF, en horizontal. ruta: el número si es de una sola.
 // Recibe una copia fija de las paradas (con el orden que se ve en "Ruta en curso"), así una recarga
 // de datos no la cambia mientras está abierta. Los productos salen de GET /pedidos/{id} de cada parada.
-export default function HojaDeRuta({ paradas, viajes = [], clientes, productos, onClose }) {
+export default function HojaDeRuta({ paradas, viajes = [], ruta = null, clientes, productos, onClose }) {
   const [detalles, setDetalles] = useState(null);
   const [fallidos, setFallidos] = useState([]);
   const [sectores, setSectores] = useState([]);
@@ -27,6 +37,9 @@ export default function HojaDeRuta({ paradas, viajes = [], clientes, productos, 
   const [dia, setDia] = useState(() => hoyChile());
   const [conductor, setConductor] = useState(leerConductor);
   const cerrar = useRef(null);
+  const hoja = useRef(null);
+  const [descargando, setDescargando] = useState(false);
+  const [errorPdf, setErrorPdf] = useState('');
   const alCerrar = useRef(onClose);
   alCerrar.current = onClose;
 
@@ -59,9 +72,24 @@ export default function HojaDeRuta({ paradas, viajes = [], clientes, productos, 
     return () => { document.removeEventListener('keydown', alPresionar); document.body.style.overflow = overflow; };
   }, []);
 
-  function imprimir() {
+  // La librería se carga recién al descargar, para que el panel no la descargue si no se usa.
+  async function descargar() {
     recordarConductor(conductor.trim());
-    window.print();
+    setDescargando(true); setErrorPdf('');
+    try {
+      const { default: html2pdf } = await import('html2pdf.js');
+      await prepararLogo(hoja.current.querySelector('.hoja-marca img'));
+      await html2pdf().set({
+        filename: nombreArchivoHoja(dia, ruta),
+        margin: 8,
+        image: { type: 'jpeg', quality: 0.95 },
+        html2canvas: { scale: 2, useCORS: true, windowWidth: 1120 },
+        jsPDF: { unit: 'mm', format: 'letter', orientation: 'landscape' },
+        // Con todas las rutas, cada una parte en su propia página.
+        pagebreak: { mode: ['css', 'legacy'], before: '.hoja-viaje ~ .hoja-viaje', avoid: ['.hoja-paradas tbody', '.hoja-resumen', '.hoja-pie'] },
+      }).from(hoja.current).save();
+    } catch { setErrorPdf('No se pudo generar el PDF. Inténtalo de nuevo.'); }
+    finally { setDescargando(false); }
   }
 
   const filas = filasHoja(paradas, detalles || {}, clientes, sectores);
@@ -78,24 +106,25 @@ export default function HojaDeRuta({ paradas, viajes = [], clientes, productos, 
   return createPortal(<div className="hoja-capa" role="dialog" aria-modal="true" aria-labelledby="hoja-titulo">
     <div className="hoja-barra">
       <div className="hoja-barra-texto">
-        <h2 id="hoja-titulo">Hoja de ruta</h2>
-        <p className="muted">Vista previa. Se imprime en horizontal; en el diálogo de impresión también puedes elegir "Guardar como PDF".</p>
+        <h2 id="hoja-titulo">Hoja de ruta{ruta != null && ` · Ruta ${ruta}`}</h2>
+        <p className="muted">Vista previa. Se descarga como PDF, en horizontal.</p>
       </div>
       <label>Fecha de reparto<input type="date" value={dia} onChange={e => setDia(e.target.value)}/></label>
       <label>Conductor<input value={conductor} placeholder="Opcional" maxLength={40} onChange={e => setConductor(e.target.value)}/></label>
       <div className="acciones">
-        <button className="primary" disabled={!listo} onClick={imprimir}>Imprimir</button>
+        <button className="primary" disabled={!listo || descargando} onClick={descargar}>{descargando ? 'Generando PDF…' : 'Descargar PDF'}</button>
         <button ref={cerrar} onClick={onClose}>Cerrar</button>
       </div>
       {!detalles && <p role="status" className="muted">Cargando los productos de cada pedido…</p>}
+      {errorPdf && <p role="alert" className="error">{errorPdf}</p>}
       {fallidos.length > 0 && <div role="alert" className="error">No se pudo cargar el detalle {fallidos.length === 1 ? 'del pedido' : 'de los pedidos'} {fallidos.map(id => `#${id}`).join(', ')}: la hoja saldría sin sus productos. <button onClick={() => setIntento(n => n + 1)}>Reintentar</button></div>}
     </div>
     <div className="hoja-papel">
-      <article className="hoja" aria-label="Hoja de ruta para imprimir">
+      <article className="hoja" ref={hoja} aria-label="Hoja de ruta para descargar">
         <div className="hoja-cabecera">
           <div className="hoja-marca">
             <img src="/marca/logo.svg" alt="Agua DM" width="2320" height="2280"/>
-            <div><strong>Hoja de ruta</strong><span>Agua DM · Reparto a domicilio</span></div>
+            <div><strong>Hoja de ruta</strong><span>{ruta != null && `Ruta ${ruta} · `}Agua DM · Reparto a domicilio</span></div>
           </div>
           <dl className="hoja-datos">
             <div><dt>Fecha</dt><dd className="hoja-fecha">{fechaHoja(dia) || <span className="hoja-linea"/>}</dd></div>
@@ -116,7 +145,7 @@ export default function HojaDeRuta({ paradas, viajes = [], clientes, productos, 
             <table className="hoja-carga">
               <thead><tr><th scope="col"><span className="hoja-oculto">Fila</span></th>{encabezadosProductos}<th scope="col">Total</th></tr></thead>
               <tbody>
-                {conViajes && grupos.map(g => { const c = cargaRuta(g.paradas, columnas); return <tr key={g.viaje ?? 'sin-viaje'}><th scope="row">{g.viaje != null ? `Viaje ${g.viaje}` : 'Sin viaje'}</th>{columnas.map(n => <td key={n}>{c[n] || '–'}</td>)}<td>{sumar(c)}</td></tr>; })}
+                {conViajes && grupos.map(g => { const c = cargaRuta(g.paradas, columnas); return <tr key={g.viaje ?? 'sin-viaje'}><th scope="row">{g.viaje != null ? `Ruta ${g.viaje}` : 'Sin ruta'}</th>{columnas.map(n => <td key={n}>{c[n] || '–'}</td>)}<td>{sumar(c)}</td></tr>; })}
                 <tr><th scope="row">{conViajes ? 'Total a entregar' : 'A entregar'}</th>{columnas.map(n => <td key={n}>{carga[n] || '–'}</td>)}<td>{unidades}</td></tr>
                 <tr><th scope="row">Cargado</th>{columnas.map(n => <td key={n}/>)}<td/></tr>
                 <tr><th scope="row">Vuelve</th>{columnas.map(n => <td key={n}/>)}<td/></tr>

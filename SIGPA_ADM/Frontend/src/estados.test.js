@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ACCION_DESPACHO, despachables, textoAccion, textoCambio } from './estados.js';
+import { ACCION_DESPACHO, despachables, textoAccion, textoCambio, enDespacho } from './estados.js';
 import { fechaHora } from './fechas.js';
 
 test('despacho: solo confirmado ↔ en despacho, como el backend', () => {
@@ -18,4 +18,8 @@ test('historial en texto, con la hora de Chile', () => {
   assert.equal(textoAccion('otra_accion'), 'otra_accion');
   // 23:36 UTC del 5 de octubre = 20:36 en Chile (UTC-3).
   assert.match(fechaHora('2026-10-05T23:36:49.864993'), /05-10-2026,? 20:36/);
+});
+
+test('enDespacho lista solo los pedidos que ya salieron', () => {
+  assert.deepEqual(enDespacho([{ id: 1, estado: 'en_despacho' }, { id: 2, estado: 'confirmado' }, { id: 3, estado: 'entregado' }]), [1]);
 });

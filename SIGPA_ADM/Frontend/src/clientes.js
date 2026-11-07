@@ -1,3 +1,5 @@
+import { leerCoordenadas } from './planificacion.js';
+
 // Campos de texto que el panel permite editar; los vacíos opcionales se guardan como null.
 const TEXTO = ['nombre', 'apellido_paterno', 'apellido_materno', 'telefono', 'direccion'];
 const IDS = ['tipo_cliente_id','comuna_id', 'sector_id'];
@@ -27,6 +29,7 @@ export function clienteForm(c = {}) {
     ...Object.fromEntries(TEXTO.map(k => [k, c[k] ?? ''])),
     ...Object.fromEntries(IDS.map(k => [k, c[k] == null ? '' : String(c[k])])),
     dia_reparto: c.dia_reparto ?? '', activo: c.activo !== false, opt_out_whatsapp: !!c.opt_out_whatsapp,
+    coordenadas: c.latitud != null && c.longitud != null ? `${c.latitud}, ${c.longitud}` : '',
   };
 }
 
@@ -37,6 +40,10 @@ function leerForm(form, telefonoActual) {
     dia_reparto: form.dia_reparto || null, activo: form.activo, opt_out_whatsapp: form.opt_out_whatsapp,
   };
   for (const [k, mensaje] of Object.entries(OBLIGATORIOS)) if (!valores[k]) return { error: mensaje };
+  // Opcionales: vacías, el servicio de rutas ubica al cliente por su dirección.
+  const coordenadas = form.coordenadas?.trim() ? leerCoordenadas(form.coordenadas) : { latitud: null, longitud: null };
+  if (coordenadas.error) return { error: coordenadas.error };
+  Object.assign(valores, coordenadas);
   const telefono = normalizarTelefono(valores.telefono);
   // El mismo número de antes escrito con otro formato no es un cambio (y no se valida un dato antiguo que no se tocó).
   if (telefonoActual && telefono === normalizarTelefono(telefonoActual)) return { valores: { ...valores, telefono: telefonoActual }, aviso: '' };
@@ -55,7 +62,10 @@ export function nuevoCliente(form, clientes = []) {
   if (!valores.comuna_id) return { error: 'La comuna es obligatoria.' };
   const otro = telefonoRepetido(valores.telefono, clientes);
   if (otro) return repetido(otro);
-  return aviso ? { datos: valores, aviso } : { datos: valores };
+  // Sin coordenadas no se envían: el cliente nuevo queda igual que antes.
+  const { latitud, longitud, ...resto } = valores;
+  const datos = latitud == null ? resto : valores;
+  return aviso ? { datos, aviso } : { datos };
 }
 
 // Devuelve solo los campos modificados, para que el PATCH y la auditoría reflejen el cambio real.

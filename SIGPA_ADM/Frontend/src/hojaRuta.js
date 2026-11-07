@@ -5,6 +5,15 @@
 // producto) para que el conductor anote lo que un cliente pida en el momento. Las promos se agregan solo si van en la ruta.
 export const COLUMNAS_FIJAS = ['Bidón 20L Recarga', 'Bidón 12L Recarga', 'Bidón 20L Nuevo', 'Bidón 12L Nuevo', 'Dispensador Básico', 'Dispensador USB'];
 
+// Qué se puede descargar: cada ruta por separado y, si hay más de una, todas juntas.
+export function opcionesDescarga(grupos) {
+  const rutas = grupos.filter(g => g.viaje != null).map(g => ({ texto: `Ruta ${g.viaje}`, ruta: g.viaje, paradas: g.paradas }));
+  const todas = { texto: 'Todas las rutas', ruta: null, paradas: grupos.flatMap(g => g.paradas) };
+  return rutas.length > 1 || grupos.length > rutas.length ? [...rutas, todas] : rutas.length ? rutas : [todas];
+}
+
+export const nombreArchivoHoja = (dia, ruta) => `hoja-de-ruta-${dia}${ruta != null ? `-ruta-${ruta}` : ''}.pdf`;
+
 // Etiqueta de la columna de cada producto: 'Bidón 20L Recarga' → 'Recarga 20L', como en la planilla.
 export function etiquetaProducto(nombre) {
   const promo = nombre.match(/^Promo Dispensador (.+?) \+ (\d+) Bid/i);

@@ -7,7 +7,7 @@ const parada = (pedido_id, latitud = -33 - pedido_id / 100, longitud = -71.5) =>
 test('los puntos se numeran como la lista y marcan la primera y la última parada del viaje', () => {
   const [capa] = capasMapa([{ viaje: 1, paradas: [parada(1), parada(2), parada(3)] }]);
   assert.deepEqual(capa.puntos.map(p => [p.id, p.numero, p.tipo]), [[1, 1, 'inicio'], [2, 2, ''], [3, 3, 'fin']]);
-  assert.equal(capa.etiqueta, 'Viaje 1');
+  assert.equal(capa.etiqueta, 'Ruta 1');
   assert.equal(capa.puntos[0].nombre, 'C1');
   assert.equal(capa.puntos[0].direccion, 'Calle 1');
 });
@@ -31,7 +31,7 @@ test('tieneCoordenadas exige las dos, y el 0 cuenta', () => {
 
 test('cada viaje tiene su color y en la vista previa se muestra el número renumerado', () => {
   const capas = capasMapa([{ viaje: 1, numero: 1, paradas: [parada(1)] }, { viaje: 3, numero: 2, paradas: [parada(2)] }]);
-  assert.deepEqual(capas.map(c => c.etiqueta), ['Viaje 1', 'Viaje 2']);
+  assert.deepEqual(capas.map(c => c.etiqueta), ['Ruta 1', 'Ruta 2']);
   assert.deepEqual(capas.map(c => c.color), COLORES_VIAJE.slice(0, 2));
   assert.deepEqual(capas.map(c => c.clave), [1, 3]);
 });
@@ -39,7 +39,7 @@ test('cada viaje tiene su color y en la vista previa se muestra el número renum
 test('una ruta anterior a los viajes va en una capa propia', () => {
   const [capa] = capasMapa([{ viaje: null, paradas: [parada(1)] }]);
   assert.equal(capa.clave, 'sin-viaje');
-  assert.equal(capa.etiqueta, 'Sin viaje');
+  assert.equal(capa.etiqueta, 'Sin ruta');
 });
 
 test('los pedidos guardados usan id y direccion', () => {

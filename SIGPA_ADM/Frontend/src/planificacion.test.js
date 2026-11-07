@@ -31,7 +31,7 @@ test('explica los errores del backend al planificar', () => {
   assert.deepEqual(detallesErrorRuta(conflicto), ['Ya no existen: #4.', 'El pedido #7 ahora está "en despacho".', 'No se guardó nada: los pedidos siguen como estaban.']);
 
   const tope = Object.assign(new Error('x'), { status: 422, detalle: { mensaje: 'x', maximo: 30, recibidos: 31 } });
-  assert.equal(detallesErrorRuta(tope)[0], 'Seleccionaste 31 pedidos; el máximo por ruta es 30.');
+  assert.equal(detallesErrorRuta(tope)[0], 'Seleccionaste 31 pedidos; el máximo por planificación es 30.');
 
   const repetidos = Object.assign(new Error('x'), { status: 422, detalle: { mensaje: 'x', pedido_ids: [3] } });
   assert.equal(detallesErrorRuta(repetidos)[0], 'Pedidos repetidos: #3.');
@@ -44,7 +44,7 @@ test('explica los errores del backend al planificar', () => {
   const pesado = Object.assign(new Error('x'), { status: 422, detalle: { mensaje: 'x', capacidad_kg: 1100, sobre_capacidad: [{ pedido_id: 5, peso_kg: 1200 }] } });
   assert.equal(detallesErrorRuta(pesado)[0], 'El pedido #5 pesa 1.200 kg: solo ya supera lo que carga el camión (1.100 kg).');
   const total = Object.assign(new Error('x'), { status: 422, detalle: { mensaje: 'x', peso_total_kg: 3500, maximo_kg: 3300 } });
-  assert.match(detallesErrorRuta(total)[0], /^Lo seleccionado pesa 3\.500 kg y el máximo por ruta es 3\.300 kg/);
+  assert.match(detallesErrorRuta(total)[0], /^Lo seleccionado pesa 3\.500 kg y el máximo por planificación es 3\.300 kg/);
   const confirmar = Object.assign(new Error('x'), { status: 422, detalle: { mensaje: 'x', problemas: ['viaje 1: pesa 1200 kg y la capacidad es 1100 kg'] } });
   assert.deepEqual(detallesErrorRuta(confirmar), ['viaje 1: pesa 1200 kg y la capacidad es 1100 kg', 'No se guardó nada: los pedidos siguen como estaban.']);
   const cuota = Object.assign(new Error('El servicio de rutas respondió con error (429). Los pedidos siguen pendientes.'), { status: 502, detalle: { mensaje: 'El servicio de rutas respondió con error (429). Los pedidos siguen pendientes.' } });

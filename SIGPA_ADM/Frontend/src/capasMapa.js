@@ -1,12 +1,14 @@
 // Mapa de la ruta (vista previa y ruta en curso): lógica que no depende de Leaflet ni de React.
+import { resuelta } from './estados.js';
+import { textoResultado } from './reparto.js';
 
 // Sin verde ni rojo, que marcan la primera y la última parada. MAX_VIAJES es 3.
-export const COLORES_VIAJE = ['#1d3bb3', '#7b2fb3', '#b35c00'];
+export const COLORES_VIAJE = ['#2f6fd6', '#d9730d', '#8a3fc4'];
 
 export const tieneCoordenadas = p => Number.isFinite(p.latitud) && Number.isFinite(p.longitud);
 
-// La próxima parada por entregar: la primera de la lista que no está entregada (null si ya están todas).
-export const siguienteParada = grupos => grupos.flatMap(g => g.paradas).find(p => p.estado !== 'entregado') ?? null;
+// La próxima parada por resolver: la primera de la lista sin resultado (null si ya están todas).
+export const siguienteParada = grupos => grupos.flatMap(g => g.paradas).find(p => !resuelta(p)) ?? null;
 
 // grupos: agruparPorViaje (en la vista previa traen además "numero"). Cada capa es un viaje con sus puntos.
 // El número de cada punto es su posición en el viaje, igual que en la lista, aunque otra parada no tenga
@@ -26,12 +28,13 @@ export function capasMapa(grupos, { avance = false } = {}) {
       const id = p.pedido_id ?? p.id;
       return [{
         id, numero: k + 1, latitud: p.latitud, longitud: p.longitud, desfase,
-        tipo: avance ? (p.estado === 'entregado' ? 'entregada' : p === siguiente ? 'siguiente' : '') : k === 0 ? 'inicio' : k === ultimo ? 'fin' : '',
+        tipo: avance ? (p.estado === 'entregado' ? 'entregada' : p.estado === 'no_entregado' ? 'no-entregada' : p === siguiente ? 'siguiente' : '') : k === 0 ? 'inicio' : k === ultimo ? 'fin' : '',
         nombre: p.cliente_nombre || `Pedido #${id}`,
         direccion: p.direccion_texto ?? p.direccion ?? null,
+        resultado: textoResultado(p),
       }];
     });
-    return { clave: g.viaje ?? 'sin-viaje', etiqueta: g.viaje == null ? 'Sin viaje' : `Viaje ${g.numero ?? g.viaje}`, color: COLORES_VIAJE[i % COLORES_VIAJE.length], total: g.paradas.length, puntos };
+    return { clave: g.viaje ?? 'sin-viaje', etiqueta: g.viaje == null ? 'Sin ruta' : `Ruta ${g.numero ?? g.viaje}`, color: COLORES_VIAJE[i % COLORES_VIAJE.length], total: g.paradas.length, puntos };
   });
 }
 
