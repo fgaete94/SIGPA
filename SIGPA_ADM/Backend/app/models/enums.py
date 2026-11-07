@@ -18,4 +18,5 @@ class EstadoPedido(str, enum.Enum):
     CONFIRMADO = "confirmado"
     EN_DESPACHO = "en_despacho"
     ENTREGADO = "entregado"
+    NO_ENTREGADO = "no_entregado"
     CANCELADO = "cancelado"

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -24,6 +24,11 @@ class PedidoOut(BaseModel):
     orden_entrega: int | None = None
     viaje: int | None = None
     motivo_revision_direccion: str | None = None
+    repartidor_id: int | None = None
+    medio_pago: str | None = None
+    resultado_en: datetime | None = None
+    reagendado_para: date | None = None
+    entrega_ajustada: bool = False
 
 
 class DetallePedidoLineaOut(BaseModel):
@@ -76,6 +81,11 @@ class LineaEntregaRequest(BaseModel):
 
 class RegistrarEntregaRequest(BaseModel):
     lineas: list[LineaEntregaRequest] = Field(min_length=1)
+
+
+class ReagendarPedidoRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    para: date
 
 
 class CambiarEstadoRequest(BaseModel):

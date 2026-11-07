@@ -14,12 +14,14 @@ from app.models.enums import DiaSemana, EstadoPedido
 from app.models.mensaje_whatsapp import MensajeWhatsApp
 from app.models.pedido import Pedido
 from app.models.producto import Producto
+from app.models.repartidor import CargaCombustible, IntentoNoEntregado, Repartidor
 from app.models.sector import Sector
 from app.models.tipo_cliente import TipoCliente
 
 __all__ = [
     "Auditoria",
     "BorradorPedido",
+    "CargaCombustible",
     "Cliente",
     "ClienteProductoHabitual",
     "Comuna",
@@ -27,9 +29,11 @@ __all__ = [
     "DetallePedido",
     "DiaSemana",
     "EstadoPedido",
+    "IntentoNoEntregado",
     "MensajeWhatsApp",
     "Pedido",
     "Producto",
+    "Repartidor",
     "Sector",
     "TipoCliente",
 ]

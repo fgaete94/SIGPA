@@ -29,12 +29,12 @@ export function agruparPorViaje(paradas, viajes = []) {
 // "Viaje 2 · 1.240 kg · termina en planta". Sin número de viaje (ruta anterior a los viajes) no hay encabezado.
 export function encabezadoViaje({ viaje, peso_kg, termina_en }) {
   if (viaje == null) return null;
-  return [`Viaje ${viaje}`, Number.isFinite(peso_kg) && kilos(peso_kg), DESTINO[termina_en]].filter(Boolean).join(' · ');
+  return [`Ruta ${viaje}`, Number.isFinite(peso_kg) && kilos(peso_kg), DESTINO[termina_en]].filter(Boolean).join(' · ');
 }
 
 // Si en la ruta conviven pedidos con viaje y pedidos de una ruta anterior (sin viaje), estos últimos van al
 // final con su propio título; no cuentan como un viaje más.
-export const SIN_VIAJE = 'Sin viaje · planificados antes de los viajes';
+export const SIN_VIAJE = 'Sin ruta · planificados antes de separar por rutas';
 export const tituloGrupo = (grupo, grupos) => (grupo.viaje != null ? encabezadoViaje(grupo) : grupos.some(g => g.viaje != null) ? SIN_VIAJE : null);
 export const contarViajes = grupos => grupos.filter(g => g.viaje != null).length;
 
@@ -50,10 +50,10 @@ export const terminaEn = pesos => pesos.map((peso, i) => (pesos.length >= 2 && i
 // Lo que el backend rechazaría al confirmar (pesos de cada viaje en orden): así se avisa antes de enviar.
 export function problemasViajes(pesos) {
   const problemas = [];
-  if (pesos.length > MAX_VIAJES) problemas.push(`Hay ${pesos.length} viajes y el máximo es ${MAX_VIAJES}.`);
-  pesos.forEach((peso, i) => { if (peso > CAPACIDAD_KG) problemas.push(`El viaje ${i + 1} pesa ${kilos(peso)} y el camión carga hasta ${kilos(CAPACIDAD_KG)}.`); });
+  if (pesos.length > MAX_VIAJES) problemas.push(`Hay ${pesos.length} rutas y el máximo es ${MAX_VIAJES}.`);
+  pesos.forEach((peso, i) => { if (peso > CAPACIDAD_KG) problemas.push(`La ruta ${i + 1} pesa ${kilos(peso)} y el camión carga hasta ${kilos(CAPACIDAD_KG)}.`); });
   const ultimo = pesos.at(-1);
-  if (pesos.length >= 2 && pesos.slice(0, -1).some(peso => peso < ultimo)) problemas.push(`El último viaje (${pesos.length}) tiene que ser el más liviano: pasa paradas de ese viaje a otro o vuelve al orden propuesto.`);
+  if (pesos.length >= 2 && pesos.slice(0, -1).some(peso => peso < ultimo)) problemas.push(`La última ruta (${pesos.length}) tiene que ser la más liviana: pasa paradas de esa ruta a otra o vuelve al orden propuesto.`);
   return problemas;
 }
 

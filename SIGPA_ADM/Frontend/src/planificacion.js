@@ -41,7 +41,7 @@ const ids = lista => lista.map(id => `#${id}`).join(', ');
 export function detallesErrorRuta(error) {
   const d = error?.detalle && !Array.isArray(error.detalle) ? error.detalle : {};
   const lineas = [];
-  if (d.maximo != null) lineas.push(`Seleccionaste ${d.recibidos} pedidos; el máximo por ruta es ${d.maximo}.`);
+  if (d.maximo != null) lineas.push(`Seleccionaste ${d.recibidos} pedidos; el máximo por planificación es ${d.maximo}.`);
   if (d.inexistentes?.length) lineas.push(`Ya no existen: ${ids(d.inexistentes)}.`);
   for (const p of d.estado_invalido || []) lineas.push(`El pedido #${p.pedido_id} ahora está "${String(p.estado).replaceAll('_', ' ')}".`);
   if (d.pedido_ids?.length && !d.inexistentes && !d.estado_invalido) lineas.push(`Pedidos repetidos: ${ids(d.pedido_ids)}.`);
@@ -51,7 +51,7 @@ export function detallesErrorRuta(error) {
     lineas.push(`Sin peso calculable: ${d.sin_peso.map(id => `#${id}${productos.get(id)?.length ? ` (${productos.get(id).join(', ')})` : ''}`).join(', ')}. Sácalos de la selección hasta que sus productos tengan peso registrado.`);
   }
   for (const p of d.sobre_capacidad || []) lineas.push(`El pedido #${p.pedido_id} pesa ${kilos(p.peso_kg)}: solo ya supera lo que carga el camión${d.capacidad_kg != null ? ` (${kilos(d.capacidad_kg)})` : ''}.`);
-  if (d.peso_total_kg != null) lineas.push(`Lo seleccionado pesa ${kilos(d.peso_total_kg)} y el máximo por ruta es ${kilos(d.maximo_kg)}: saca pedidos y déjalos para otra ruta.`);
+  if (d.peso_total_kg != null) lineas.push(`Lo seleccionado pesa ${kilos(d.peso_total_kg)} y el máximo por planificación es ${kilos(d.maximo_kg)}: saca pedidos y déjalos para otra planificación.`);
   for (const problema of d.problemas || []) lineas.push(problema);
   if (d.codigo != null) lineas.push(`Código del servicio de rutas: ${d.codigo}.`);
   // n8n reenvía el 429 de OpenRouteService cuando se acaba su cuota gratuita (por minuto o diaria).

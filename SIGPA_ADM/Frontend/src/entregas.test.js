@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { datosEntrega, errorEntrega, formEntrega, leerCantidad, puedeEntregarse, resumenEntrega } from './entregas.js';
+import { ajustarEntregada, datosEntrega, errorEntrega, formEntrega, leerCantidad, puedeEntregarse, resumenEntrega } from './entregas.js';
 
 const lineas = [
   { id: 11, producto_nombre: 'Bidón 20L Recarga', cantidad_solicitada: 3, cantidad_entregada: null, precio_unitario: '2500.00' },
@@ -49,4 +49,18 @@ test('entregar más de lo pedido se permite pero se informa', () => {
 
 test('si ya había cantidades entregadas se parte de ellas', () => {
   assert.deepEqual(formEntrega([{ ...lineas[0], cantidad_entregada: 2 }]).map(l => l.entregada), ['2']);
+});
+
+test('el repartidor entrega menos o más de lo pedido, y el total se recalcula', () => {
+  const pedido = [{ id: 1, producto_nombre: 'Bidón 20L', cantidad_solicitada: 3, cantidad_entregada: null, precio_unitario: 2500 }];
+  const menos = ajustarEntregada(formEntrega(pedido), 1, -1);
+  assert.equal(menos[0].entregada, '2');
+  assert.equal(resumenEntrega(menos).total, 5000);
+  assert.equal(resumenEntrega(menos).totalPedido, 7500);
+  assert.equal(resumenEntrega(menos).parcial, true);
+  const mas = ajustarEntregada(formEntrega(pedido), 1, 1);
+  assert.equal(mas[0].entregada, '4');
+  assert.equal(resumenEntrega(mas).total, 10000);
+  assert.deepEqual(resumenEntrega(mas).demas, ['Bidón 20L']);
+  assert.equal(ajustarEntregada([{ ...menos[0], entregada: '0' }], 1, -1)[0].entregada, '0');
 });

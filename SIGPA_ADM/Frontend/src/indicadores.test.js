@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { diaChile, hoyChile, sumarDias } from './fechas.js';
-import { SIN_COMUNA, SIN_TIPO, claveGrupo, etiquetaGrupo, opcionesVentas, pedidosPorComuna, rangoPeriodo, ventasPorPeriodo } from './indicadores.js';
+import { SIN_COMUNA, SIN_SECTOR, SIN_TIPO, claveGrupo, etiquetaGrupo, opcionesSector, opcionesVentas, pedidosPorComuna, rangoPeriodo, ventasPorPeriodo } from './indicadores.js';
 
 test('las fechas sin zona del backend se leen como UTC y se pasan al día de Chile', () => {
   // 01:30 UTC del 9 de octubre = 22:30 del 8 de octubre en Chile (UTC-3).
@@ -83,4 +83,27 @@ test('opciones de filtro de ventas', () => {
   assert.deepEqual(comunas, ['Concón', 'Quilpué', SIN_COMUNA]);
   assert.deepEqual(tipos, [['1', 'Empresa'], ['2', 'Hogar'], [SIN_TIPO, 'Sin tipo asignado']]);
   assert.equal(tipoPorCliente.get(1), 2);
+});
+
+test('las ventas se filtran por el sector del cliente', () => {
+  const lista = [
+    { cliente_id: 1, estado: 'entregado', total: 1000, creado_en: '2026-10-05T15:00:00' },
+    { cliente_id: 2, estado: 'entregado', total: 2000, creado_en: '2026-10-05T15:00:00' },
+    { cliente_id: 3, estado: 'pendiente', total: 4000, creado_en: '2026-10-05T15:00:00' },
+  ];
+  const sectorPorCliente = new Map([[1, 7], [2, null], [3, 7]]);
+  const con = sector => ventasPorPeriodo(lista, { sector, sectorPorCliente });
+  assert.equal(con('').monto, 3000);
+  assert.equal(con('7').monto, 1000);
+  assert.deepEqual(con('7').enCurso, { pedidos: 1, monto: 4000 });
+  assert.equal(con(SIN_SECTOR).monto, 2000);
+});
+
+test('el filtro ofrece los sectores con clientes y se acota a la comuna elegida', () => {
+  const clientes = [{ id: 1, sector_id: 1, comuna_nombre: 'Quilpué' }, { id: 2, sector_id: 2, comuna_nombre: 'Viña del Mar' }, { id: 3, sector_id: null, comuna_nombre: 'Viña del Mar' }];
+  const sectores = [{ id: 1, nombre: 'Belloto', comuna_nombre: 'Quilpué' }, { id: 2, nombre: 'Gómez Carreño', comuna_nombre: 'Viña del Mar' }, { id: 3, nombre: 'Sin clientes', comuna_nombre: 'Quilpué' }];
+  assert.deepEqual(opcionesSector(clientes, sectores), [['1', 'Belloto'], ['2', 'Gómez Carreño'], [SIN_SECTOR, 'Sin sector']]);
+  assert.deepEqual(opcionesSector(clientes, sectores, 'Quilpué'), [['1', 'Belloto']]);
+  assert.deepEqual(opcionesSector(clientes, sectores, 'Viña del Mar'), [['2', 'Gómez Carreño'], [SIN_SECTOR, 'Sin sector']]);
+  assert.deepEqual(opcionesSector(clientes, []), [[SIN_SECTOR, 'Sin sector']]);
 });

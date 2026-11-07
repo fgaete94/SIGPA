@@ -12,16 +12,16 @@ test('ordena por viaje y, dentro de cada viaje, por parada; sin viaje al final',
 test('agrupa las paradas por viaje con su peso y destino', () => {
   const grupos = agruparPorViaje([parada(4, 1, 1), parada(2, 1, 2), parada(1, 2, 1)], [{ viaje: 2, peso_kg: 380, termina_en: 'casa' }, { viaje: 1, peso_kg: 1240.5, termina_en: 'planta' }]);
   assert.deepEqual(grupos.map(g => [g.viaje, g.peso_kg, g.paradas.map(p => p.pedido_id)]), [[1, 1240.5, [4, 2]], [2, 380, [1]]]);
-  assert.equal(encabezadoViaje(grupos[0]), 'Viaje 1 · 1.240,5 kg · termina en planta');
-  assert.equal(encabezadoViaje(grupos[1]), 'Viaje 2 · 380 kg · termina en casa del despachador');
-  assert.equal(encabezadoViaje({ viaje: 3 }), 'Viaje 3', 'sin datos del viaje, solo el número');
+  assert.equal(encabezadoViaje(grupos[0]), 'Ruta 1 · 1.240,5 kg · termina en planta');
+  assert.equal(encabezadoViaje(grupos[1]), 'Ruta 2 · 380 kg · termina en casa del despachador');
+  assert.equal(encabezadoViaje({ viaje: 3 }), 'Ruta 3', 'sin datos del viaje, solo el número');
   assert.equal(encabezadoViaje({ viaje: null }), null, 'ruta anterior a los viajes: sin encabezado');
 });
 
 test('los pedidos sin viaje de una ruta anterior no cuentan como viaje y llevan su propio título', () => {
   const mixtos = agruparPorViaje([parada(1, 1, 1), parada(2, 2, 1), parada(3, null, 1)]);
   assert.equal(contarViajes(mixtos), 2);
-  assert.deepEqual(mixtos.map(g => tituloGrupo(g, mixtos)), ['Viaje 1', 'Viaje 2', SIN_VIAJE]);
+  assert.deepEqual(mixtos.map(g => tituloGrupo(g, mixtos)), ['Ruta 1', 'Ruta 2', SIN_VIAJE]);
   const antiguos = agruparPorViaje([parada(3, null, 1), parada(4, null, 2)]);
   assert.equal(contarViajes(antiguos), 0);
   assert.equal(tituloGrupo(antiguos[0], antiguos), null, 'si toda la ruta es anterior, sin título');
@@ -43,7 +43,7 @@ test('problemas que el backend rechazaría al confirmar', () => {
   assert.deepEqual(problemasViajes([1100, 700]), []);
   assert.deepEqual(problemasViajes([700, 700]), [], 'empatar con el último está permitido');
   assert.match(problemasViajes([1101])[0], /pesa 1\.101 kg/);
-  assert.match(problemasViajes([500, 600])[0], /más liviano/);
+  assert.match(problemasViajes([500, 600])[0], /más liviana/);
   assert.match(problemasViajes([100, 100, 100, 50])[0], /máximo es 3/);
 });
 

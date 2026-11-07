@@ -2,11 +2,11 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 
 from app.core.database import SessionLocal
-from app.core.security import get_current_user
+from app.core.security import get_current_user, require_admin
 from app.models.tipo_cliente import TipoCliente
 from app.schemas.cliente import TipoClienteOut
 
-router = APIRouter(tags=["tipos-cliente"], dependencies=[Depends(get_current_user)])
+router = APIRouter(tags=["tipos-cliente"], dependencies=[Depends(require_admin)])
 
 
 @router.get("", response_model=list[TipoClienteOut])

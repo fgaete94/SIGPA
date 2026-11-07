@@ -39,4 +39,7 @@ export function errorEntrega(resumen) {
   return null;
 }
 
+// Botones del repartidor: suben o bajan la cantidad desde 0; el cliente puede recibir menos o más de lo pedido.
+export const ajustarEntregada = (form, id, cambio) => form.map(l => (l.id === id ? { ...l, entregada: String(Math.max(0, Number(l.entregada) + cambio)) } : l));
+
 export const datosEntrega = form => ({ lineas: form.map(l => ({ detalle_id: l.id, cantidad_entregada: leerCantidad(l.entregada) })) });

@@ -25,7 +25,9 @@ export function decodeJwtPayload(token) {
 }
 export function userFromToken(token) {
   const payload = decodeJwtPayload(token);
-  return { id: payload.sub, email: payload.email };
+  // El rol viene en app_metadata de Supabase: solo decide qué pantalla se muestra; lo permitido lo controla el backend.
+  const rol = payload.app_metadata?.rol;
+  return { id: payload.sub, email: payload.email, ...(rol && { rol }) };
 }
 export function isExpiring(expiry, now = Date.now(), margin = EXPIRY_MARGIN_MS) { return !expiry || now >= expiry - margin; }
 

@@ -3,10 +3,10 @@ from datetime import datetime
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from app.core.security import get_current_user
+from app.core.security import get_current_user, require_admin
 from app.services.ruta_service import confirmar_ruta, listar_pendientes, planificar_ruta, ruta_actual
 
-router = APIRouter(tags=["rutas"], dependencies=[Depends(get_current_user)])
+router = APIRouter(tags=["rutas"], dependencies=[Depends(require_admin)])
 
 
 class PedidoPendienteOut(BaseModel):

@@ -3,7 +3,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.database import SessionLocal
-from app.core.security import get_current_user
+from app.core.security import require_admin
 from app.models.producto import Producto
 from app.schemas.producto import ProductoCreate, ProductoOut, ProductoUpdate
 from app.services.auditoria_service import construir_snapshot, registrar_auditoria
@@ -19,7 +19,7 @@ async def listar_productos():
 
 
 @router.post("", response_model=ProductoOut, status_code=status.HTTP_201_CREATED)
-async def crear_producto(datos: ProductoCreate, current_user: dict = Depends(get_current_user)):
+async def crear_producto(datos: ProductoCreate, current_user: dict = Depends(require_admin)):
     async with SessionLocal() as session:
         producto = Producto(**datos.model_dump())
         session.add(producto)
@@ -56,7 +56,7 @@ async def obtener_producto(id: int):
 
 @router.patch("/{id}", response_model=ProductoOut)
 async def actualizar_producto(
-    id: int, datos: ProductoUpdate, current_user: dict = Depends(get_current_user)
+    id: int, datos: ProductoUpdate, current_user: dict = Depends(require_admin)
 ):
     async with SessionLocal() as session:
         producto = await session.get(Producto, id)

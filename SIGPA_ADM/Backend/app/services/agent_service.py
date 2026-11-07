@@ -366,6 +366,8 @@ ESTADOS_PEDIDO_ACTIVOS = (
     EstadoPedido.PENDIENTE,
     EstadoPedido.CONFIRMADO,
     EstadoPedido.EN_DESPACHO,
+    # Sigue vivo hasta que se reagende o se cancele: el cliente debe poder verlo.
+    EstadoPedido.NO_ENTREGADO,
 )
 
 

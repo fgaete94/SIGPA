@@ -1,5 +1,5 @@
 // Estados del pedido (enum estado_pedido) y cambios de despacho de la historia #70.
-export const ETIQUETA_ESTADO = { pendiente: 'Pendiente', confirmado: 'Confirmado', en_despacho: 'En despacho', entregado: 'Entregado', cancelado: 'Cancelado' };
+export const ETIQUETA_ESTADO = { pendiente: 'Pendiente', confirmado: 'Confirmado', en_despacho: 'En despacho', entregado: 'Entregado', no_entregado: 'No entregado', cancelado: 'Cancelado' };
 export const ESTADOS = Object.keys(ETIQUETA_ESTADO);
 
 // Igual que TRANSICIONES_DESPACHO del backend (pedidos.py): solo confirmado ↔ en_despacho.
@@ -20,5 +20,11 @@ export function textoCambio({ estado_anterior, estado_nuevo, detalle }) {
 }
 export const textoAccion = accion => ACCION_HISTORIAL[accion] || accion;
 
+// Una parada ya resuelta por el repartidor: entregada o no entregada.
+export const resuelta = p => p.estado === 'entregado' || p.estado === 'no_entregado';
+
 // Pedidos confirmados de la ruta que pueden salir a reparto juntos.
 export const despachables = paradas => paradas.filter(p => p.estado === 'confirmado').map(p => p.id);
+
+// Pedidos de la ruta que ya salieron, por si se marcaron por error.
+export const enDespacho = paradas => paradas.filter(p => p.estado === 'en_despacho').map(p => p.id);

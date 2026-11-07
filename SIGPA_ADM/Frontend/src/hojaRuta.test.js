@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cantidadesPedido, cargaRuta, columnasProductos, etiquetaProducto, fechaHoja, filasHoja, formatoTelefono, totalPorCobrar } from './hojaRuta.js';
+import { cantidadesPedido, cargaRuta, columnasProductos, etiquetaProducto, fechaHoja, filasHoja, formatoTelefono, totalPorCobrar, nombreArchivoHoja, opcionesDescarga } from './hojaRuta.js';
 
 const linea = (producto_nombre, cantidad_solicitada, precio_unitario) => ({ producto_nombre, cantidad_solicitada, precio_unitario, cantidad_entregada: null });
 
@@ -71,4 +71,23 @@ test('teléfono y fecha en formato chileno', () => {
   assert.equal(formatoTelefono(null), null);
   assert.equal(fechaHoja('2026-10-12'), 'lunes 12-10-2026');
   assert.equal(fechaHoja(''), '');
+});
+
+test('con varias rutas se puede descargar cada una o todas', () => {
+  const grupos = [{ viaje: 1, paradas: [{ id: 1 }] }, { viaje: 2, paradas: [{ id: 2 }] }];
+  const opciones = opcionesDescarga(grupos);
+  assert.deepEqual(opciones.map(o => o.texto), ['Ruta 1', 'Ruta 2', 'Todas las rutas']);
+  assert.deepEqual(opciones[1].paradas, [{ id: 2 }]);
+  assert.deepEqual(opciones[2].paradas, [{ id: 1 }, { id: 2 }]);
+  assert.equal(opciones[2].ruta, null);
+});
+
+test('con una sola ruta no hay nada que elegir', () => {
+  assert.deepEqual(opcionesDescarga([{ viaje: 1, paradas: [{ id: 1 }] }]).map(o => o.texto), ['Ruta 1']);
+  assert.deepEqual(opcionesDescarga([{ viaje: null, paradas: [{ id: 1 }] }]).map(o => o.texto), ['Todas las rutas']);
+});
+
+test('el archivo lleva la fecha y la ruta', () => {
+  assert.equal(nombreArchivoHoja('2026-11-06', 2), 'hoja-de-ruta-2026-11-06-ruta-2.pdf');
+  assert.equal(nombreArchivoHoja('2026-11-06', null), 'hoja-de-ruta-2026-11-06.pdf');
 });

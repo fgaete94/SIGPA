@@ -1,48 +1,55 @@
 import React, { useState } from 'react';
-import { DIAS_REPARTO } from './clientes';
-import { SIN_DIA, VISTAS, diaHoy, gruposDespacho, opcionesDespacho, pedidosVista } from './agrupacionDespacho';
+import { useCerrarAlSalir } from './cerrarAlSalir';
+import { lunesDe } from './datosPeriodo';
+import { aniosCalendario, etiquetaSemana, limitarMes, mesContiguo, semanasDelMes } from './datosRutas';
+import { hoyChile } from './fechas';
+import RutasEntregadas from './RutasEntregadas';
 
-const dinero = n => new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP', maximumFractionDigits: 0 }).format(n);
-const nombreDia = d => (d === SIN_DIA ? 'Sin día de reparto' : DIAS_REPARTO.find(([v]) => v === d)?.[1] || d);
-const pedidosTexto = n => (n === 1 ? '1 pedido' : `${n} pedidos`);
+const DIAS_CALENDARIO = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie'];
+const MESES_CALENDARIO = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
 
-// Historia #67: listado para organizar el despacho, por día de reparto del cliente y comuna.
-// tabla(filas) dibuja cada grupo con la misma tabla de Pedidos (acciones de despacho, entrega y detalle).
-export default function Despacho({ pedidos, tabla }) {
-  const hoy = diaHoy();
-  const [vista, setVista] = useState('por_entregar');
-  const [dia, setDia] = useState('');
-  const [comuna, setComuna] = useState('');
-  const base = pedidosVista(pedidos, vista);
-  const { dias, comunas } = opcionesDespacho(base);
-  const grupos = gruposDespacho(base, { dia, comuna });
-  const cantidad = grupos.reduce((s, g) => s + g.cantidad, 0);
-  const total = grupos.reduce((s, g) => s + g.comunas.reduce((t, c) => t + c.total, 0), 0);
-
-  return <section>
-    <p className="muted">Pedidos confirmados, en despacho y entregados, agrupados por el día de reparto del cliente y su comuna.</p>
-    <div className="filters filtros-despacho">
-      <select aria-label="Estado de despacho" value={vista} onChange={e => setVista(e.target.value)}>{VISTAS.map(([v, texto]) => <option key={v} value={v}>{texto}</option>)}</select>
-      <select aria-label="Día de reparto" value={dia} onChange={e => setDia(e.target.value)}>
-        <option value="">Todos los días ({base.length})</option>
-        {dias.map(([d, n]) => <option key={d} value={d}>{nombreDia(d)}{d === hoy ? ' (hoy)' : ''} ({n})</option>)}
-        {dia && !dias.some(([d]) => d === dia) && <option value={dia}>{nombreDia(dia)} (0)</option>}
-      </select>
-      <select aria-label="Comuna" value={comuna} onChange={e => setComuna(e.target.value)}>
-        <option value="">Todas las comunas ({base.length})</option>
-        {comunas.map(([c, n]) => <option key={c} value={c}>{c} ({n})</option>)}
-        {comuna && !comunas.some(([c]) => c === comuna) && <option value={comuna}>{comuna} (0)</option>}
-      </select>
+// Pestaña Despachos: los despachos realizados de la semana elegida (por defecto, la actual).
+export default function Despacho({ pedidos, clientes }) {
+  const hoy = hoyChile();
+  const [semana, setSemana] = useState(() => lunesDe(hoy));
+  return <>
+    <div className="filtro-despachos">
+      <span id="etiqueta-semana">Semana</span>
+      <CalendarioSemana semana={semana} hoy={hoy} onElegir={setSemana}/>
+      {semana !== lunesDe(hoy) && <button type="button" className="enlace" onClick={() => setSemana(lunesDe(hoy))}>Volver a esta semana</button>}
     </div>
-    {cantidad > 0 && <p role="status" className="resumen-despacho">{pedidosTexto(cantidad)} · {dinero(total)}</p>}
-    {grupos.map(g => <div className="grupo-dia" key={g.dia}>
-      <h3>{nombreDia(g.dia)}{g.dia === hoy && <span className="badge hoy">Hoy</span>}<small>{pedidosTexto(g.cantidad)}</small></h3>
-      {g.dia === SIN_DIA && <p className="notice">Estos clientes no tienen día de reparto: asígnalo en Clientes → Editar para que entren al ciclo semanal.</p>}
-      {g.comunas.map(c => <div className="grupo-comuna" key={c.comuna}>
-        <h4>{c.comuna}<small>{pedidosTexto(c.pedidos.length)} · {dinero(c.total)}</small></h4>
-        {tabla(c.pedidos)}
-      </div>)}
-    </div>)}
-    {!grupos.length && <p>No hay pedidos {VISTAS.find(([v]) => v === vista)[1].toLowerCase()} con estos filtros.</p>}
-  </section>;
+    <RutasEntregadas pedidos={pedidos} clientes={clientes} semana={semana} hoy={hoy}/>
+  </>;
+}
+
+// Calendario con columnas fijas de lunes a viernes: cada fila es una semana y se elige completa.
+function CalendarioSemana({ semana, hoy, onElegir }) {
+  const [abierto, setAbierto] = useState(false);
+  const [mes, setMes] = useState(semana.slice(0, 7));
+  const caja = useCerrarAlSalir(abierto, () => setAbierto(false));
+  const actual = lunesDe(hoy);
+  const alternar = () => { setMes(semana.slice(0, 7)); setAbierto(a => !a); };
+  return <div className="calendario-semana" ref={caja}>
+    <button type="button" className="calendario-boton" aria-haspopup="dialog" aria-expanded={abierto} aria-labelledby="etiqueta-semana calendario-valor" onClick={alternar}>
+      <span id="calendario-valor">{etiquetaSemana(semana)}</span><span aria-hidden="true">📅</span>
+    </button>
+    {abierto && <div className="calendario-panel" role="dialog" aria-label="Elegir semana">
+      <div className="calendario-mes">
+        <button type="button" aria-label="Mes anterior" onClick={() => setMes(m => mesContiguo(m, -1))}>‹</button>
+        <span className="calendario-selectores">
+          <select aria-label="Mes" value={mes.slice(5)} onChange={e => setMes(limitarMes(`${mes.slice(0, 4)}-${e.target.value}`, hoy))}>
+            {MESES_CALENDARIO.map((nombre, i) => { const valor = String(i + 1).padStart(2, '0'); return <option key={valor} value={valor} disabled={`${mes.slice(0, 4)}-${valor}` > hoy.slice(0, 7)}>{nombre}</option>; })}
+          </select>
+          <select aria-label="Año" value={mes.slice(0, 4)} onChange={e => setMes(limitarMes(`${e.target.value}-${mes.slice(5)}`, hoy))}>
+            {aniosCalendario(hoy, mes).map(a => <option key={a} value={a}>{a}</option>)}
+          </select>
+        </span>
+        <button type="button" aria-label="Mes siguiente" disabled={mes >= hoy.slice(0, 7)} onClick={() => setMes(m => mesContiguo(m, 1))}>›</button>
+      </div>
+      <div className="calendario-fila calendario-dias" aria-hidden="true">{DIAS_CALENDARIO.map(d => <span key={d}>{d}</span>)}</div>
+      {semanasDelMes(mes).map(s => <button type="button" key={s.lunes} className={`calendario-fila calendario-semana-fila${s.lunes === semana ? ' elegida' : ''}`} disabled={s.lunes > actual} aria-label={etiquetaSemana(s.lunes)} aria-pressed={s.lunes === semana} onClick={() => { onElegir(s.lunes); setAbierto(false); }}>
+        {s.dias.map(d => <span key={d.dia} className={`${d.delMes ? '' : 'fuera-mes'}${d.dia === hoy ? ' es-hoy' : ''}`}>{d.numero}</span>)}
+      </button>)}
+    </div>}
+  </div>;
 }

@@ -93,12 +93,12 @@ test('arrastrar mueve solo dentro del viaje; reponer devuelve la parada al final
 test('pasar una parada a otro viaje recalcula pesos y destino, y avisa lo que el backend rechazaría', () => {
   let e = cambiarViaje(estadoVistaPrevia(conViajes, pesos), 13, 2);
   assert.equal(cambiada(e), true);
-  // El viaje 2 queda con 650 kg y sigue siendo el más liviano: termina en casa.
+  // El viaje 2 queda con 650 kg y sigue siendo la más liviana: termina en casa.
   assert.deepEqual(resumen(e), [[1, 800, 'planta', [11, 12]], [2, 650, 'casa', [21, 22, 13]]]);
   assert.equal(puedeConfirmar(e), true);
   e = cambiarViaje(e, 12, 2);
   assert.deepEqual(resumen(e), [[1, 500, 'planta', [11]], [2, 950, 'planta', [21, 22, 13, 12]]]);
-  assert.match(viajesVista(e).problemas[0], /más liviano/);
+  assert.match(viajesVista(e).problemas[0], /más liviana/);
   assert.equal(puedeConfirmar(e), false);
   // Todo en el viaje 1: 1.450 kg, más de lo que carga el camión.
   e = cambiarViaje(cambiarViaje(estadoVistaPrevia(conViajes, pesos), 21, 1), 22, 1);
