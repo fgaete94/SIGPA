@@ -6,13 +6,13 @@ from pydantic import BaseModel
 from sqlalchemy import Date, cast, func, select
 
 from app.core.database import SessionLocal
-from app.core.security import get_current_user
+from app.core.security import get_current_user, require_admin
 from app.models.detalle_pedido import DetallePedido
 from app.models.enums import EstadoPedido
 from app.models.pedido import Pedido
 from app.models.producto import Producto
 
-router = APIRouter(tags=["reportes"], dependencies=[Depends(get_current_user)])
+router = APIRouter(tags=["reportes"], dependencies=[Depends(require_admin)])
 
 ZONA_HORARIA = "America/Santiago"
 

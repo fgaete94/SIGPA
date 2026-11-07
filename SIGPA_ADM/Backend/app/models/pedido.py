@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, SmallInteger, String, Text
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, SmallInteger, String, Text
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
@@ -46,6 +46,17 @@ class Pedido(Base):
     # posición dentro de ese viaje. NULL si no está en una ruta.
     viaje: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     motivo_revision_direccion: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Repartidor al que se asignó la parada; NULL si la ruta no está asignada.
+    repartidor_id: Mapped[int | None] = mapped_column(ForeignKey("repartidor.id"), nullable=True)
+    # Cómo pagó el cliente al recibir: efectivo o transferencia.
+    medio_pago: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # Cuándo se marcó el resultado de la parada (entregado o no entregado), en UTC.
+    resultado_en: Mapped[datetime | None] = mapped_column(DateTime(timezone=False), nullable=True)
+    reagendado_para: Mapped[date | None] = mapped_column(Date, nullable=True)
+    # true si lo entregado difiere de lo pedido; el total ya considera lo entregado.
+    entrega_ajustada: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     cliente: Mapped["Cliente"] = relationship("Cliente", back_populates="pedidos")
     detalles: Mapped[list["DetallePedido"]] = relationship(
         "DetallePedido", back_populates="pedido", cascade="all, delete-orphan"

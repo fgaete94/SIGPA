@@ -1573,7 +1573,7 @@ async def caso_bc(ctx: dict, v: Verificador) -> None:
 
 
 def _usuario_prueba() -> dict:
-    return {"user_id": "test", "email": USUARIO_PRUEBA}
+    return {"user_id": "test", "email": USUARIO_PRUEBA, "rol": "admin"}
 
 
 CASOS = [

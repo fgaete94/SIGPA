@@ -3,14 +3,14 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import selectinload
 
 from app.core.database import SessionLocal
-from app.core.security import get_current_user
+from app.core.security import get_current_user, require_admin
 from app.models.cliente import Cliente
 from app.models.comuna import Comuna
 from app.models.sector import Sector
 from app.schemas.cliente import ClienteCreate, ClienteDetalleOut, ClienteOut, ClienteUpdate, SugerenciaDiaOut
 from app.services.auditoria_service import construir_snapshot, registrar_auditoria
 
-router = APIRouter(tags=["clientes"], dependencies=[Depends(get_current_user)])
+router = APIRouter(tags=["clientes"], dependencies=[Depends(require_admin)])
 
 def _cliente_a_out(cliente: Cliente) -> ClienteOut:
     return ClienteOut(

@@ -6,13 +6,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from app.core.database import SessionLocal
-from app.core.security import get_current_user
+from app.core.security import get_current_user, require_admin
 from app.models.cliente import Cliente
 from app.models.auditoria import Auditoria
 from app.models.detalle_pedido import DetallePedido
 from app.models.enums import DiaSemana, EstadoPedido
 from app.models.pedido import Pedido
 from app.models.producto import Producto
+from app.models.repartidor import IntentoNoEntregado
 from app.schemas.pedido import (
     CambiarEstadoRequest,
     CorregirCoordenadasRequest,
@@ -22,12 +23,14 @@ from app.schemas.pedido import (
     PedidoDetalleOut,
     PedidoOut,
     PedidoUpdate,
+    ReagendarPedidoRequest,
     RegistrarEntregaRequest,
 )
 from app.services.auditoria_service import construir_snapshot, registrar_auditoria
 from app.services.coordenadas_cliente import copiar_coordenadas_al_cliente, usa_direccion_del_cliente
+from app.services.entrega import cerrar_entrega, hoy_chile
 
-router = APIRouter(tags=["pedidos"], dependencies=[Depends(get_current_user)])
+router = APIRouter(tags=["pedidos"], dependencies=[Depends(require_admin)])
 
 TRANSICIONES_DESPACHO = {
     EstadoPedido.CONFIRMADO: {EstadoPedido.EN_DESPACHO},
@@ -98,6 +101,11 @@ def _pedido_a_out(pedido: Pedido) -> PedidoOut:
         orden_entrega=pedido.orden_entrega,
         viaje=pedido.viaje,
         motivo_revision_direccion=pedido.motivo_revision_direccion,
+        repartidor_id=pedido.repartidor_id,
+        medio_pago=pedido.medio_pago,
+        resultado_en=pedido.resultado_en,
+        reagendado_para=pedido.reagendado_para,
+        entrega_ajustada=pedido.entrega_ajustada,
     )
 
 
@@ -190,6 +198,46 @@ async def listar_pedidos(
         pedidos = result.scalars().all()
 
         return [_pedido_a_out(pedido) for pedido in pedidos]
+
+
+@router.get("/no-entregados-anteriores", response_model=list[PedidoOut])
+async def no_entregados_anteriores():
+    """
+    Intentos fallidos de pedidos que ya siguieron su camino (reagendados, cancelados o
+    entregados después), tal como quedaron ese día: reagendar borra el lugar del pedido en la
+    ruta, y sin esto Reportes y Despachos perderían esas paradas. El intento vigente de un
+    pedido que sigue "no_entregado" no viene aquí: ya está en GET /pedidos.
+    """
+    async with SessionLocal() as session:
+        result = await session.execute(
+            select(IntentoNoEntregado)
+            .options(
+                selectinload(IntentoNoEntregado.pedido)
+                .selectinload(Pedido.cliente)
+                .selectinload(Cliente.comuna)
+            )
+            .order_by(IntentoNoEntregado.id)
+        )
+        intentos = result.scalars().all()
+
+        ultimo_por_pedido = {i.pedido_id: i.id for i in intentos}
+        return [
+            _pedido_a_out(i.pedido).model_copy(
+                update={
+                    "estado": EstadoPedido.NO_ENTREGADO,
+                    "viaje": i.viaje,
+                    "orden_entrega": i.orden_entrega,
+                    "total": float(i.total),
+                    "repartidor_id": i.repartidor_id,
+                    "medio_pago": None,
+                    "resultado_en": i.creado_en,
+                    "reagendado_para": None,
+                    "entrega_ajustada": False,
+                }
+            )
+            for i in intentos
+            if not (i.pedido.estado == EstadoPedido.NO_ENTREGADO and ultimo_por_pedido[i.pedido_id] == i.id)
+        ]
 
 
 @router.get("/{id}", response_model=PedidoDetalleOut)
@@ -465,12 +513,7 @@ async def registrar_entrega(
         for linea in datos.lineas:
             detalles_por_id[linea.detalle_id].cantidad_entregada = linea.cantidad_entregada
 
-        pedido.total = sum(
-            (detalle.cantidad_entregada or 0) * float(detalle.precio_unitario)
-            for detalle in pedido.detalles
-        )
-        pedido.estado = EstadoPedido.ENTREGADO
-        pedido.actualizado_en = datetime.utcnow()
+        cerrar_entrega(pedido)
 
         try:
             await session.commit()
@@ -554,6 +597,78 @@ async def cambiar_estado_pedido(
         )
 
         return _pedido_a_out(pedido)
+
+async def _no_entregado_bloqueado(session, id: int) -> Pedido:
+    """Un pedido no entregado, con la fila bloqueada, para decidir qué hacer con él."""
+    result = await session.execute(
+        select(Pedido)
+        .where(Pedido.id == id)
+        .options(selectinload(Pedido.cliente).selectinload(Cliente.comuna))
+        .with_for_update(of=Pedido)
+    )
+    pedido = result.scalar_one_or_none()
+    if pedido is None:
+        raise HTTPException(status_code=404, detail="Pedido no encontrado")
+    if pedido.estado != EstadoPedido.NO_ENTREGADO:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Solo se puede decidir sobre un pedido no entregado.",
+        )
+    return pedido
+
+
+@router.post("/{id}/reagendar", response_model=PedidoOut)
+async def reagendar_pedido(
+    id: int, datos: ReagendarPedidoRequest, current_user: dict = Depends(get_current_user)
+):
+    """Vuelve a Pendientes para entrar a una próxima ruta. El intento fallido queda en intento_no_entregado."""
+    if datos.para < hoy_chile() or datos.para.weekday() >= 5:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="El reparto se reagenda para hoy o un día futuro, de lunes a viernes.",
+        )
+    async with SessionLocal() as session:
+        pedido = await _no_entregado_bloqueado(session, id)
+        snapshot_antes = construir_snapshot(pedido)
+        pedido.estado = EstadoPedido.PENDIENTE
+        pedido.orden_entrega = None
+        pedido.viaje = None
+        pedido.repartidor_id = None
+        pedido.medio_pago = None
+        pedido.resultado_en = None
+        pedido.reagendado_para = datos.para
+        pedido.actualizado_en = datetime.utcnow()
+        await session.commit()
+        await registrar_auditoria(
+            usuario=current_user.get("email"),
+            entidad="pedido",
+            entidad_id=pedido.id,
+            accion="reagendar",
+            antes=snapshot_antes,
+            despues=construir_snapshot(pedido),
+        )
+        return _pedido_a_out(pedido)
+
+
+@router.post("/{id}/cancelar", response_model=PedidoOut)
+async def cancelar_no_entregado(id: int, current_user: dict = Depends(get_current_user)):
+    """La empresa decide no volver a despachar un pedido no entregado."""
+    async with SessionLocal() as session:
+        pedido = await _no_entregado_bloqueado(session, id)
+        snapshot_antes = construir_snapshot(pedido)
+        pedido.estado = EstadoPedido.CANCELADO
+        pedido.actualizado_en = datetime.utcnow()
+        await session.commit()
+        await registrar_auditoria(
+            usuario=current_user.get("email"),
+            entidad="pedido",
+            entidad_id=pedido.id,
+            accion="cancelar",
+            antes=snapshot_antes,
+            despues=construir_snapshot(pedido),
+        )
+        return _pedido_a_out(pedido)
+
 
 @router.post("/{id}/coordenadas", response_model=PedidoOut)
 async def corregir_coordenadas_pedido(

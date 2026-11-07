@@ -191,7 +191,7 @@ async def caso_i(ctx: dict, v: Verificador) -> None:
 
 
 async def _usuario_prueba():
-    return {"user_id": "test", "email": "test-sugerencia-dia@sigpa.local"}
+    return {"user_id": "test", "email": "test-sugerencia-dia@sigpa.local", "rol": "admin"}
 
 
 async def caso_j(ctx: dict, v: Verificador) -> None:
