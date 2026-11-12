@@ -6,6 +6,7 @@ export const puedeEntregarse = estado => ESTADOS_ENTREGABLES.includes(estado);
 // Una fila por línea del pedido; parte con todo lo pedido (el caso más común).
 export const formEntrega = lineas => lineas.map(l => ({
   id: l.id,
+  productoId: l.producto_id,
   producto: l.producto_nombre,
   solicitada: l.cantidad_solicitada,
   precio: Number(l.precio_unitario),
@@ -42,4 +43,24 @@ export function errorEntrega(resumen) {
 // Botones del repartidor: suben o bajan la cantidad desde 0; el cliente puede recibir menos o más de lo pedido.
 export const ajustarEntregada = (form, id, cambio) => form.map(l => (l.id === id ? { ...l, entregada: String(Math.max(0, Number(l.entregada) + cambio)) } : l));
 
-export const datosEntrega = form => ({ lineas: form.map(l => ({ detalle_id: l.id, cantidad_entregada: leerCantidad(l.entregada) })) });
+// El repartidor ve todo el catálogo: lo que el cliente no pidió parte en 0 y, si lo sube, se cobra al precio del catálogo.
+export const agregarCatalogo = (form, productos) => {
+  const pedidos = new Set(form.map(l => l.productoId));
+  return [...form, ...(productos || []).filter(p => !pedidos.has(p.id)).sort((a, b) => a.id - b.id).map(p => ({
+    id: `producto-${p.id}`,
+    productoId: p.id,
+    producto: p.nombre,
+    solicitada: 0,
+    precio: Number(p.precio_unitario),
+    entregada: '0',
+    extra: true,
+  }))];
+};
+
+export const datosEntrega = form => {
+  const extras = form.filter(l => l.extra && leerCantidad(l.entregada) > 0).map(l => ({ producto_id: l.productoId, cantidad: leerCantidad(l.entregada) }));
+  return {
+    lineas: form.filter(l => !l.extra).map(l => ({ detalle_id: l.id, cantidad_entregada: leerCantidad(l.entregada) })),
+    ...(extras.length && { extras }),
+  };
+};

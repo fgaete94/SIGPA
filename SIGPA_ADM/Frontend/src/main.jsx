@@ -233,7 +233,7 @@ function DetallePedido({ detail, onClose, onEntregar, onEditar }) {
     <button autoFocus onClick={onClose}>Cerrar detalle</button><h2>Pedido #{detail.id}</h2>
     <p>{detail.cliente_nombre} · <span className={`badge ${detail.estado}`}>{ETIQUETA_ESTADO[detail.estado]}</span></p>
     <p>{detail.direccion_despacho || 'Sin dirección de despacho informada'}</p>
-    {detail.lineas.map((l,i)=><p key={i}>{l.cantidad_solicitada} × {l.producto_nombre} · {money(l.precio_unitario)}{l.cantidad_entregada != null && ` · entregó ${l.cantidad_entregada}`}</p>)}<strong>Total: {money(detail.total)}</strong>
+    {detail.lineas.map((l,i)=><p key={i}>{l.cantidad_solicitada === 0 ? <>{l.cantidad_entregada ?? 0} × {l.producto_nombre} · {money(l.precio_unitario)} · agregado al entregar</> : <>{l.cantidad_solicitada} × {l.producto_nombre} · {money(l.precio_unitario)}{l.cantidad_entregada != null && ` · entregó ${l.cantidad_entregada}`}</>}</p>)}<strong>Total: {money(detail.total)}</strong>
     {(puedeEntregarse(detail.estado) || puedeEditarse(detail.estado)) && <p className="acciones">
       {puedeEntregarse(detail.estado) && <button className="primary" onClick={() => onEntregar(detail.id)}>Registrar entrega</button>}
       {puedeEditarse(detail.estado) && <button onClick={() => onEditar(detail)}>Editar pedido</button>}
