@@ -4,7 +4,7 @@ import { api } from './api';
 import { logout } from './auth';
 import { siguienteParada } from './capasMapa';
 import { MEDIOS_COMBUSTIBLE, etiquetaCombustible, leerMonto, resumenCombustible, textoCarga } from './combustible';
-import { ajustarEntregada, datosEntrega, formEntrega, resumenEntrega } from './entregas';
+import { agregarCatalogo, ajustarEntregada, datosEntrega, formEntrega, resumenEntrega } from './entregas';
 import { resuelta } from './estados';
 import MapaRuta, { NumeroParada } from './MapaRuta';
 import { enlaceComoLlegar, textoResultado } from './reparto';
@@ -28,6 +28,9 @@ export default function VistaRepartidor({ session, onLogout }) {
   useEffect(() => { cargar(); }, [cargar]);
   const cargarCombustible = useCallback(() => api('/repartidor/combustible').then(setCombustible).catch(e => setError(e.message)), []);
   useEffect(() => { cargarCombustible(); }, [cargarCombustible]);
+  // Catálogo para dejar productos que el cliente no pidió. Si no carga, solo se ajusta lo pedido.
+  const [productos, setProductos] = useState([]);
+  useEffect(() => { api('/productos').then(p => setProductos(Array.isArray(p) ? p : [])).catch(() => {}); }, []);
   useEffect(() => {
     const timer = setInterval(() => { if (!document.hidden) cargar(); }, RECARGA_MS);
     return () => clearInterval(timer);
@@ -70,7 +73,7 @@ export default function VistaRepartidor({ session, onLogout }) {
         {listas === paradas.length && <p role="status" className="ok">¡Ruta terminada! Marcaste todas las paradas.</p>}
         {grupos.map(g => <div key={g.viaje ?? 'sin-viaje'}>
           {grupos.length > 1 && g.viaje != null && <h2 className="viaje-titulo">{encabezadoViaje({ viaje: g.viaje })}</h2>}
-          {g.paradas.map((p, i) => <TarjetaParada key={p.id} parada={p} numero={i + 1} siguiente={p.id === siguiente?.id} enviando={enviando} onMarcar={cuerpo => marcar(p.id, cuerpo)} onVer={() => verParada(p.id)}/>)}
+          {g.paradas.map((p, i) => <TarjetaParada key={p.id} parada={p} productos={productos} numero={i + 1} siguiente={p.id === siguiente?.id} enviando={enviando} onMarcar={cuerpo => marcar(p.id, cuerpo)} onVer={() => verParada(p.id)}/>)}
         </div>)}
       </>}
     </main>
@@ -124,7 +127,18 @@ function VentanaCombustible({ registros, onCambio, onCerrar }) {
   </section></div>, document.body);
 }
 
-function TarjetaParada({ parada: p, numero, siguiente, enviando, onMarcar, onVer }) {
+function FilaCantidad({ linea: l, detalle, enviando, onCambio }) {
+  return <div className={`cantidad-parada${l.extra && l.entregada !== '0' ? ' con-extra' : ''}`}>
+    <div><strong>{l.producto}</strong><small>{detalle}</small></div>
+    <div className="selector-cantidad">
+      <button type="button" aria-label={`Quitar una unidad de ${l.producto}`} disabled={enviando || l.entregada === '0'} onClick={() => onCambio(-1)}>−</button>
+      <output aria-live="polite">{l.entregada}</output>
+      <button type="button" aria-label={`Agregar una unidad de ${l.producto}`} disabled={enviando} onClick={() => onCambio(1)}>+</button>
+    </div>
+  </div>;
+}
+
+function TarjetaParada({ parada: p, productos, numero, siguiente, enviando, onMarcar, onVer }) {
   // paso: null (botones), 'total' (¿se entregó todo?), 'ajustar' (cuánto entregó), 'pago' (elegir el método) o 'no' (confirmar que no se pudo entregar).
   const [paso, setPaso] = useState(null);
   const [form, setForm] = useState([]);
@@ -163,24 +177,21 @@ function TarjetaParada({ parada: p, numero, siguiente, enviando, onMarcar, onVer
       </>}
       {paso === 'total' && <div className="tarjeta-paso">
         <p><strong>¿Se entregó todo el pedido?</strong></p>
-        <ul className="lineas-parada">{form.map(l => <li key={l.id}>{l.solicitada} × {l.producto}</li>)}</ul>
+        <ul className="lineas-parada">{form.filter(l => !l.extra).map(l => <li key={l.id}>{l.solicitada} × {l.producto}</li>)}</ul>
         <p>Total: <b>{dinero(resumen.totalPedido)}</b></p>
         <div className="tarjeta-acciones">
           <button type="button" className="boton-entregado" disabled={enviando} onClick={entregoTodo}>Sí</button>
-          <button type="button" disabled={enviando} onClick={() => setPaso('ajustar')}>Otra cantidad</button>
+          <button type="button" disabled={enviando} onClick={() => { setForm(agregarCatalogo(formEntrega(p.lineas), productos)); setPaso('ajustar'); }}>Otra cantidad</button>
         </div>
         <button type="button" className="enlace" disabled={enviando} onClick={() => setPaso(null)}>Volver</button>
       </div>}
       {paso === 'ajustar' && <div className="tarjeta-paso">
         <p><strong>¿Cuánto entregó?</strong></p>
-        <div className="cantidades-parada">{form.map(l => <div className="cantidad-parada" key={l.id}>
-          <div><strong>{l.producto}</strong><small>Pidió {l.solicitada} · {dinero(l.precio)} c/u</small></div>
-          <div className="selector-cantidad">
-            <button type="button" aria-label={`Quitar una unidad de ${l.producto}`} disabled={enviando || l.entregada === '0'} onClick={() => setForm(f => ajustarEntregada(f, l.id, -1))}>−</button>
-            <output aria-live="polite">{l.entregada}</output>
-            <button type="button" aria-label={`Agregar una unidad de ${l.producto}`} disabled={enviando} onClick={() => setForm(f => ajustarEntregada(f, l.id, 1))}>+</button>
-          </div>
-        </div>)}</div>
+        <div className="cantidades-parada">{form.filter(l => !l.extra).map(l => <FilaCantidad key={l.id} linea={l} detalle={`Pidió ${l.solicitada} · ${dinero(l.precio)} c/u`} enviando={enviando} onCambio={cambio => setForm(f => ajustarEntregada(f, l.id, cambio))}/>)}</div>
+        {form.some(l => l.extra) && <>
+          <p className="titulo-otros"><strong>Otros productos</strong><small>Si el cliente se quedó con algo que no pidió</small></p>
+          <div className="cantidades-parada">{form.filter(l => l.extra).map(l => <FilaCantidad key={l.id} linea={l} detalle={`${dinero(l.precio)} c/u`} enviando={enviando} onCambio={cambio => setForm(f => ajustarEntregada(f, l.id, cambio))}/>)}</div>
+        </>}
         <p className="total-parada">Por cobrar: <b>{dinero(resumen.total)}</b>{resumen.total !== resumen.totalPedido && <small> · era {dinero(resumen.totalPedido)}</small>}</p>
         {!resumen.unidades && <p className="notice">Si no dejó nada, vuelve y marca No entregado.</p>}
         <div className="tarjeta-acciones">

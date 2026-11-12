@@ -19,6 +19,7 @@ from app.models.cliente import Cliente
 from app.models.detalle_pedido import DetallePedido
 from app.models.enums import EstadoPedido
 from app.models.pedido import Pedido
+from app.models.producto import Producto
 from app.models.repartidor import CargaCombustible, IntentoNoEntregado, Repartidor
 from app.schemas.pedido import DetallePedidoLineaOut, LineaEntregaRequest
 from app.services.auditoria_service import construir_snapshot, registrar_auditoria
@@ -77,6 +78,17 @@ class ResultadoParadaRequest(BaseModel):
     medio_pago: Literal["efectivo", "transferencia"] | None = None
     # Sin líneas se entiende que entregó todo lo pedido.
     lineas: list[LineaEntregaRequest] | None = None
+    # Productos que el cliente no pidió y se le dejaron igual, al precio del catálogo.
+    extras: list["ProductoExtraRequest"] | None = None
+
+
+class ProductoExtraRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    producto_id: int
+    cantidad: int = Field(gt=0, le=9999)
+
+
+ResultadoParadaRequest.model_rebuild()
 
 
 class CargaCombustibleIn(BaseModel):
@@ -288,7 +300,39 @@ async def ruta_del_repartidor(current_user: dict = Depends(require_repartidor)):
     return RutaRepartidorOut(repartidor=RepartidorNombreOut(nombre=repartidor.nombre), paradas=paradas)
 
 
-def _marcar_entregado(pedido: Pedido, datos: ResultadoParadaRequest) -> None:
+async def _agregar_extras(session: AsyncSession, pedido: Pedido, extras: list[ProductoExtraRequest]) -> None:
+    """Agrega como líneas nuevas (cantidad_solicitada = 0) lo que el cliente no pidió."""
+    ids = [e.producto_id for e in extras]
+    if len(ids) != len(set(ids)):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Un producto agregado aparece más de una vez.",
+        )
+    ya_en_pedido = sorted(set(ids) & {d.producto_id for d in pedido.detalles})
+    if ya_en_pedido:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Producto(s) que ya están en el pedido: {ya_en_pedido}. Ajusta su cantidad.",
+        )
+    result = await session.execute(select(Producto).where(Producto.id.in_(ids)))
+    productos = {p.id: p for p in result.scalars()}
+    faltantes = sorted(set(ids) - set(productos))
+    if faltantes:
+        raise HTTPException(status_code=404, detail=f"Producto(s) no encontrado(s): {faltantes}")
+    for extra in extras:
+        producto = productos[extra.producto_id]
+        pedido.detalles.append(
+            DetallePedido(
+                producto_id=producto.id,
+                producto=producto,
+                cantidad_solicitada=0,
+                cantidad_entregada=extra.cantidad,
+                precio_unitario=producto.precio_unitario,
+            )
+        )
+
+
+async def _marcar_entregado(session: AsyncSession, pedido: Pedido, datos: ResultadoParadaRequest) -> None:
     if datos.medio_pago is None:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Falta el método de pago.")
     detalles = {d.id: d for d in pedido.detalles}
@@ -300,11 +344,13 @@ def _marcar_entregado(pedido: Pedido, datos: ResultadoParadaRequest) -> None:
             detail=f"Detalle(s) que no son de este pedido: {ajenas}",
         )
     cantidades = {i: enviadas.get(i, d.cantidad_solicitada) for i, d in detalles.items()}
-    if not any(cantidades.values()):
+    if not any(cantidades.values()) and not datos.extras:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="No se entregó ninguna unidad: marca No entregado.",
         )
+    if datos.extras:
+        await _agregar_extras(session, pedido, datos.extras)
     for i, cantidad in cantidades.items():
         detalles[i].cantidad_entregada = cantidad
     cerrar_entrega(pedido)
@@ -340,6 +386,9 @@ async def _deshacer_resultado(session: AsyncSession, pedido: Pedido) -> None:
         intento = result.scalar_one_or_none()
         if intento is not None:
             await session.delete(intento)
+    # Lo que se agregó al entregar no era parte del pedido: se quita.
+    for detalle in [d for d in pedido.detalles if d.cantidad_solicitada == 0]:
+        pedido.detalles.remove(detalle)
     for detalle in pedido.detalles:
         detalle.cantidad_entregada = None
     pedido.total = total_pedido(pedido)
@@ -389,7 +438,7 @@ async def registrar_resultado(
                 detail="Esta parada ya está marcada. Usa Corregir si fue un error.",
             )
         elif datos.resultado == "entregado":
-            _marcar_entregado(pedido, datos)
+            await _marcar_entregado(session, pedido, datos)
         else:
             _marcar_no_entregado(session, pedido, repartidor)
 

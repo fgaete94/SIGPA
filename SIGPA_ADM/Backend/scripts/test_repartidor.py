@@ -1,9 +1,10 @@
 """
 Script para validar el flujo del repartidor contra la BD: roles, asignar la ruta,
-marcar entregado (con todo, menos o más de lo pedido), no entregado, corregir,
-reagendar, cancelar y combustible. La autenticación JWT se reemplaza con
-dependency_overrides. Requiere aplicada la migración
-20261106210000_repartidor_y_resultado_entrega.sql.
+marcar entregado (con todo, menos o más de lo pedido, o con productos que no
+pidió), no entregado, corregir, reagendar, cancelar y combustible. La
+autenticación JWT se reemplaza con dependency_overrides. Requiere aplicadas las
+migraciones 20261106210000_repartidor_y_resultado_entrega.sql y
+20261110180000_productos_agregados_en_la_entrega.sql.
 
 Datos de prueba: clientes en el rango de teléfonos 56932400xxx, productos con
 prefijo TEST_REPARTIDOR_ y repartidores con nombre TEST_REPARTIDOR_. Al empezar y
@@ -90,9 +91,11 @@ async def preparar() -> dict:
     async with SessionLocal() as session:
         barato = Producto(nombre=f"{PREFIJO}recarga", precio_unitario=2500, stock=0)
         caro = Producto(nombre=f"{PREFIJO}nuevo", precio_unitario=6000, stock=0)
+        # No está en ningún pedido: el repartidor lo agrega al entregar.
+        dispensador = Producto(nombre=f"{PREFIJO}dispensador", precio_unitario=7000, stock=0)
         renzo = Repartidor(auth_user_id=UUID_RENZO, nombre=f"{PREFIJO}Renzo")
         otro = Repartidor(auth_user_id=UUID_OTRO, nombre=f"{PREFIJO}Otro")
-        session.add_all([barato, caro, renzo, otro])
+        session.add_all([barato, caro, dispensador, renzo, otro])
         await session.flush()
 
         pedidos = {}
@@ -115,7 +118,13 @@ async def preparar() -> dict:
             await session.flush()
             pedidos[nombre] = pedido.id
         await session.commit()
-        return {"pedidos": pedidos, "renzo": renzo.id, "otro": otro.id}
+        return {
+            "pedidos": pedidos,
+            "renzo": renzo.id,
+            "otro": otro.id,
+            "barato": barato.id,
+            "dispensador": dispensador.id,
+        }
 
 
 async def parada_de(api, pedido_id: int) -> dict | None:
@@ -133,6 +142,7 @@ async def probar_roles(api, ctx) -> None:
     for ruta in ["/pedidos", "/clientes", "/reportes/productos", "/rutas/actual", "/repartidores"]:
         revisar((await api.get(ruta)).status_code == 403, f"el repartidor no entra a {ruta}")
     revisar((await api.post("/productos", json={"nombre": "x", "precio_unitario": 1})).status_code == 403, "el repartidor no crea productos")
+    revisar((await api.get("/productos")).status_code == 200, "el repartidor ve el catálogo para agregar productos")
     como("repartidor", USUARIO_RENZO, str(uuid4()))
     revisar((await api.get("/repartidor/ruta")).status_code == 403, "con el rol pero sin registro de repartidor no hay ruta")
     como("admin")
@@ -219,6 +229,61 @@ async def probar_entregas(api, ctx) -> None:
     revisar(all(l["cantidad_entregada"] is None for l in d["lineas"]), "corregir borra las cantidades")
     r = await resultado(p["menos"], {"resultado": None})
     revisar(r.status_code == 409, "no se corrige lo que no está marcado", r.status_code)
+
+    print("Productos que no pidió")
+    entregar = lambda extras, lineas=None: resultado(
+        p["menos"],
+        {"resultado": "entregado", "medio_pago": "efectivo", "extras": extras, **({"lineas": lineas} if lineas else {})},
+    )
+    r = await entregar([{"producto_id": ctx["barato"], "cantidad": 1}])
+    revisar(r.status_code == 422, "un producto que ya está en el pedido se ajusta en su línea", r.status_code)
+    r = await entregar([{"producto_id": 99999999, "cantidad": 1}])
+    revisar(r.status_code == 404, "un producto inexistente responde 404", r.status_code)
+    r = await entregar([{"producto_id": ctx["dispensador"], "cantidad": 1}] * 2)
+    revisar(r.status_code == 422, "el mismo producto dos veces se rechaza", r.status_code)
+    r = await entregar([{"producto_id": ctx["dispensador"], "cantidad": 0}])
+    revisar(r.status_code == 422, "agregar 0 unidades se rechaza", r.status_code)
+    revisar((await parada_de(api, p["menos"]))["estado"] == "en_despacho", "los rechazos no marcan la parada")
+
+    r = await entregar([{"producto_id": ctx["dispensador"], "cantidad": 2}])
+    d = r.json()
+    agregada = next((l for l in d.get("lineas", []) if l["producto_id"] == ctx["dispensador"]), None)
+    revisar(
+        r.status_code == 200 and d["total"] == 25000 and d["entrega_ajustada"] and len(d["lineas"]) == 3,
+        "lo pedido más 2 dispensadores: el total los suma",
+        r.text,
+    )
+    revisar(
+        agregada is not None
+        and agregada["cantidad_solicitada"] == 0
+        and agregada["cantidad_entregada"] == 2
+        and agregada["precio_unitario"] == 7000
+        and agregada["producto_nombre"] == f"{PREFIJO}dispensador",
+        "el agregado queda como línea con lo pedido en 0 y el precio del catálogo",
+        agregada,
+    )
+    r = await resultado(p["menos"], {"resultado": None})
+    d = r.json()
+    revisar(
+        r.status_code == 200 and d["total"] == 11000 and len(d["lineas"]) == 2 and not d["entrega_ajustada"],
+        "corregir quita lo agregado y vuelve al total del pedido",
+        r.text,
+    )
+    async with SessionLocal() as session:
+        lineas_bd = (
+            await session.execute(text("select count(*) from public.detalle_pedido where pedido_id = :id"), {"id": p["menos"]})
+        ).scalar_one()
+    revisar(lineas_bd == 2, "la línea agregada se borra de la BD", lineas_bd)
+
+    menos = await parada_de(api, p["menos"])
+    r = await entregar(
+        [{"producto_id": ctx["dispensador"], "cantidad": 1}],
+        [{"detalle_id": l["id"], "cantidad_entregada": 0} for l in menos["lineas"]],
+    )
+    d = r.json()
+    revisar(r.status_code == 200 and d["total"] == 7000, "solo lo que no pidió también es una entrega", r.text)
+    r = await resultado(p["menos"], {"resultado": None})
+    revisar(r.status_code == 200 and len(r.json()["lineas"]) == 2, "y se corrige igual", r.text)
 
     async with SessionLocal() as session:
         pedido = await session.get(Pedido, p["todo"])
