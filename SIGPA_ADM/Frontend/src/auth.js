@@ -1,3 +1,4 @@
+import { API } from './apiBase.js';
 // Sesión del panel: los tokens se obtienen del backend (/api/auth), que hace de proxy a Supabase Auth.
 // refresh_token en sessionStorage (sobrevive a recargar, se borra al cerrar la pestaña); access_token solo en memoria.
 const STORAGE_KEY = 'sigpa.refresh_token';
@@ -43,7 +44,7 @@ function authError(status, body) {
 async function postAuth(path, payload, headers = {}) {
   let response;
   try {
-    response = await fetch(`/api/auth${path}`, { method: 'POST', headers: { ...(payload ? { 'Content-Type': 'application/json' } : {}), ...headers }, body: payload ? JSON.stringify(payload) : undefined });
+    response = await fetch(`${API}/auth${path}`, { method: 'POST', headers: { ...(payload ? { 'Content-Type': 'application/json' } : {}), ...headers }, body: payload ? JSON.stringify(payload) : undefined });
   } catch {
     throw new Error('No se pudo conectar con SIGPA. Revisa la conexión.');
   }

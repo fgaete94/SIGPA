@@ -1,8 +1,9 @@
+import { API } from './apiBase.js';
 import { expireSession, getAccessToken, refresh } from './auth';
 const SESSION_ENDED = 'La sesión terminó. Vuelve a ingresar.';
 async function send(path, options, signal, token) {
   try {
-    return await fetch(`/api${path}`, { ...options, signal, headers: { Authorization: `Bearer ${token}`, ...(options.body ? { 'Content-Type': 'application/json' } : {}) } });
+    return await fetch(`${API}${path}`, { ...options, signal, headers: { Authorization: `Bearer ${token}`, ...(options.body ? { 'Content-Type': 'application/json' } : {}) } });
   } catch (error) {
     if (error.name === 'AbortError') throw error;
     throw new Error('No se pudo conectar con SIGPA. Revisa la conexión y la URL del backend.');
