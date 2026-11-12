@@ -6,7 +6,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import auth, clientes, comunas, internal, pedidos, productos, repartidor, reportes, rutas, sectores, tipos_cliente, whatsapp
 from app.core.config import settings
 
-app = FastAPI(title=settings.PROJECT_NAME)
+app = FastAPI(
+    title=settings.PROJECT_NAME,
+    # Sin ENABLE_DOCS=true no se publican /docs, /redoc ni /openapi.json.
+    docs_url="/docs" if settings.ENABLE_DOCS else None,
+    redoc_url="/redoc" if settings.ENABLE_DOCS else None,
+    openapi_url="/openapi.json" if settings.ENABLE_DOCS else None,
+)
 
 # Permite que el panel web (en otro dominio) llame a la API desde el navegador
 app.add_middleware(

@@ -3,6 +3,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import hashlib
+import hmac
+import json
+
 import httpx
 
 from app.core.config import settings
@@ -53,7 +57,14 @@ def build_payload() -> dict:
 
 def main():
     payload = build_payload()
-    response = httpx.post(WEBHOOK_URL, json=payload, timeout=30.0)
+    cuerpo = json.dumps(payload).encode()
+    headers = {"Content-Type": "application/json"}
+    # Con META_APP_SECRET en el .env se firma como Meta; sin él, el backend
+    # en producción (que sí lo tiene) responde 403.
+    if settings.META_APP_SECRET:
+        firma = hmac.new(settings.META_APP_SECRET.encode(), cuerpo, hashlib.sha256).hexdigest()
+        headers["X-Hub-Signature-256"] = f"sha256={firma}"
+    response = httpx.post(WEBHOOK_URL, content=cuerpo, headers=headers, timeout=30.0)
     print(f"Status: {response.status_code}")
     print(f"Response: {response.text}")
 

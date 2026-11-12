@@ -1,3 +1,6 @@
+import hashlib
+import hmac
+import json
 import logging
 import re
 from datetime import datetime, timedelta
@@ -219,6 +222,15 @@ async def _procesar_mensaje_entrante(message: dict, ahora: datetime | None = Non
     await send_whatsapp_message(to=phone_number, message=respuesta)
 
 
+def firma_meta_valida(cuerpo: bytes, firma: str | None, secreto: str) -> bool:
+    """Meta firma cada POST con HMAC-SHA256 del cuerpo usando el App Secret y
+    lo envía en X-Hub-Signature-256 como "sha256=<hex>"."""
+    if not firma or not firma.startswith("sha256="):
+        return False
+    esperada = hmac.new(secreto.encode(), cuerpo, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(firma.removeprefix("sha256="), esperada)
+
+
 @router.post("/webhook")
 async def receive_webhook(request: Request):
     """Responde 200 a Meta de inmediato: si la respuesta tarda (LLM + BD),
@@ -227,7 +239,17 @@ async def receive_webhook(request: Request):
     respeta el orden de llegada y no procesa dos mensajes del mismo teléfono
     en paralelo. Una entrega repetida (mismo wamid) se descarta aquí mismo
     y, si el proceso se reinició entremedio, en registrar_mensaje_entrante."""
-    payload = await request.json()
+    cuerpo = await request.body()
+    if settings.META_APP_SECRET and not firma_meta_valida(
+        cuerpo, request.headers.get("X-Hub-Signature-256"), settings.META_APP_SECRET
+    ):
+        logger.warning("[WhatsApp] POST /webhook con firma inválida o ausente: se rechaza")
+        return PlainTextResponse(content="Forbidden", status_code=403)
+
+    try:
+        payload = json.loads(cuerpo)
+    except ValueError:
+        return PlainTextResponse(content="Bad Request", status_code=400)
 
     try:
         message = payload["entry"][0]["changes"][0]["value"]["messages"][0]
