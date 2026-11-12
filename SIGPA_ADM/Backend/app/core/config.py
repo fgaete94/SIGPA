@@ -16,6 +16,15 @@ class Settings(BaseSettings):
     META_WABA_ID: str = ""
     META_VERIFY_TOKEN: str = ""
     META_API_URL: str = ""
+    # App Secret de la app de Meta: con él se verifica la firma
+    # X-Hub-Signature-256 de cada POST /webhook, para rechazar mensajes que no
+    # vengan de Meta. Vacío: el webhook acepta todo (y se avisa en el log).
+    META_APP_SECRET: str = ""
+
+    # Swagger (/docs), ReDoc (/redoc) y /openapi.json. Apagados por defecto
+    # para no publicar el mapa de la API en producción; en local se activan
+    # con ENABLE_DOCS=true en el .env.
+    ENABLE_DOCS: bool = False
 
     DATABASE_URL: str = ""
     # Historia #78: conexiones máximas del backend a la BD (pool_size +
@@ -121,6 +130,11 @@ settings = Settings()
 if not settings.EJECUTIVA_PHONE:
     logging.getLogger(__name__).warning(
         "EJECUTIVA_PHONE está vacío: las derivaciones a la ejecutiva no se podrán enviar"
+    )
+
+if not settings.META_APP_SECRET:
+    logging.getLogger(__name__).warning(
+        "META_APP_SECRET está vacío: POST /webhook no verifica la firma de Meta y acepta cualquier mensaje"
     )
 
 def validar_ventana_recordatorio(config: Settings) -> None:
