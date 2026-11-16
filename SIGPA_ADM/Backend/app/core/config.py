@@ -76,6 +76,11 @@ class Settings(BaseSettings):
     # programadas; el envío es idempotente por fecha, así que no duplica.
     RECORDATORIO_HORA_INICIO: int = 15
     RECORDATORIO_HORA_FIN: int = 20
+    # Planificador interno del recordatorio (app/services/planificador_recordatorio.py):
+    # con true, el propio backend revisa cada INTERVALO_MIN minutos si
+    # corresponde enviar, sin depender de un cron externo. Apagado por defecto.
+    RECORDATORIO_SCHEDULER_ACTIVO: bool = False
+    RECORDATORIO_SCHEDULER_INTERVALO_MIN: int = 5
 
     # Historia #150: horas que un borrador de pedido guardado en la BD
     # (borrador_pedido) sigue vigente; pasado ese tiempo no se retoma.
