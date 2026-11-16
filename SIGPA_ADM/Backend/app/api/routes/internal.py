@@ -107,7 +107,15 @@ async def recordatorio_diario(
 ):
     if not settings.INTERNAL_CRON_SECRET or x_cron_secret != settings.INTERNAL_CRON_SECRET:
         raise HTTPException(status_code=401, detail="No autorizado")
+    return await ejecutar_recordatorio(forzar)
 
+
+async def ejecutar_recordatorio(forzar: bool = False):
+    """Lógica del recordatorio, sin la autenticación del endpoint. La llaman
+    POST /internal/recordatorio-diario (Cron Job de Render / GitHub Actions)
+    y el planificador interno (app/services/planificador_recordatorio.py).
+    Varias llamadas el mismo día no duplican envíos: ventana horaria,
+    candado de Postgres e idempotencia por fecha."""
     telefonos_prueba = settings.recordatorio_telefonos_prueba_list
     modo_prueba = bool(telefonos_prueba)
     # Solo tiene efecto en modo prueba; en producción el día siempre se respeta.

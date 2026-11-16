@@ -1,13 +1,26 @@
 import os
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import auth, clientes, comunas, internal, pedidos, productos, repartidor, reportes, rutas, sectores, tipos_cliente, whatsapp
 from app.core.config import settings
+from app.services import planificador_recordatorio
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Planificador interno del recordatorio: solo corre con
+    # RECORDATORIO_SCHEDULER_ACTIVO=true (ver planificador_recordatorio.py).
+    planificador_recordatorio.iniciar()
+    yield
+    await planificador_recordatorio.detener()
+
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
+    lifespan=lifespan,
     # Sin ENABLE_DOCS=true no se publican /docs, /redoc ni /openapi.json.
     docs_url="/docs" if settings.ENABLE_DOCS else None,
     redoc_url="/redoc" if settings.ENABLE_DOCS else None,
@@ -42,4 +55,9 @@ app.include_router(repartidor.router_repartidor)
 async def health():
     # RENDER_GIT_COMMIT lo define Render en cada deploy: sirve para saber
     # qué commit está corriendo. Es la única variable de entorno expuesta.
-    return {"status": "ok", "commit": os.environ.get("RENDER_GIT_COMMIT") or "desconocido"}
+    return {
+        "status": "ok",
+        "commit": os.environ.get("RENDER_GIT_COMMIT") or "desconocido",
+        # Estado del planificador interno del recordatorio (sin teléfonos).
+        "recordatorio": planificador_recordatorio.estado_publico(),
+    }
