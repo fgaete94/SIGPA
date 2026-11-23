@@ -392,8 +392,6 @@ button.calendario-semana-fila.elegida,button.calendario-semana-fila.elegida:hove
 .repartidor-avance p{margin:0 0 8px}
 .barra-avance{height:10px;margin-bottom:8px;border-radius:5px;background:var(--fondo-2);overflow:hidden}
 .barra-avance span{display:block;height:100%;border-radius:5px;background:var(--estado-entregado);transition:width .3s ease}
-.repartidor .mapa-ruta{margin:8px 0 14px}
-.repartidor .mapa-lienzo{height:clamp(240px,42vh,400px)}
 .repartidor .viaje-titulo{margin:16px 0 8px}
 .tarjeta-parada{margin-bottom:10px;padding:14px;border:1px solid var(--borde);border-radius:14px;background:var(--superficie)}
 .tarjeta-parada.siguiente{border:2px solid var(--amarillo);box-shadow:0 6px 18px -8px rgba(16,21,74,.35)}
