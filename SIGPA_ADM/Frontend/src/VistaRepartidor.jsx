@@ -6,7 +6,6 @@ import { siguienteParada } from './capasMapa';
 import { MEDIOS_COMBUSTIBLE, etiquetaCombustible, leerMonto, resumenCombustible, textoCarga } from './combustible';
 import { agregarCatalogo, ajustarEntregada, datosEntrega, formEntrega, resumenEntrega } from './entregas';
 import { resuelta } from './estados';
-import MapaRuta, { NumeroParada } from './MapaRuta';
 import { enlaceComoLlegar, textoResultado } from './reparto';
 import { agruparPorViaje, encabezadoViaje } from './viajes';
 
@@ -18,8 +17,6 @@ const RECARGA_MS = 30000;
 export default function VistaRepartidor({ session, onLogout }) {
   const [datos, setDatos] = useState(null);
   const [error, setError] = useState('');
-  const [foco, setFoco] = useState(null);
-  const [verMapa, setVerMapa] = useState(true);
   const [enviando, setEnviando] = useState(false);
   const [combustible, setCombustible] = useState([]);
   const [verCombustible, setVerCombustible] = useState(false);
@@ -50,7 +47,6 @@ export default function VistaRepartidor({ session, onLogout }) {
   const entregadas = paradas.filter(p => p.estado === 'entregado').length;
   const hayCarga = resumenCombustible(combustible).cargas.length > 0;
   const botonCombustible = <button type="button" className={`boton-combustible${hayCarga ? ' con-carga' : ''}`} onClick={() => setVerCombustible(true)}>{etiquetaCombustible(combustible)}</button>;
-  const verParada = id => { setVerMapa(true); setFoco(f => ({ id, n: (f?.n ?? 0) + 1 })); };
 
   return <div className="repartidor">
     <header className="repartidor-cabecera">
@@ -68,12 +64,12 @@ export default function VistaRepartidor({ session, onLogout }) {
           <p><strong>{listas} de {paradas.length}</strong> paradas listas · {entregadas} {entregadas === 1 ? 'entregada' : 'entregadas'}</p>
           <div className="barra-avance"><span style={{ width: `${(listas / paradas.length) * 100}%` }}/></div>
         </div>
-        <button className="enlace" aria-expanded={verMapa} onClick={() => setVerMapa(v => !v)}>{verMapa ? 'Ocultar mapa' : 'Ver mapa'}</button>
-        {verMapa ? <MapaRuta grupos={grupos} foco={foco} avance extra={botonCombustible}/> : <div className="mapa-filtros">{botonCombustible}</div>}
+        {/* Sin mapa: en el celular basta "Cómo llegar" de cada parada, que abre la navegación. */}
+        <div className="mapa-filtros">{botonCombustible}</div>
         {listas === paradas.length && <p role="status" className="ok">¡Ruta terminada! Marcaste todas las paradas.</p>}
         {grupos.map(g => <div key={g.viaje ?? 'sin-viaje'}>
           {grupos.length > 1 && g.viaje != null && <h2 className="viaje-titulo">{encabezadoViaje({ viaje: g.viaje })}</h2>}
-          {g.paradas.map((p, i) => <TarjetaParada key={p.id} parada={p} productos={productos} numero={i + 1} siguiente={p.id === siguiente?.id} enviando={enviando} onMarcar={cuerpo => marcar(p.id, cuerpo)} onVer={() => verParada(p.id)}/>)}
+          {g.paradas.map((p, i) => <TarjetaParada key={p.id} parada={p} productos={productos} numero={i + 1} siguiente={p.id === siguiente?.id} enviando={enviando} onMarcar={cuerpo => marcar(p.id, cuerpo)}/>)}
         </div>)}
       </>}
     </main>
@@ -138,7 +134,7 @@ function FilaCantidad({ linea: l, detalle, enviando, onCambio }) {
   </div>;
 }
 
-function TarjetaParada({ parada: p, productos, numero, siguiente, enviando, onMarcar, onVer }) {
+function TarjetaParada({ parada: p, productos, numero, siguiente, enviando, onMarcar }) {
   // paso: null (botones), 'total' (¿se entregó todo?), 'ajustar' (cuánto entregó), 'pago' (elegir el método) o 'no' (confirmar que no se pudo entregar).
   const [paso, setPaso] = useState(null);
   const [form, setForm] = useState([]);
@@ -153,7 +149,7 @@ function TarjetaParada({ parada: p, productos, numero, siguiente, enviando, onMa
   const clase = p.estado === 'entregado' ? ' entregada' : p.estado === 'no_entregado' ? ' no-entregada' : siguiente ? ' siguiente' : '';
   return <article className={`tarjeta-parada${clase}`}>
     <div className="tarjeta-datos">
-      <NumeroParada numero={numero} parada={p} nombre={nombre} onVer={onVer}/>
+      <b className="number">{numero}</b>
       <div>
         {siguiente && <span className="badge siguiente">Siguiente</span>}
         <h3>{nombre}</h3>
