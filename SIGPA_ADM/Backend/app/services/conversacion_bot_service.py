@@ -130,3 +130,13 @@ async def es_primer_mensaje_conversacion(phone: str) -> bool:
             consulta = consulta.where(MensajeWhatsApp.creado_en >= iniciada_en - MARGEN_RELOJ_BD)
         entrantes = await session.scalar(consulta)
     return (entrantes or 0) <= 1
+
+
+async def iniciada_en(phone: str) -> datetime | None:
+    """Inicio (UTC naive) de la conversación actual del teléfono, o None si
+    no hay fila. Identifica "esta conversación" (ver la derivación pedida por
+    el cliente en order_flow)."""
+    async with SessionLocal() as session:
+        return await session.scalar(
+            select(ConversacionBot.iniciada_en).where(ConversacionBot.telefono == phone)
+        )

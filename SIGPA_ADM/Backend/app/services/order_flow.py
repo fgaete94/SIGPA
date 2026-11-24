@@ -40,7 +40,7 @@ from app.services.agent_service import (
 )
 from app.services.auditoria_service import construir_snapshot
 from app.services.cliente_lookup import buscar_clientes_por_telefono, normalizar_telefono
-from app.services.conversacion_bot_service import marcar_inactiva
+from app.services.conversacion_bot_service import iniciada_en, marcar_inactiva
 from app.services.draft_store import (
     cargar_draft,
     clear_draft,
@@ -49,9 +49,15 @@ from app.services.draft_store import (
     persistir_draft,
     save_draft,
 )
-from app.services.horario_atencion import en_horario_atencion, mensaje_derivacion_ejecutiva
+from app.services.horario_atencion import (
+    en_horario_atencion,
+    mensaje_derivacion_ejecutiva,
+    texto_horario_atencion,
+)
 from app.services.notificacion_ejecutiva import (
     clasificar_clientes,
+    clasificar_remitente,
+    ejecutiva_avisada_desde,
     enviar_plantilla_ejecutiva,
     texto_notificacion_ejecutiva,
 )
@@ -2721,6 +2727,22 @@ async def _aplicar_ubicacion(
     return texto
 
 
+async def _avisar_ejecutiva(
+    phone: str, tipo_cliente: str | None, nombres: list[str], fuera_de_horario: bool
+) -> bool:
+    """Avisa a la ejecutiva que el cliente de `phone` necesita atención: con
+    la plantilla aviso_ejecutiva_cliente si está configurada (#152) y, si no
+    o si Meta la rechaza, con texto libre. True si alguno de los dos envíos
+    salió."""
+    if await enviar_plantilla_ejecutiva(tipo_cliente, nombres, phone, fuera_de_horario):
+        return True
+    respuesta = await send_whatsapp_message(
+        to=settings.EJECUTIVA_PHONE,
+        message=texto_notificacion_ejecutiva(tipo_cliente, nombres, phone, fuera_de_horario),
+    )
+    return respuesta is not None
+
+
 async def _escalar_telefono_duplicado(phone: str, clientes: list[Cliente]) -> str:
     """Más de un cliente con el mismo teléfono: el bot no elige uno. Se avisa
     a la ejecutiva, se cierra la conversación del bot (los mensajes
@@ -2733,12 +2755,7 @@ async def _escalar_telefono_duplicado(phone: str, clientes: list[Cliente]) -> st
     ahora = datetime.now().astimezone()
     try:
         tipo_cliente, nombres = clasificar_clientes(clientes)
-        fuera_de_horario = not en_horario_atencion(ahora)
-        if not await enviar_plantilla_ejecutiva(tipo_cliente, nombres, phone, fuera_de_horario):
-            await send_whatsapp_message(
-                to=settings.EJECUTIVA_PHONE,
-                message=texto_notificacion_ejecutiva(tipo_cliente, nombres, phone, fuera_de_horario),
-            )
+        await _avisar_ejecutiva(phone, tipo_cliente, nombres, not en_horario_atencion(ahora))
     except Exception:
         logger.exception("[order_flow] Falló avisar a la ejecutiva del teléfono duplicado %s", phone)
     await marcar_inactiva(phone)
@@ -3190,7 +3207,10 @@ async def _responder_a_oferta_habitual(
     base = {clave: valor for clave, valor in draft.items() if clave != "oferta_habitual"}
     texto = _normalizar_texto(mensaje)
 
-    if _es_negativa_simple(mensaje):
+    if _es_negativa_simple(mensaje) or es_rechazo_puro(mensaje):
+        # Primer "no" a la oferta: se descarta y se pregunta qué necesita. Un
+        # segundo rechazo seguido ya no encuentra oferta ni productos y
+        # cierra la conversación (ver _cierre_por_rechazo).
         save_draft(phone, base)
         return f"Entendido. {PREGUNTA_PRODUCTO}"
 
@@ -3253,7 +3273,10 @@ async def _responder_a_oferta_repetir(
     base = {clave: valor for clave, valor in draft.items() if clave != "oferta_repetir"}
     texto = _normalizar_texto(mensaje)
 
-    if _es_negativa_simple(mensaje):
+    if _es_negativa_simple(mensaje) or es_rechazo_puro(mensaje):
+        # Primer "no" a la oferta: se descarta y se pregunta qué necesita. Un
+        # segundo rechazo seguido ya no encuentra oferta ni productos y
+        # cierra la conversación (ver _cierre_por_rechazo).
         save_draft(phone, base)
         return f"Entendido. {PREGUNTA_PRODUCTO}"
 
@@ -3270,6 +3293,186 @@ async def _responder_a_oferta_repetir(
     nuevo["unidades_pedidas"] = _unidades_draft(nuevo)
     _, respuesta = await _responder_siguiente_paso(phone, nuevo, cliente)
     return f"Perfecto, repetimos tu último pedido.\n\n{respuesta}"
+
+
+# --------------------------------------------------------------------------
+# Rechazo puro: el cliente no quiere pedir nada (p. ej. respuesta al
+# recordatorio). Se detecta en código, sin LLM.
+# --------------------------------------------------------------------------
+
+MENSAJE_CIERRE_RECHAZO = (
+    "Entendido{nombre}. Si más adelante necesitas agua, escríbeme por aquí. ¡Que tengas un buen día!"
+)
+
+MAX_PALABRAS_RECHAZO = 12
+
+# Al menos una de estas palabras: es lo que hace del mensaje un rechazo.
+_NUCLEO_RECHAZO = {"no", "nop", "nope", "nel", "negativo", "nada", "tampoco"}
+# Lo único que puede acompañarlas: saludo, cortesía, "quiero/necesito",
+# "por ahora/de momento/esta vez", "recarga/agua/pedido" y despedidas.
+# Cualquier otra palabra (un producto o variante, "mejor", "pero", "sí") o un
+# dígito saca al mensaje de ser un rechazo puro: sigue el flujo normal.
+_RELLENO_RECHAZO = {
+    "hola", "holi", "ola", "hey", "buenas", "buenos", "buen", "dia", "dias", "tardes", "noches",
+    "gracias", "muchas", "mil", "muy", "amable", "por", "favor", "porfa",
+    "quiero", "queremos", "necesito", "necesitamos", "requiero", "requerimos", "deseo",
+    "ocupo", "ocupamos", "preciso",
+    "ahora", "ahorita", "momento", "el", "la", "lo", "esta", "vez", "de", "todavia", "aun",
+    "ya", "mas", "manana", "semana", "adelante", "despues", "luego", "igual", "asi",
+    "me", "nos", "tengo", "tenemos", "hay", "eso",
+    "recarga", "recargas", "agua", "pedido", "pedir", "bidon", "bidones",
+    "ok", "oka", "okey", "okay", "bueno", "hasta", "chao", "adios", "saludos", "bye",
+}
+
+
+def es_rechazo_puro(texto: str | None) -> bool:
+    """El mensaje es solo un "no quiero" ("no", "nada", "no gracias", "por
+    ahora no", "Hola, no quiero", "no necesito recarga"): sin pregunta, sin
+    dígitos y sin otra palabra que pida o cambie algo ("no quiero 12, quiero
+    20" o "no, mejor 3 de 20" NO lo son)."""
+    if not texto or "?" in texto or "¿" in texto or any(c.isdigit() for c in texto):
+        return False
+    tokens = _normalizar_texto(texto).split()
+    if not tokens or len(tokens) > MAX_PALABRAS_RECHAZO:
+        return False
+    return any(t in _NUCLEO_RECHAZO for t in tokens) and all(
+        t in _NUCLEO_RECHAZO or t in _RELLENO_RECHAZO for t in tokens
+    )
+
+
+def _draft_vacio(draft: dict | None) -> bool:
+    """No hay nada en curso: ni productos, ni aclaraciones u ofertas
+    pendientes, ni resumen. Con algo en curso un "no" mantiene su
+    significado (ej. responder "no" a "¿algo más?")."""
+    if draft is None:
+        return True
+    return not (
+        draft.get("productos")
+        or draft.get("aclaracion_pendiente")
+        or draft.get("pendientes_modelo")
+        or draft.get("oferta_habitual")
+        or draft.get("oferta_repetir")
+        or draft.get("correccion_pendiente")
+        or draft.get("resumen")
+        or draft.get("estado") in (ESTADO_ESPERANDO_CONFIRMACION, ESTADO_ESPERANDO_MODIFICACION)
+        or draft.get("paso") not in (None, "producto")
+    )
+
+
+def _cierre_por_rechazo(phone: str, cliente: dict | None) -> str:
+    """Cierre cortés al rechazo puro. Se descarta el borrador vacío que
+    pudiera quedar (p. ej. tras rechazar la oferta del producto habitual). La
+    conversación sigue activa: un "gracias" va por el agradecimiento puro y
+    un pedido nuevo por el flujo normal."""
+    clear_draft(phone)
+    nombre = f", {cliente['nombre']}" if cliente and cliente.get("nombre") else ""
+    return MENSAJE_CIERRE_RECHAZO.format(nombre=nombre)
+
+
+# --------------------------------------------------------------------------
+# Derivación pedida por el cliente ("pásame con la ejecutiva"). Se detecta en
+# código, sin LLM, y reutiliza el aviso a la ejecutiva de la derivación
+# espontánea (plantilla aviso_ejecutiva_cliente o texto libre).
+# --------------------------------------------------------------------------
+
+MENSAJE_DERIVACION_SOLICITADA = "Listo{nombre}, ya le avisé a una ejecutiva."
+MENSAJE_DERIVACION_YA_AVISADA = "Ya le avisé a una ejecutiva{nombre}, no es necesario que lo pidas de nuevo."
+COMPLEMENTO_DERIVACION_EN_HORARIO = "Te contactará a la brevedad por este mismo chat."
+COMPLEMENTO_DERIVACION_FUERA_DE_HORARIO = (
+    "Nuestro horario de atención es {horario}: te contactará dentro de ese horario por este mismo chat."
+)
+COMPLEMENTO_DERIVACION_CON_PEDIDO = "Tu pedido en curso sigue guardado, por si quieres continuarlo por aquí."
+
+_HUMANO_ESPECIFICO = r"(ejecutiv[oa]s?|humanos?|humanas?|operador(a|es|as)?|asesor(a|es|as)?|agentes?|encargad[oa]s?)"
+_HUMANO_GENERICO = r"(personas?|alguien|humanos?|humanas?|ejecutiv[oa]s?)"
+_VERBO_DERIVAR = r"(deriv\w*|pas(a|ame|eme|ar|arme|en|enme)|transfi\w*|conect\w*|comunic\w*|comuniqu\w*)"
+_PATRONES_PIDE_EJECUTIVA = (
+    # "derívame a ejecutivo", "pásame con la ejecutiva", "contactar a un asesor"
+    re.compile(rf"\b({_VERBO_DERIVAR}|contact\w*)\b.*\b{_HUMANO_ESPECIFICO}\b"),
+    # "pásame con una persona", "comunícame con alguien" (con "con": "pasa
+    # alguien a dejar el agua" no es una derivación)
+    re.compile(rf"\b{_VERBO_DERIVAR}\b.*\bcon\b.*\b(personas?|alguien)\b"),
+    # "quiero hablar con una persona / un humano / alguien / un ejecutivo"
+    re.compile(rf"\bhabl\w*\b.*\bcon\b.*\b({_HUMANO_GENERICO}|{_HUMANO_ESPECIFICO})\b"),
+    # "¿me atiende alguien?", "que me atienda una persona", "alguien que me atienda"
+    re.compile(rf"\b(atiend\w*|atender)\b.*\b{_HUMANO_GENERICO}\b"),
+    re.compile(rf"\b{_HUMANO_GENERICO}\b.*\b(atiend\w*|atender)\b"),
+    # "quiero un ejecutivo", "necesito una ejecutiva"
+    re.compile(rf"\b(quiero|quisiera|necesito|puedo|podria|deseo)\b.*\b{_HUMANO_ESPECIFICO}\b"),
+)
+# Mensaje que es solo "ejecutiva" / "un humano" con saludo o cortesía.
+_RELLENO_PIDE_EJECUTIVA = {
+    "hola", "buenas", "buenos", "dias", "tardes", "noches", "por", "favor", "porfa", "gracias",
+    "una", "un", "la", "el", "con", "a", "me", "ya", "ok",
+}
+_SOLO_HUMANO = re.compile(rf"^{_HUMANO_ESPECIFICO}$")
+
+
+def pide_ejecutiva(texto: str | None) -> bool:
+    """El cliente pide explícitamente hablar con una persona ("derívame a
+    ejecutivo", "pásame con la ejecutiva", "quiero hablar con un humano",
+    "¿me atiende alguien?", "ejecutiva")."""
+    normalizado = _normalizar_texto(texto)
+    if not normalizado:
+        return False
+    if any(patron.search(normalizado) for patron in _PATRONES_PIDE_EJECUTIVA):
+        return True
+    resto = [t for t in normalizado.split() if t not in _RELLENO_PIDE_EJECUTIVA]
+    return len(resto) == 1 and bool(_SOLO_HUMANO.match(resto[0]))
+
+
+# Derivaciones pedidas por el cliente ya avisadas en este proceso: teléfono ->
+# iniciada_en de su conversación. La fuente durable es mensaje_whatsapp (ver
+# ejecutiva_avisada_desde); esto cubre que el registro del envío falle.
+_derivaciones_avisadas: dict[str, datetime | None] = {}
+
+
+def _ahora() -> datetime:
+    """Hora actual con zona horaria (las pruebas la reemplazan)."""
+    return datetime.now().astimezone()
+
+
+async def _derivar_por_solicitud(phone: str, draft: dict | None, cliente: dict | None) -> str:
+    """Respuesta a "pásame con la ejecutiva": se avisa a la ejecutiva con el
+    mismo aviso que la derivación espontánea (con la marca de fuera de
+    horario si corresponde) y se le confirma al cliente según el horario de
+    atención. Una sola vez por conversación: si ya se avisó, se le dice que
+    ya se hizo, sin reenviar. El borrador no se toca y la conversación sigue
+    activa, así el pedido en curso se puede continuar."""
+    ahora = _ahora()
+    fuera_de_horario = not en_horario_atencion(ahora)
+    nombre = f", {cliente['nombre']}" if cliente and cliente.get("nombre") else ""
+    complemento = (
+        COMPLEMENTO_DERIVACION_FUERA_DE_HORARIO.format(horario=texto_horario_atencion())
+        if fuera_de_horario
+        else COMPLEMENTO_DERIVACION_EN_HORARIO
+    )
+    if draft and draft.get("productos"):
+        complemento = f"{complemento} {COMPLEMENTO_DERIVACION_CON_PEDIDO}"
+
+    try:
+        conversacion = await iniciada_en(phone)
+    except Exception:
+        logger.exception("[order_flow] Falló leer el inicio de la conversación de %s", phone)
+        conversacion = None
+    ya_avisada = (
+        phone in _derivaciones_avisadas and _derivaciones_avisadas[phone] == conversacion
+    ) or await ejecutiva_avisada_desde(phone, conversacion)
+    if ya_avisada:
+        logger.info("[order_flow] %s repite la petición de ejecutiva: ya se avisó, no se reenvía", phone)
+        return f"{MENSAJE_DERIVACION_YA_AVISADA.format(nombre=nombre)} {complemento}"
+
+    logger.info("[order_flow] %s pide hablar con una ejecutiva: se le avisa", phone)
+    try:
+        tipo_cliente, nombres = await clasificar_remitente(phone)
+        if await _avisar_ejecutiva(phone, tipo_cliente, nombres, fuera_de_horario):
+            _derivaciones_avisadas[phone] = conversacion
+        else:
+            logger.error("[order_flow] No se pudo avisar a la ejecutiva por %s", phone)
+    except Exception:
+        logger.exception("[order_flow] Falló avisar a la ejecutiva por %s", phone)
+    return f"{MENSAJE_DERIVACION_SOLICITADA.format(nombre=nombre)} {complemento}"
+
 
 async def _procesar_mensaje_interno(
     phone: str,
@@ -3291,6 +3494,11 @@ async def _procesar_mensaje_interno(
     if message_type == "text" and es_agradecimiento_puro(message_text):
         return _responder_agradecimiento(draft, cliente)
 
+    # El cliente pide hablar con una persona: se avisa a la ejecutiva sin
+    # pasar por el LLM y sin tocar el borrador (ni sus ofertas pendientes).
+    if message_type == "text" and pide_ejecutiva(message_text):
+        return await _derivar_por_solicitud(phone, draft, cliente)
+
     # Historia #64: respuesta a la oferta de repetir el último pedido.
     if draft is not None and draft.get("oferta_repetir") and message_type == "text":
         respuesta = await _responder_a_oferta_repetir(phone, draft, cliente, message_text)
@@ -3306,6 +3514,13 @@ async def _procesar_mensaje_interno(
             return respuesta
         draft = get_draft(phone)
         estado = draft.get("estado") if draft else None
+
+    # Rechazo puro ("no", "no quiero nada", "hola, no gracias") sin nada en
+    # curso: cierre cortés, sin volver a preguntar por el producto. Va
+    # después de las ofertas (el primer "no" a una oferta la descarta, ver
+    # arriba) y antes de la cancelación (no hay nada que cancelar).
+    if message_type == "text" and _draft_vacio(draft) and es_rechazo_puro(message_text):
+        return _cierre_por_rechazo(phone, cliente)
 
     # Cancelación EXPLÍCITA del pedido/estado en curso: se intercepta antes
     # de llamar al LLM y antes de cualquier otra rama del flujo, con

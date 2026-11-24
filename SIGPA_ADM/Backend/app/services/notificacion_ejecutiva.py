@@ -10,10 +10,15 @@ el texto libre (texto_notificacion_ejecutiva).
 """
 
 import logging
+from datetime import datetime
+
+from sqlalchemy import select
 
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.models import Cliente
+from app.models.mensaje_whatsapp import MensajeWhatsApp
+from app.services.conversacion_bot_service import MARGEN_RELOJ_BD
 from app.services.cliente_lookup import buscar_clientes_por_telefono, normalizar_telefono
 from app.services.horario_atencion import MARCA_FUERA_DE_HORARIO
 from app.services.whatsapp_client import send_whatsapp_template
@@ -144,3 +149,36 @@ async def enviar_plantilla_ejecutiva(
         logger.warning("[notificacion_ejecutiva] Meta rechazó la plantilla %s: se envía texto libre", nombre_plantilla)
         return False
     return True
+
+
+async def ejecutiva_avisada_desde(telefono: str, desde: datetime | None) -> bool:
+    """True si desde `desde` (UTC naive, inicio de la conversación) ya se le
+    envió a la ejecutiva un aviso sobre este teléfono: plantilla o texto
+    libre registrado como enviado en mensaje_whatsapp que menciona el número
+    del cliente. Evita avisarle dos veces por el mismo cliente en la misma
+    conversación aunque el proceso se haya reiniciado. Si la consulta falla
+    devuelve False (más vale un aviso repetido que uno perdido).
+
+    `desde` viene del reloj de la app y creado_en del de la BD: se cuenta
+    desde MARGEN_RELOJ_BD antes, igual que es_primer_mensaje_conversacion
+    (un aviso por este cliente minutos antes de abrir la conversación ya lo
+    puso en conocimiento de la ejecutiva)."""
+    if desde is None or not settings.EJECUTIVA_PHONE:
+        return False
+    try:
+        async with SessionLocal() as session:
+            encontrado = await session.scalar(
+                select(MensajeWhatsApp.id)
+                .where(
+                    MensajeWhatsApp.telefono == settings.EJECUTIVA_PHONE,
+                    MensajeWhatsApp.direccion == "saliente",
+                    MensajeWhatsApp.estado == "enviado",
+                    MensajeWhatsApp.creado_en >= desde - MARGEN_RELOJ_BD,
+                    MensajeWhatsApp.contenido.contains(formatear_telefono(telefono)),
+                )
+                .limit(1)
+            )
+    except Exception:
+        logger.exception("[notificacion_ejecutiva] Falló revisar avisos previos de %s", telefono)
+        return False
+    return encontrado is not None
