@@ -15,7 +15,7 @@ from app.services.cliente_lookup import buscar_clientes_por_telefono
 
 logger = logging.getLogger(__name__)
 
-MODEL = "gpt-6-luna"
+MODEL = "gpt-4o-mini"
 
 CATALOGO_NOMBRES = [
     "Bidón 12L Nuevo",
