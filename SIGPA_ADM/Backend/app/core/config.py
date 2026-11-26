@@ -111,6 +111,9 @@ class Settings(BaseSettings):
     # despachador y máximo de viajes por planificación.
     RUTA_CAPACIDAD_KG: int = 1100
     RUTA_UMBRAL_CASA_KG: int = 800
+    # Con un solo repartidor, el último viaje liviano termina en su casa. Con dos o
+    # más camiones nadie se lleva el vehículo: false hace que todos vuelvan a la planta.
+    RUTA_TERMINA_EN_CASA: bool = True
     RUTA_MAX_VIAJES: int = 3
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")

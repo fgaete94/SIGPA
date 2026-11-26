@@ -13,7 +13,7 @@ const viajeDe = p => p.viaje ?? null;
 // Las paradas quedan en una sola lista ordenada por viaje y, dentro de cada viaje, por orden_entrega.
 export function estadoVistaPrevia(respuesta, pesos = {}) {
   const propuesta = [...(respuesta.ruta || [])].sort(ordenViaje).map(p => ({ ...p, peso_kg: p.peso_kg ?? pesos[p.pedido_id] ?? null }));
-  return { propuesta, paradas: propuesta, fuera: [], sinResolver: respuesta.sin_resolver || [], viajes: respuesta.viajes || [] };
+  return { propuesta, paradas: propuesta, fuera: [], sinResolver: respuesta.sin_resolver || [], viajes: respuesta.viajes || [], terminaEnCasa: respuesta.termina_en_casa !== false };
 }
 
 // Arrastrar cambia el orden dentro de un viaje (desde y hasta son posiciones dentro de ese viaje).
@@ -60,7 +60,7 @@ export function viajesVista(estado) {
     return { grupos: grupos.map(g => ({ ...g, peso_kg: intacta ? g.peso_kg : null, termina_en: intacta ? g.termina_en : null })), problemas: [] };
   }
   const pesos = grupos.map(g => g.paradas.reduce((suma, p) => suma + p.peso_kg, 0));
-  const destinos = terminaEn(pesos);
+  const destinos = terminaEn(pesos, estado.terminaEnCasa !== false);
   return {
     grupos: grupos.map((g, i) => ({ ...g, peso_kg: pesos[i], termina_en: destinos[i] })),
     problemas: grupos.some(g => g.viaje == null) ? [] : problemasViajes(pesos),

@@ -45,7 +45,8 @@ export function reemplazarViaje(paradas, viaje, nuevas) {
 }
 
 // Misma regla que el backend: solo el último viaje, si hay al menos 2 y pesa menos que el umbral, termina en casa.
-export const terminaEn = pesos => pesos.map((peso, i) => (pesos.length >= 2 && i === pesos.length - 1 && peso < UMBRAL_CASA_KG ? 'casa' : 'planta'));
+// enCasa = false (RUTA_TERMINA_EN_CASA del backend apagado, con varios camiones): todos terminan en la planta.
+export const terminaEn = (pesos, enCasa = true) => pesos.map((peso, i) => (enCasa && pesos.length >= 2 && i === pesos.length - 1 && peso < UMBRAL_CASA_KG ? 'casa' : 'planta'));
 
 // Lo que el backend rechazaría al confirmar (pesos de cada viaje en orden): así se avisa antes de enviar.
 export function problemasViajes(pesos) {

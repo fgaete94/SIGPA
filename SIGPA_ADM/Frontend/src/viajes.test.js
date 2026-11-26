@@ -37,6 +37,7 @@ test('dónde termina cada viaje: solo el último, con 2 o más viajes y menos de
   assert.deepEqual(terminaEn([1100, 799]), ['planta', 'casa']);
   assert.deepEqual(terminaEn([1100, 800]), ['planta', 'planta'], 'el umbral es estricto');
   assert.deepEqual(terminaEn([1000, 900, 300]), ['planta', 'planta', 'casa']);
+  assert.deepEqual(terminaEn([1100, 300], false), ['planta', 'planta'], 'sin casa: todos a la planta');
 });
 
 test('problemas que el backend rechazaría al confirmar', () => {

@@ -217,11 +217,18 @@ def _verificar_pesos(pedido_ids: list[int], pesos: dict[int, int], sin_peso: dic
         )
 
 
+def _umbral_casa() -> int:
+    """Umbral efectivo para terminar en la casa. Con RUTA_TERMINA_EN_CASA=false
+    es 1: n8n exige un entero >= 1 y ningún viaje pesa menos de 1 kg (cada
+    parada pesa al menos 1), así que ninguno termina en la casa."""
+    return settings.RUTA_UMBRAL_CASA_KG if settings.RUTA_TERMINA_EN_CASA else 1
+
+
 def _termina_en(viaje: int, ultimo: int, peso_kg: int | None) -> str:
     """Dónde termina un viaje: "casa" solo el último, si hay al menos 2 viajes
     y su peso es ESTRICTAMENTE menor al umbral; en cualquier otro caso (o si
-    el peso no se conoce) "planta"."""
-    if viaje == ultimo and ultimo >= 2 and peso_kg is not None and peso_kg < settings.RUTA_UMBRAL_CASA_KG:
+    el peso no se conoce, o RUTA_TERMINA_EN_CASA=false) "planta"."""
+    if viaje == ultimo and ultimo >= 2 and peso_kg is not None and peso_kg < _umbral_casa():
         return "casa"
     return "planta"
 
@@ -582,13 +589,13 @@ def _validar_respuesta(respuesta, enviados: list[int], pesos: dict[int, int]) ->
             problemas.append(f"viaje {numero}: solo el último viaje puede terminar en casa")
         elif termina == "casa" and ultimo < 2:
             problemas.append(f"viaje {numero}: un único viaje siempre termina en planta")
-        elif termina == "casa" and peso is not None and peso >= settings.RUTA_UMBRAL_CASA_KG:
+        elif termina == "casa" and peso is not None and peso >= _umbral_casa():
             problemas.append(
-                f"viaje {numero}: termina en casa con {peso} kg y el umbral es {settings.RUTA_UMBRAL_CASA_KG} kg"
+                f"viaje {numero}: termina en casa con {peso} kg y el umbral es {_umbral_casa()} kg"
             )
         elif termina != fila["termina_en"]:
             problemas.append(
-                f"viaje {numero}: pesa {peso} kg (menos que el umbral de {settings.RUTA_UMBRAL_CASA_KG} kg) y debe terminar en casa"
+                f"viaje {numero}: pesa {peso} kg (menos que el umbral de {_umbral_casa()} kg) y debe terminar en casa"
             )
     if problemas:
         logger.warning("[rutas] Respuesta de n8n inválida: %s", problemas)
@@ -656,7 +663,7 @@ async def _planificar(pedido_ids: list[int], usuario: str | None, vista_previa: 
     ]
     reglas = {
         "capacidad_kg": settings.RUTA_CAPACIDAD_KG,
-        "umbral_casa_kg": settings.RUTA_UMBRAL_CASA_KG,
+        "umbral_casa_kg": _umbral_casa(),
         "max_viajes": settings.RUTA_MAX_VIAJES,
     }
     # Para detectar cambios hechos mientras se espera a n8n.
@@ -692,6 +699,8 @@ def _vista_previa(pedido_ids, pedidos, ruta_por_id, motivos, viajes) -> dict:
     de n8n, para no volver a geocodificar al confirmar."""
     return {
         "vista_previa": True,
+        # El panel recalcula dónde termina cada viaje si se reordena la ruta.
+        "termina_en_casa": settings.RUTA_TERMINA_EN_CASA,
         "ruta": [
             {
                 "pedido_id": pid,
