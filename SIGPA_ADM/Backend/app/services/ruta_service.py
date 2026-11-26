@@ -308,6 +308,8 @@ async def listar_pendientes() -> list[dict]:
             "creado_en": _como_utc(pedido.creado_en),
             "estado": pedido.estado.value,
             "motivo_revision_direccion": pedido.motivo_revision_direccion,
+            "requiere_revision": pedido.requiere_revision,
+            "motivo_revision": pedido.motivo_revision,
             "peso_kg": pesos.get(pedido.id),
         }
         for pedido in pedidos

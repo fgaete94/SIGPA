@@ -55,10 +55,12 @@ from app.services.horario_atencion import (
     texto_horario_atencion,
 )
 from app.services.notificacion_ejecutiva import (
+    avisar_pedido_grande,
     clasificar_clientes,
     clasificar_remitente,
     ejecutiva_avisada_desde,
     enviar_plantilla_ejecutiva,
+    nombre_completo,
     texto_notificacion_ejecutiva,
 )
 from app.services.whatsapp_client import send_whatsapp_message
@@ -198,6 +200,30 @@ MENSAJE_MODIFICACION_NO_ENTENDIDA = (
     "Tengo anotado: {pedido}."
 )
 
+MENSAJE_DIRECCION_CAMBIADA = "Listo, cambié la dirección de despacho a {direccion}."
+
+# Pedido de cambiar la dirección de despacho ("cámbiame la dirección a ...",
+# "la nueva dirección es ...").
+_PATRON_CAMBIO_DIRECCION = re.compile(
+    r"\b(cambi\w*|nueva|otra|actualiz\w*|corrig\w*|correg\w*|modific\w*)\b.*\bdireccion\b"
+    r"|\bdireccion\b.*\b(cambi\w*|nueva|otra|actualiz\w*)\b"
+)
+
+
+def _direccion_desde_texto(mensaje: str | None) -> str | None:
+    """Dirección escrita después de "dirección a/por/es/:" ("cámbiame la
+    dirección a Los Leones 456" → "Los Leones 456"), o None."""
+    coincidencia = re.search(
+        r"direcci[oó]n(?:\s+de\s+(?:despacho|entrega))?\s*(?:\ba\b|\bpor\b|\bes\b|\bser[aá]\b|:|=)\s*(.+)$",
+        mensaje or "",
+        re.IGNORECASE,
+    )
+    if not coincidencia:
+        return None
+    direccion = coincidencia.group(1).strip(" .,;!¡¿?\"'")
+    return direccion if direccion and (re.search(r"\d", direccion) or len(direccion.split()) >= 2) else None
+
+
 MENSAJE_CORRECCION_RECHAZADA = (
     "Entendido, lo dejo como está. ¿Qué quieres cambiar, o prefieres confirmar o cancelar el pedido?"
 )
@@ -242,6 +268,12 @@ MAX_PALABRAS_CANCELACION_DIFUSA = 3
 # Pasos en que el cliente escribe texto libre (nombres, calles): ahí la
 # similitud difusa nunca cancela por sí sola ("Los Canelos 345", "Candela").
 _PASOS_TEXTO_LIBRE = ("nombre", "direccion", "ubicacion", "confirmar_direccion")
+
+# Pasos en que un número suelto puede ser parte de lo que se pidió (una
+# calle, un nombre): ahí un número solo cuenta como cantidad si lo acompaña
+# un producto ("1000 bidones"). En "¿Despachamos a ...?" o en la ubicación,
+# "0" o "1.5" a secas son cantidades.
+_PASOS_NUMERO_LIBRE = ("nombre", "direccion")
 
 # Negaciones que, antes de la palabra de cancelación y en la misma frase,
 # indican que el cliente NO quiere cancelar ("no cancelen mi pedido").
@@ -1063,7 +1095,13 @@ def _validar_extraidos(
             logger.warning("[order_flow] Producto fuera del catálogo: %r", nombre)
             no_encontrados.append(str(nombre))
             continue
-        if (item.get("operacion") or "agregar") == "agregar" and not _atributos(nombre) <= dichos:
+        operacion = item.get("operacion") or "agregar"
+        if operacion in ("agregar", "fijar") and item.get("cantidad") is not None and _cantidad_valida(item.get("cantidad")) < 1:
+            # Cantidad inválida del LLM (0, texto): no "cubre" la mención del
+            # cliente, que se resuelve en código (ver _resolver_menciones).
+            logger.info("[order_flow] %s rechazado: cantidad inválida %r", nombre, item.get("cantidad"))
+            continue
+        if operacion == "agregar" and not _atributos(nombre) <= dichos:
             logger.info(
                 "[order_flow] %s rechazado: el cliente no dijo %s",
                 nombre,
@@ -1691,7 +1729,7 @@ def _validar_correccion(propuesta: dict | None, productos: list[dict], catalogo:
 
     if atributo == "cantidad":
         nueva = _cantidad_valida(propuesta.get("valor_nuevo"))
-        if len(actuales) != 1 or nueva < 1 or nueva == en_pedido[actuales[0]]:
+        if len(actuales) != 1 or not 1 <= nueva <= COTA_TECNICA_POR_LINEA or nueva == en_pedido[actuales[0]]:
             return None
         return {"cambios": [{"desde": actuales[0], "hacia": actuales[0], "cantidad_nueva": nueva}], "pide_cantidad": False}
 
@@ -2164,7 +2202,7 @@ async def _construir_resumen(draft: dict, cliente: dict | None) -> dict:
     )
     bloques = [
         f"Resumen de tu pedido:\n{lineas_texto}\nTotal: {_formatear_clp(resumen['total'])}",
-        f"Nombre: {nombre}\nDirección de despacho: {direccion}",
+        f"Nombre: {nombre}\nDirección de despacho: {_direccion_con_referencia(direccion, draft.get('referencia_entrega'))}",
     ]
     if draft.get("notas"):
         bloques.append(f"Notas: {draft['notas']}")
@@ -2272,6 +2310,25 @@ async def _aplicar_resultado_llm(
     respuesta_llm = resultado.get("respuesta_sugerida")
     texto = _normalizar_texto(mensaje)
     modificacion_explicita = bool(_PATRON_MODIFICACION.search(texto))
+    mensaje_original = mensaje
+
+    # El LLM no calcula: un texto suyo con montos o "total" + cifra se
+    # descarta y, si hay productos, se responde con el detalle de precios
+    # armado en código (ver _detalle_precios). Las respuestas de
+    # consulta_precio y consulta_pedidos las arma el backend desde la BD.
+    # Una pregunta por el total con un pedido en curso ("¿y en total cuánto
+    # es?") también se responde con ese detalle, aunque el LLM la lea como
+    # consulta de precios del catálogo.
+    montos_descartados = False
+    pregunta_total = bool(draft_previo.get("productos")) and _pregunta_por_total(texto) and intencion != "consulta_pedidos"
+    if pregunta_total or (
+        intencion not in ("consulta_precio", "consulta_pedidos") and _texto_con_montos(respuesta_llm)
+    ):
+        if not pregunta_total:
+            logger.warning("[order_flow] Respuesta del LLM con montos descartada para phone=%s: %r", phone, respuesta_llm)
+        montos_descartados = True
+        respuesta_llm = None
+        resultado = {**resultado, "respuesta_sugerida": None}
 
     # Pregunta, queja o duda sobre el pedido en curso ("¿por qué asumes que
     # quiero bidones de 12?"): se responde, nunca con "fuera de alcance". Si
@@ -2279,6 +2336,14 @@ async def _aplicar_resultado_llm(
     # genérico. En una duda no se agrega ni se deja pendiente nada: los
     # productos que nombra son de lo que se queja, no un pedido nuevo.
     hay_pedido_previo = bool(productos_previos or aclaracion_previa or draft_previo.get("pendientes_modelo"))
+    if intencion == "duda_pedido" and not _es_pregunta_o_reclamo(mensaje) and _menciona_algun_producto(texto):
+        # Una "duda" que no es pregunta ni reclamo y nombra un producto es un
+        # pedido (el LLM marcó así "100 bidones de 20 recarga" sin pedido en
+        # curso, y "5 bidones" / "1000 bidones" con uno, y se perdían en
+        # silencio): lo resuelve el código.
+        logger.info("[order_flow] duda_pedido sin pregunta ni reclamo tratada como pedido para phone=%s", phone)
+        intencion = "pedido"
+        respuesta_llm = None
     respuesta_duda = None
     es_duda = (
         hay_pedido_previo
@@ -2474,6 +2539,16 @@ async def _aplicar_resultado_llm(
             aclaracion_pendiente = aclaracion_previa
             aviso_aclaracion = MENSAJE_ACLARACION_NO_ENTENDIDA
 
+    # Cota técnica por línea (COTA_TECNICA_POR_LINEA, contra basura
+    # numérica), por cualquier camino (lo que extrajo el LLM, una suma con lo
+    # que ya había, una aclaración): el turno se descarta entero y el
+    # borrador queda como estaba (todavía no se guardó nada). Los pedidos
+    # grandes de verdad entran y los deriva la confirmación (ver
+    # umbrales_superados).
+    if _supera_tope(productos, aclaracion_pendiente, pendientes_modelo, draft_previo):
+        logger.info("[order_flow] Cantidad sobre la cota técnica descartada para phone=%s: %r", phone, mensaje)
+        return MENSAJE_CANTIDAD_ALTA
+
     if familias_resueltas or lineas_codigo or cambio_simple or cambio_atributo:
         # El texto del LLM pudo preguntar algo que el código ya resolvió.
         respuesta_llm = None
@@ -2513,7 +2588,28 @@ async def _aplicar_resultado_llm(
     usa_direccion_habitual = draft_previo.get("usa_direccion_habitual")
     direccion_texto = draft_previo.get("direccion_texto")
     ubicacion_rechazada = bool(draft_previo.get("ubicacion_rechazada"))
+    ubicacion = draft_previo.get("ubicacion")
     tiene_direccion_registrada = cliente is not None and bool(cliente.get("direccion"))
+
+    # Cambio de dirección pedido en cualquier paso ("ok pero cámbiame la
+    # dirección a Los Leones 456"), resuelto en código: la dirección se toma
+    # del mensaje y, si no se puede, de lo que extrajo el LLM. Antes, con la
+    # dirección registrada ya confirmada, se ignoraba.
+    direccion_pedida = None
+    if paso_previo not in ("direccion", "confirmar_direccion") and _PATRON_CAMBIO_DIRECCION.search(
+        _normalizar_texto(mensaje_original)
+    ):
+        direccion_pedida = _direccion_desde_texto(mensaje_original) or resultado.get("direccion_texto")
+    direccion_anterior = (
+        cliente["direccion"] if tiene_direccion_registrada and usa_direccion_habitual else direccion_texto
+    )
+    if direccion_pedida and _normalizar_texto(direccion_pedida) != _normalizar_texto(direccion_anterior):
+        usa_direccion_habitual = False
+        direccion_texto = direccion_pedida
+        # La ubicación compartida era de la dirección anterior.
+        ubicacion = None
+    else:
+        direccion_pedida = None
 
     if not tiene_direccion_registrada:
         usa_direccion_habitual = False
@@ -2529,7 +2625,7 @@ async def _aplicar_resultado_llm(
                 usa_direccion_habitual = True
 
     if not usa_direccion_habitual:
-        direccion_texto = resultado.get("direccion_texto") or direccion_texto
+        direccion_texto = direccion_pedida or resultado.get("direccion_texto") or direccion_texto
         ubicacion_rechazada = ubicacion_rechazada or bool(resultado.get("ubicacion_rechazada"))
 
     notas = resultado.get("notas") or draft_previo.get("notas")
@@ -2564,15 +2660,30 @@ async def _aplicar_resultado_llm(
         "nombre_cliente": nombre_cliente,
         "usa_direccion_habitual": usa_direccion_habitual,
         "direccion_texto": direccion_texto,
-        "ubicacion": draft_previo.get("ubicacion"),
+        "ubicacion": ubicacion,
         "ubicacion_rechazada": ubicacion_rechazada,
         "algo_mas_respondido": algo_mas_respondido,
         "pendientes_modelo": pendientes_modelo,
         # Solo de este turno: se recalcula en cada mensaje.
         "no_encontrados": no_encontrados,
     }
+    if draft_previo.get("referencia_entrega"):
+        nuevo_draft["referencia_entrega"] = draft_previo["referencia_entrega"]
     nuevo_draft["unidades_pedidas"] = _actualizar_unidades_pedidas(
         draft_previo, nuevo_draft, familias_modificadas
+    )
+
+    # El aviso de "cambio no aplicado" se decide con el estado FINAL del
+    # borrador: si el turno cambió la dirección o el nombre, el cambio sí
+    # quedó aplicado (antes decía "No pude aplicar el cambio" tras cambiar la
+    # dirección).
+    datos_cambiaron = any(
+        nuevo_draft.get(clave) != draft_previo.get(clave)
+        for clave in ("usa_direccion_habitual", "direccion_texto", "nombre_cliente")
+    )
+    cambio_no_aplicado = cambio_no_aplicado and not datos_cambiaron
+    frase_direccion = (
+        MENSAJE_DIRECCION_CAMBIADA.format(direccion=direccion_texto) if direccion_pedida else None
     )
 
     # Salvaguarda de "sin productos no hay '¿algo más?' ni resumen": como
@@ -2635,6 +2746,11 @@ async def _aplicar_resultado_llm(
     # suelto no lo confirme (solo se confirma justo después del resumen).
     siguiente = PREGUNTA_OPCIONES_PEDIDO if paso == "confirmacion" else texto
     correccion = None
+    detalle_precios = await _detalle_precios(productos) if montos_descartados and productos else None
+    if frase_direccion:
+        # Lo aplicado se dice primero; después va el paso siguiente (la
+        # ubicación de la dirección nueva, o el resumen actualizado).
+        texto = f"{frase_direccion}\n\n{texto}" if paso == "confirmacion" else f"{frase_direccion} {texto}"
     if es_duda:
         correccion = _validar_correccion(propuesta_llm, productos, catalogo)
         if correccion:
@@ -2648,7 +2764,7 @@ async def _aplicar_resultado_llm(
                 # con el pedido): no se ofrece.
                 logger.info("[order_flow] Corrección propuesta descartada: %s", propuesta_llm)
                 respuesta_duda = None
-            respuesta = respuesta_duda or (
+            respuesta = respuesta_duda or detalle_precios or (
                 MENSAJE_DUDA_GENERICA.format(pedido=_resumen_productos_corto(productos))
                 if productos
                 else MENSAJE_DUDA_SIN_PRODUCTOS
@@ -2658,9 +2774,12 @@ async def _aplicar_resultado_llm(
         intencion in _INTENCIONES_RESPUESTA_LLM
         and resultado.get("respuesta_sugerida")
         # Si el cliente pidió algo que el código resolvió, agregó, dejó
-        # pendiente o no encontró en el catálogo, el "fuera de alcance" del
-        # LLM es un error: va la respuesta del código.
-        and not (intencion == "fuera_de_alcance" and (hay_pendientes or lineas_codigo or familias_resueltas))
+        # pendiente o no encontró en el catálogo, o cambió su dirección, el
+        # "fuera de alcance" del LLM es un error: va la respuesta del código.
+        and not (
+            intencion == "fuera_de_alcance"
+            and (hay_pendientes or lineas_codigo or familias_resueltas or datos_cambiaron)
+        )
     ):
         # Consulta de precio/pedidos o tema fuera de alcance: se responde lo
         # que preguntó y, si hay un pedido en curso, se retoma el paso
@@ -2676,8 +2795,18 @@ async def _aplicar_resultado_llm(
             if productos or hay_pendientes
             else resultado["respuesta_sugerida"]
         )
-    elif productos_previos and not productos_cambiaron and intencion != "pedido" and paso != "confirmacion":
+    elif (
+        productos_previos
+        and not productos_cambiaron
+        and intencion != "pedido"
+        and paso != "confirmacion"
+        and not frase_direccion
+        and not detalle_precios
+    ):
         texto = f"Sigo con tu pedido de {_resumen_productos_corto(productos)}. {texto}"
+
+    if detalle_precios and "Resumen de tu pedido" not in texto and detalle_precios not in texto:
+        texto = f"{detalle_precios}\n\n{texto}"
 
     if paso == "confirmacion" and "Resumen de tu pedido" not in texto:
         save_draft(phone, {**(get_draft(phone) or nuevo_draft), "estado": ESTADO_ESPERANDO_MODIFICACION})
@@ -2800,6 +2929,9 @@ async def _confirmar_pedido(phone: str, draft: dict | None) -> str:
         if len(clientes) > 1:
             return await _escalar_telefono_duplicado(phone, clientes)
         cliente = clientes[0] if clientes else None
+        # Pedido grande: solo para clientes existentes (los nuevos ya pasan
+        # por la ejecutiva), sobre las líneas finales que se van a guardar.
+        motivos_revision = umbrales_superados((draft.get("resumen") or {}).get("lineas", [])) if cliente else []
 
         faltantes = _datos_faltantes(draft, _datos_cliente(cliente))
         if faltantes:
@@ -2851,14 +2983,19 @@ async def _confirmar_pedido(phone: str, draft: dict | None) -> str:
 
             # En este punto el cliente ya tiene la dirección de despacho de
             # este pedido (la registrada que confirmó, o la nueva recién
-            # guardada), así que el pedido la copia tal cual.
+            # guardada), así que el pedido la copia tal cual. La referencia
+            # de entrega ("la casa verde") va entre paréntesis solo en el
+            # pedido: la tabla pedido no tiene campo de observaciones y la
+            # dirección registrada del cliente no se toca.
             pedido = Pedido(
                 cliente_id=cliente.id,
                 estado=EstadoPedido.PENDIENTE,
-                direccion_despacho=cliente.direccion,
+                direccion_despacho=_direccion_con_referencia(cliente.direccion, draft.get("referencia_entrega")),
                 latitud=cliente.latitud,
                 longitud=cliente.longitud,
                 total=resumen.get("total", 0),
+                requiere_revision=bool(motivos_revision),
+                motivo_revision="; ".join(motivos_revision) or None,
             )
             session.add(pedido)
             await session.flush()
@@ -2882,9 +3019,92 @@ async def _confirmar_pedido(phone: str, draft: dict | None) -> str:
 
     clear_draft(phone)
     await marcar_inactiva(phone)
+    if motivos_revision:
+        return await _derivar_pedido_grande(phone, pedido.id, cliente, lineas, motivos_revision)
     return (
         f"¡Pedido #{pedido.id} confirmado! Quedó pendiente de revisión, "
         "te contactaremos para coordinar la entrega."
+    )
+
+
+# --------------------------------------------------------------------------
+# Pedidos grandes (cliente existente que supera un umbral por pedido): el
+# pedido se crea igual, marcado para revisión (pedido.requiere_revision y
+# motivo_revision), el cliente recibe un mensaje amable y se avisa a la
+# ejecutiva una vez por pedido (notificacion_ejecutiva.avisar_pedido_grande).
+# Se evalúa sobre las líneas finales al confirmar, así que cubre cualquier
+# camino que haya armado el borrador (repetir pedido, producto habitual,
+# cambios y restas). Ningún camino del bot modifica un pedido ya confirmado
+# (cancelarlo deriva a la ejecutiva); lo edita solo la ejecutiva por PATCH
+# /pedidos/{id}, y eso no vuelve a marcarlo.
+# --------------------------------------------------------------------------
+
+MENSAJE_PEDIDO_GRANDE = (
+    "¡Gracias por tu pedido! Como es un pedido grande, una ejecutiva te contactará para coordinar la entrega."
+)
+# Fuera de horario, en vez de "te contactará" va el texto de horario de la
+# derivación (COMPLEMENTO_DERIVACION_FUERA_DE_HORARIO).
+MENSAJE_PEDIDO_GRANDE_FUERA_DE_HORARIO = (
+    "¡Gracias por tu pedido! Como es un pedido grande, una ejecutiva coordinará la entrega contigo. {complemento}"
+)
+
+
+def _unidades_umbral(lineas: list[dict]) -> dict[str, int]:
+    """Unidades por grupo de umbral, sumando nuevo y recarga:
+    - "Bidón 20L" / "Bidón 12L": las líneas de bidón suelto de esa capacidad.
+      Los bidones de las promos no cuentan: su capacidad no está en el
+      producto (va en las notas del pedido).
+    - "Dispensador Básico": "Dispensador Básico" y las promos "Promo
+      Dispensador Básico + N Bidón(es)" (cada promo trae un dispensador
+      básico). El Dispensador USB no cuenta: el catálogo lo distingue."""
+    unidades: dict[str, int] = {}
+    for linea in lineas:
+        nombre = linea.get("nombre") or linea.get("nombre_producto") or ""
+        cantidad = _cantidad_valida(linea.get("cantidad"))
+        familia, atributos = _familia(nombre), _atributos(nombre)
+        if familia == "Bidón" and _es_clave_capacidad(_categoria(nombre)):
+            grupo = _categoria(nombre)
+        elif familia in ("Dispensador", "Promo") and "basico" in atributos:
+            grupo = "Dispensador Básico"
+        else:
+            continue
+        unidades[grupo] = unidades.get(grupo, 0) + cantidad
+    return unidades
+
+
+def umbrales_superados(lineas: list[dict]) -> list[str]:
+    """Motivos de revisión ("Bidón 20L: 13 unidades, umbral 10") de cada
+    umbral que el pedido SUPERA (justo en el umbral no cuenta). Lista vacía
+    si no supera ninguno."""
+    umbrales = {
+        "Bidón 20L": settings.UMBRAL_BIDON_20L,
+        "Bidón 12L": settings.UMBRAL_BIDON_12L,
+        "Dispensador Básico": settings.UMBRAL_DISPENSADOR_BASICO,
+    }
+    unidades = _unidades_umbral(lineas)
+    return [
+        f"{grupo}: {unidades[grupo]} unidades, umbral {umbral}"
+        for grupo, umbral in umbrales.items()
+        if unidades.get(grupo, 0) > umbral
+    ]
+
+
+async def _derivar_pedido_grande(
+    phone: str, pedido_id: int, cliente: Cliente, lineas: list[dict], motivos: list[str]
+) -> str:
+    """El pedido ya quedó guardado y marcado: se avisa a la ejecutiva (si el
+    aviso falla, solo se loguea) y se le responde al cliente."""
+    logger.info("[order_flow] Pedido grande #%s de %s: %s", pedido_id, phone, motivos)
+    detalle = ", ".join(f"{linea['cantidad']}x {linea['nombre']}" for linea in lineas)
+    try:
+        nombre = nombre_completo(cliente)
+    except Exception:
+        nombre = ""
+    await avisar_pedido_grande(pedido_id, nombre, phone, detalle, "; ".join(motivos), send_whatsapp_message)
+    if en_horario_atencion(_ahora()):
+        return MENSAJE_PEDIDO_GRANDE
+    return MENSAJE_PEDIDO_GRANDE_FUERA_DE_HORARIO.format(
+        complemento=COMPLEMENTO_DERIVACION_FUERA_DE_HORARIO.format(horario=texto_horario_atencion())
     )
 
 
@@ -3432,6 +3652,31 @@ def _ahora() -> datetime:
     return datetime.now().astimezone()
 
 
+async def _avisar_ejecutiva_una_vez(phone: str, fuera_de_horario: bool) -> bool:
+    """Avisa a la ejecutiva por `phone` una sola vez por conversación (ver
+    _avisar_ejecutiva). Devuelve True si ya se le había avisado en esta
+    conversación (y entonces no se reenvía nada)."""
+    try:
+        conversacion = await iniciada_en(phone)
+    except Exception:
+        logger.exception("[order_flow] Falló leer el inicio de la conversación de %s", phone)
+        conversacion = None
+    ya_avisada = (
+        phone in _derivaciones_avisadas and _derivaciones_avisadas[phone] == conversacion
+    ) or await ejecutiva_avisada_desde(phone, conversacion)
+    if ya_avisada:
+        return True
+    try:
+        tipo_cliente, nombres = await clasificar_remitente(phone)
+        if await _avisar_ejecutiva(phone, tipo_cliente, nombres, fuera_de_horario):
+            _derivaciones_avisadas[phone] = conversacion
+        else:
+            logger.error("[order_flow] No se pudo avisar a la ejecutiva por %s", phone)
+    except Exception:
+        logger.exception("[order_flow] Falló avisar a la ejecutiva por %s", phone)
+    return False
+
+
 async def _derivar_por_solicitud(phone: str, draft: dict | None, cliente: dict | None) -> str:
     """Respuesta a "pásame con la ejecutiva": se avisa a la ejecutiva con el
     mismo aviso que la derivación espontánea (con la marca de fuera de
@@ -3450,28 +3695,458 @@ async def _derivar_por_solicitud(phone: str, draft: dict | None, cliente: dict |
     if draft and draft.get("productos"):
         complemento = f"{complemento} {COMPLEMENTO_DERIVACION_CON_PEDIDO}"
 
-    try:
-        conversacion = await iniciada_en(phone)
-    except Exception:
-        logger.exception("[order_flow] Falló leer el inicio de la conversación de %s", phone)
-        conversacion = None
-    ya_avisada = (
-        phone in _derivaciones_avisadas and _derivaciones_avisadas[phone] == conversacion
-    ) or await ejecutiva_avisada_desde(phone, conversacion)
-    if ya_avisada:
+    if await _avisar_ejecutiva_una_vez(phone, fuera_de_horario):
         logger.info("[order_flow] %s repite la petición de ejecutiva: ya se avisó, no se reenvía", phone)
         return f"{MENSAJE_DERIVACION_YA_AVISADA.format(nombre=nombre)} {complemento}"
-
-    logger.info("[order_flow] %s pide hablar con una ejecutiva: se le avisa", phone)
-    try:
-        tipo_cliente, nombres = await clasificar_remitente(phone)
-        if await _avisar_ejecutiva(phone, tipo_cliente, nombres, fuera_de_horario):
-            _derivaciones_avisadas[phone] = conversacion
-        else:
-            logger.error("[order_flow] No se pudo avisar a la ejecutiva por %s", phone)
-    except Exception:
-        logger.exception("[order_flow] Falló avisar a la ejecutiva por %s", phone)
+    logger.info("[order_flow] %s pidió hablar con una ejecutiva: se le avisó", phone)
     return f"{MENSAJE_DERIVACION_SOLICITADA.format(nombre=nombre)} {complemento}"
+
+
+# --------------------------------------------------------------------------
+# Cancelar un pedido YA CONFIRMADO ("cancela el pedido #631", "quiero
+# cancelar el pedido que hice"). El bot no lo cancela: deriva a la ejecutiva
+# (aviso único por conversación) y solo repite el número que escribió el
+# cliente, sin consultar ni mostrar datos de ningún pedido. El borrador en
+# curso no se toca. "cancela" a secas (o "cancela mi pedido" con un borrador
+# en curso) sigue cancelando el borrador, como siempre.
+# --------------------------------------------------------------------------
+
+MENSAJE_CANCELACION_CONFIRMADO = (
+    "Ya le avisé a una ejecutiva para que gestione la cancelación del pedido #{numero}. "
+    "Te contactará a la brevedad."
+)
+MENSAJE_CANCELACION_CONFIRMADO_SIN_NUMERO = (
+    "Ya le avisé a una ejecutiva para que gestione la cancelación de tu pedido. "
+    "Te contactará a la brevedad."
+)
+_CIERRE_CANCELACION_EN_HORARIO = "Te contactará a la brevedad."
+
+# Referencias a un pedido ya hecho (no al borrador en curso).
+_PATRON_PEDIDO_ANTERIOR = re.compile(
+    r"\b(que (hice|hicimos|pedi|pedimos|realice|confirme|confirmamos|mande)|anterior|confirmado"
+    r"|de ayer|ya hecho|que ya|ultimo pedido)\b"
+)
+
+
+def _numero_pedido(texto: str | None) -> str | None:
+    """Número de pedido tal como lo escribió el cliente ("#631", "pedido
+    631", "pedido nro 631")."""
+    coincidencia = re.search(r"#\s*(\d+)", texto or "")
+    if coincidencia:
+        return coincidencia.group(1)
+    coincidencia = re.search(r"\bpedido (?:n |no |nro |num |numero )?(\d+)\b", _normalizar_texto(texto))
+    return coincidencia.group(1) if coincidencia else None
+
+
+def _cancela_pedido_confirmado(texto: str | None, draft: dict | None) -> tuple[bool, str | None]:
+    """(True, número o None) si el mensaje pide cancelar un pedido ya
+    confirmado: cancelación explícita (ver _intencion_cancelar) que nombra
+    "pedido" y trae un número, habla de un pedido ya hecho, o llega sin
+    borrador en curso (no hay otra cosa que cancelar)."""
+    normalizado = _normalizar_texto(texto)
+    if not re.search(r"\bpedido\b", normalizado) or _intencion_cancelar(texto) != "cancelar":
+        return False, None
+    numero = _numero_pedido(texto)
+    if numero or _PATRON_PEDIDO_ANTERIOR.search(normalizado) or _draft_vacio(draft):
+        return True, numero
+    return False, None
+
+
+async def _derivar_cancelacion(phone: str, numero: str | None) -> str:
+    fuera_de_horario = not en_horario_atencion(_ahora())
+    if await _avisar_ejecutiva_una_vez(phone, fuera_de_horario):
+        logger.info("[order_flow] %s pide cancelar un pedido confirmado: ya se avisó, no se reenvía", phone)
+    else:
+        logger.info("[order_flow] %s pide cancelar un pedido confirmado (#%s): se avisó a la ejecutiva", phone, numero)
+    texto = (
+        MENSAJE_CANCELACION_CONFIRMADO.format(numero=numero)
+        if numero
+        else MENSAJE_CANCELACION_CONFIRMADO_SIN_NUMERO
+    )
+    if fuera_de_horario:
+        texto = texto.replace(
+            _CIERRE_CANCELACION_EN_HORARIO,
+            COMPLEMENTO_DERIVACION_FUERA_DE_HORARIO.format(horario=texto_horario_atencion()),
+        )
+    return texto
+
+
+# --------------------------------------------------------------------------
+# Cantidades inválidas: fracciones, cero o negativas, y sobre la cota técnica
+# por línea (COTA_TECNICA_POR_LINEA, solo contra basura numérica). Se
+# detectan en código, antes del LLM, y la respuesta no toca el borrador
+# (prueba de estrés 2026-11: "-3 bidones" dejaba al bot repitiendo la
+# pregunta y "medio bidón" se redondeaba). Además, _aplicar_resultado_llm
+# descarta cualquier línea que supere la cota por otro camino (el LLM, una
+# suma), ver _supera_tope. Una cantidad grande pero válida ("1000 bidones")
+# sí entra: al confirmar, el pedido queda marcado y se deriva a la ejecutiva
+# (ver umbrales_superados).
+# --------------------------------------------------------------------------
+
+MENSAJE_CANTIDAD_ALTA = (
+    "Esa cantidad es muy alta para pedirla por aquí. ¿Me confirmas cuántos necesitas? "
+    "Si es un pedido grande, dime «ejecutiva» y te conecto."
+)
+MENSAJE_CANTIDAD_NO_POSITIVA = "La cantidad debe ser un número positivo. ¿Cuántos necesitas?"
+MENSAJE_SOLO_UNIDADES_COMPLETAS = "Solo vendemos bidones completos. ¿Cuántos bidones necesitas?"
+
+# Palabra justo después de un número que lo hace cantidad ("1000 bidones").
+_PATRON_PALABRA_PRODUCTO = re.compile(
+    r"bidon(es)?|botellon(es)?|recargas?|nuev[oa]s?|dispensador\w*|maquinas?|promo\w*|combos?"
+    r"|unidad(es)?|envases?|\d+l"
+)
+_PRODUCTO_FRACCION = r"(bidon(es)?|botellon(es)?|recargas?|nuev[oa]s?|dispensador\w*|promo\w*)"
+# "medio bidón", "dos bidones y medio", "bidón de 20 y medio".
+_PATRON_MEDIO = re.compile(
+    rf"\bmedi[oa]s? {_PRODUCTO_FRACCION}\b|\b{_PRODUCTO_FRACCION}( de \d+l?| \d+l| nuev[oa]s?| recargas?)* y medi[oa]\b"
+)
+# Palabras que pueden acompañar a una cantidad suelta ("mejor 1000", "que
+# sean 0", "quiero 1.5"): si el mensaje no tiene otra cosa, el número es una
+# cantidad. Cualquier otra palabra ("calle", "timbre", "depto", "pedido") la
+# saca: "Los Leones 456" o "tocar el timbre 2" no son cantidades.
+_RELLENO_CANTIDAD = {
+    "quiero", "queremos", "quisiera", "necesito", "necesitamos", "mejor", "solo", "deja", "dejame",
+    "dejalo", "dejalos", "que", "sean", "son", "seran", "serian", "seria", "unos", "unas", "ponme",
+    "pon", "mandame", "manda", "dame", "enviame", "agrega", "agregame", "agregale", "suma", "sumale",
+    "pedir", "pido", "por", "favor", "porfa", "entonces", "ok", "ya", "pero", "y", "no", "si", "bueno",
+    "mas", "me", "nos", "el", "la", "los", "las", "de", "x", "en", "al", "final", "hola", "gracias",
+    "cantidad", "l", "lt", "lts", "litro", "litros",
+}
+# Cota técnica fija por línea: más que esto no es un pedido, es basura
+# numérica ("999999999 bidones").
+COTA_TECNICA_POR_LINEA = 10000
+_NUMERO_ALTO_TEXTO = re.compile(r"millon(es)?|billon(es)?")
+_CAPACIDADES_TEXTO = {str(c) for c in _CAPACIDADES}
+
+
+_PATRON_MILES = re.compile(r"(?<![\d.,])\d{1,3}(?:[.,]\d{3})+(?![.,]?\d)")
+
+
+def _unir_miles(texto: str | None) -> str | None:
+    """"1.000 bidones" → "1000 bidones" ("1,000" también): sin esto la
+    normalización deja "1 000" y la cantidad se pierde."""
+    if not texto:
+        return texto
+    return _PATRON_MILES.sub(lambda m: re.sub(r"[.,]", "", m.group(0)), texto)
+
+
+def _marcar_numeros(texto: str | None) -> str:
+    """Prepara el texto crudo para _cantidad_invalida antes de normalizarlo
+    (la normalización borra "." "," y "-"): "1.000" → "1000" (separador de
+    miles), "1.5" / "1,5" / "1/2" / "½" → "fraccion_numero", "-3" →
+    "negativo_3" ("3-B" o "100-A" no son negativos)."""
+    texto = _unir_miles(texto) or ""
+    texto = re.sub(r"(?<![\d.,])\d+[.,]\d+(?!\d)|\b[1-3]/[2-4]\b|[½¼¾]", " fraccion_numero ", texto)
+    return re.sub(r"(?<![^\s(¿¡:,;])[-−–]\s?(\d+)", r" negativo_\1 ", texto)
+
+
+def _es_cantidad(tokens: list[str], j: int, texto_libre: bool) -> bool:
+    """tokens[j] (un número) es una cantidad: va seguido de un producto
+    ("1000 bidones", "1000 de 20") o, fuera de los pasos de texto libre, el
+    mensaje no trae nada más que relleno ("mejor 1000", "0")."""
+    siguiente = tokens[j + 1] if j + 1 < len(tokens) else ""
+    if _PATRON_PALABRA_PRODUCTO.fullmatch(siguiente):
+        return True
+    if siguiente in ("de", "x") and j + 2 < len(tokens) and tokens[j + 2] in _CAPACIDADES_TEXTO | {f"{c}l" for c in _CAPACIDADES_TEXTO}:
+        return True
+    if texto_libre:
+        return False
+    return all(
+        k == j
+        or token in _RELLENO_CANTIDAD
+        or _PATRON_PALABRA_PRODUCTO.fullmatch(token)
+        or _capacidad_en(tokens, k) is not None
+        for k, token in enumerate(tokens)
+    )
+
+
+def _cantidad_invalida(texto: str | None, texto_libre: bool = False) -> str | None:
+    """Mensaje para el cliente si el mensaje pide una cantidad inválida
+    (fracción, cero o negativa, o mayor que la cota técnica por línea), o None. Las
+    capacidades ("de 20", "20 litros") no son cantidades."""
+    tokens = _normalizar_texto(_marcar_numeros(texto)).split()
+    normalizado = " ".join(tokens)
+    if _PATRON_MEDIO.search(normalizado) or (
+        not texto_libre
+        and any(t in ("medio", "media") for t in tokens)
+        and all(t in _RELLENO_CANTIDAD or t in ("medio", "media") or t.isdigit() or t in _NUMEROS_TEXTO for t in tokens)
+    ):
+        return MENSAJE_SOLO_UNIDADES_COMPLETAS
+
+    hallazgos = set()
+    for j, token in enumerate(tokens):
+        if token == "fraccion_numero":
+            tipo = "fraccion"
+        elif token.startswith("negativo_") or token == "cero" or re.fullmatch(r"0+", token):
+            tipo = "no_positiva"
+        elif (token.isdigit() and int(token) > COTA_TECNICA_POR_LINEA) or _NUMERO_ALTO_TEXTO.fullmatch(token):
+            tipo = "alta"
+        else:
+            continue
+        if token.isdigit() and _capacidad_en(tokens, j) is not None:
+            continue
+        if j + 1 < len(tokens) and tokens[j + 1] in _UNIDADES_LITRO:
+            continue  # "1.5 litros" es una capacidad, no una cantidad
+        if _es_cantidad(tokens, j, texto_libre):
+            hallazgos.add(tipo)
+    for tipo, mensaje in (
+        ("fraccion", MENSAJE_SOLO_UNIDADES_COMPLETAS),
+        ("no_positiva", MENSAJE_CANTIDAD_NO_POSITIVA),
+        ("alta", MENSAJE_CANTIDAD_ALTA),
+    ):
+        if tipo in hallazgos:
+            return mensaje
+    return None
+
+
+def _supera_tope(productos: list[dict], aclaracion, pendientes_modelo: list[dict], draft_previo: dict) -> bool:
+    """Alguna línea (o producto pendiente de aclarar) quedó sobre la cota técnica y
+    creció en este turno. Lo que ya estaba en el borrador (un borrador
+    anterior a este tope) no se rechaza: solo se puede bajar."""
+    tope = COTA_TECNICA_POR_LINEA
+
+    def por_nombre(lineas: list[dict]) -> dict[str, int]:
+        return {p.get("nombre_producto"): _cantidad_valida(p.get("cantidad")) for p in lineas}
+
+    antes = por_nombre(draft_previo.get("productos") or [])
+    if any(n > tope and n > antes.get(nombre, 0) for nombre, n in por_nombre(productos).items()):
+        return True
+    pendientes_antes = {
+        a.get("capacidad_litros"): _cantidad_valida(a.get("cantidad"))
+        for a in _lista_aclaraciones(draft_previo.get("aclaracion_pendiente"))
+    }
+    if any(
+        _cantidad_valida(a.get("cantidad")) > max(tope, pendientes_antes.get(a.get("capacidad_litros"), 0))
+        for a in _lista_aclaraciones(aclaracion)
+    ):
+        return True
+    return any(_cantidad_valida(p.get("cantidad")) > tope for p in pendientes_modelo)
+
+
+# --------------------------------------------------------------------------
+# Restas relativas ("quítale 998", "mejor descuéntame 5 bidones"): restan N
+# a la línea indicada, en código. Antes el LLM las leía como "fijar" (1000 →
+# "quítale 998" dejaba 998). Las frases que FIJAN la cantidad ("mejor 5",
+# "déjame 5", "que sean 5") siguen por _cambio_cantidad_simple, y "quita el
+# dispensador" (sin número) elimina la línea como siempre.
+# --------------------------------------------------------------------------
+
+MENSAJE_RESTA_CUAL = "¿A cuál producto le quito {cantidad}? Tengo anotado: {pedido}."
+MENSAJE_RESTA_APLICADA = "Listo, quité {cantidad}: quedan {nueva}x {nombre}."
+MENSAJE_LINEA_QUITADA = "Quité esa línea del pedido ({cantidad}x {nombre})."
+
+_VERBO_RESTA = (
+    r"quit\w*|descuent\w*|descont\w*|rest(?:a|ale|ame|ar|en|enle|enme)|sac(?:a|ale|ame|ar|en|enle|enme)"
+    r"|baj(?:a|ale|ame|ar|en|enle|enme)|menos"
+)
+_PATRON_RESTA = re.compile(
+    rf"(?<!\bal )(?<!\blo )\b(?:{_VERBO_RESTA}) (?:unos |unas )?(?P<n>\d+|{'|'.join(_NUMEROS_TEXTO)})\b"
+)
+# Lo único que puede acompañar a la resta, además del producto: "mejor
+# descuéntame 5 bidones", "quítale 2 a los de 20 del pedido".
+_RELLENO_RESTA = _RELLENO_CANTIDAD | {"del", "pedido", "a", "linea", "eso", "esos", "esas", "le", "lo", "porfavor"}
+
+
+def _resta_relativa(texto_normalizado: str) -> tuple[int, str] | None:
+    """(N, resto del mensaje) si el mensaje es una resta relativa, o None.
+    No lo es si además agrega o cambia otra cosa, trae otra cantidad, o
+    tiene palabras ajenas ("sácame una duda")."""
+    coincidencia = _PATRON_RESTA.search(texto_normalizado)
+    if not coincidencia:
+        return None
+    numero = coincidencia.group("n")
+    cantidad = int(numero) if numero.isdigit() else _NUMEROS_TEXTO[numero]
+    resto = f"{texto_normalizado[:coincidencia.start()]} {texto_normalizado[coincidencia.end():]}".strip()
+    tokens = resto.split()
+    if cantidad < 1 or _cantidades_mensaje(resto) or re.search(r"\b(agreg\w*|sum\w*|anad\w*|tambien|ademas|cambi\w*|reemplaz\w*)\b", resto):
+        return None
+    if not all(
+        t in _RELLENO_RESTA or _PATRON_PALABRA_PRODUCTO.fullmatch(t) or _capacidad_en(tokens, k) is not None
+        or _menciona_algun_producto(t)
+        for k, t in enumerate(tokens)
+    ):
+        return None
+    return cantidad, resto
+
+
+def _lineas_mencionadas(productos: list[dict], texto_normalizado: str) -> list[int]:
+    """Índices de las líneas del pedido que calzan con lo que nombra el
+    mensaje (tipo y atributos); sin producto nombrado, todas."""
+    tipos = [tipo for tipo in _PATRONES_TIPO_PRODUCTO if _menciona_tipo(tipo, texto_normalizado)]
+    atributos = _atributos_mensaje(texto_normalizado)
+    return [
+        i
+        for i, p in enumerate(productos)
+        if (not tipos or _tipo_producto(p.get("nombre_producto") or "") in tipos)
+        and atributos <= _atributos(p.get("nombre_producto") or "")
+    ]
+
+
+async def _aplicar_resta(phone: str, draft: dict, cliente: dict | None, indice: int, cantidad: int) -> str:
+    productos = [dict(p) for p in draft.get("productos") or []]
+    nombre = productos[indice]["nombre_producto"]
+    actual = _cantidad_valida(productos[indice].get("cantidad"))
+    nueva = actual - cantidad
+    if nueva <= 0:
+        # Nunca una cantidad negativa: se quita la línea y se avisa.
+        productos.pop(indice)
+        aviso = MENSAJE_LINEA_QUITADA.format(cantidad=actual, nombre=nombre)
+    else:
+        productos[indice]["cantidad"] = nueva
+        aviso = MENSAJE_RESTA_APLICADA.format(cantidad=cantidad, nueva=nueva, nombre=nombre)
+    logger.info("[order_flow] Resta relativa para phone=%s: %s %d - %d", phone, nombre, actual, cantidad)
+    nuevo = {
+        clave: valor
+        for clave, valor in draft.items()
+        if clave not in ("resta_pendiente", "correccion_pendiente", "no_encontrados")
+    }
+    nuevo["productos"] = productos
+    # Cambio pedido explícitamente: lo pedido pasa a ser lo que quedó.
+    nuevo["unidades_pedidas"] = _unidades_draft(nuevo)
+    _, texto = await _responder_siguiente_paso(phone, nuevo, cliente)
+    return f"{aviso}\n\n{texto}"
+
+
+async def _responder_resta(phone: str, draft: dict, cliente: dict | None, mensaje: str | None) -> str | None:
+    """Resta relativa sobre el borrador, o la respuesta a "¿a cuál producto
+    le quito N?". None si el mensaje no es eso."""
+    productos = draft.get("productos") or []
+    texto = _normalizar_texto(mensaje)
+    pendiente = draft.get("resta_pendiente")
+    if pendiente:
+        # Vale solo para el mensaje siguiente.
+        draft = {clave: valor for clave, valor in draft.items() if clave != "resta_pendiente"}
+        save_draft(phone, draft)
+        if _resta_relativa(texto) is None and _menciona_algun_producto(texto):
+            lineas = _lineas_mencionadas(productos, texto)
+            if len(lineas) == 1:
+                return await _aplicar_resta(phone, draft, cliente, lineas[0], pendiente)
+
+    resta = _resta_relativa(texto)
+    if resta is None or not productos:
+        return None
+    cantidad, resto = resta
+    if draft.get("paso") in _PASOS_NUMERO_LIBRE and not _menciona_algun_producto(resto):
+        return None
+    lineas = _lineas_mencionadas(productos, resto)
+    if len(lineas) == 1:
+        return await _aplicar_resta(phone, draft, cliente, lineas[0], cantidad)
+    save_draft(phone, {**draft, "resta_pendiente": cantidad})
+    return MENSAJE_RESTA_CUAL.format(cantidad=cantidad, pedido=_resumen_productos_corto(productos))
+
+
+# --------------------------------------------------------------------------
+# "¿Deseas agregar algo más?" → "nada más", "eso es todo", "es todo", "no
+# necesito nada más", "nada más gracias": es un no, en código (antes "eso es
+# todo, gracias" se tomaba como agradecimiento y se volvía a preguntar).
+# --------------------------------------------------------------------------
+
+_FRASES_NADA_MAS = ("nada mas", "eso es todo", "es todo", "solo eso", "ya esta", "eso seria", "eso nomas", "nada", "no")
+_RELLENO_NADA_MAS = {
+    "no", "nada", "mas", "eso", "es", "todo", "seria", "solo", "ya", "esta", "nomas", "asi", "gracias",
+    "muchas", "mil", "por", "favor", "porfa", "necesito", "quiero", "ok", "bueno", "listo", "perfecto",
+    "de", "momento", "ahora", "el", "estaria", "estamos", "nop", "nope", "seria",
+}
+
+
+def _nada_mas_puro(texto: str | None) -> bool:
+    normalizado = _normalizar_texto(texto)
+    tokens = normalizado.split()
+    if not tokens or any(c.isdigit() for c in texto or "") or _menciona_algun_producto(normalizado):
+        return False
+    return all(t in _RELLENO_NADA_MAS for t in tokens) and any(
+        re.search(rf"(^| ){frase}( |$)", normalizado) for frase in _FRASES_NADA_MAS
+    )
+
+
+# --------------------------------------------------------------------------
+# Referencias de ubicación con un pedido en curso ("por el lado del
+# supermercado, la casa verde", "tocar el timbre 2", "portón negro"): no son
+# fuera de tema. La tabla pedido no tiene un campo de observaciones, así que
+# se guardan en el borrador (referencia_entrega), se muestran en el resumen y
+# al confirmar se agregan entre paréntesis a pedido.direccion_despacho, sin
+# tocar la dirección registrada del cliente.
+# --------------------------------------------------------------------------
+
+_PATRON_REFERENCIA = re.compile(
+    r"\b(al lado|por el lado|lado de|lado del|frente|enfrente|esquina|cerca|detras|atras|casa|porton|puerta"
+    r"|reja|timbre|tocar|toca|toquen|block|torre|depto|dpto|departamento|piso|conserjeria|conserje|edificio"
+    r"|condominio|local|oficina|referencia)\b"
+)
+
+
+def _es_referencia_ubicacion(texto: str | None, draft: dict | None) -> bool:
+    if not draft or not draft.get("productos") or draft.get("paso") in _PASOS_TEXTO_LIBRE:
+        return False
+    normalizado = _normalizar_texto(texto)
+    return bool(
+        _PATRON_REFERENCIA.search(normalizado)
+        and not _menciona_algun_producto(normalizado)
+        and not re.search(r"\bdireccion\b", normalizado)
+        and _intencion_cancelar(texto) is None
+    )
+
+
+def _direccion_con_referencia(direccion: str | None, referencia: str | None) -> str | None:
+    if not referencia:
+        return direccion
+    return f"{direccion or ''} ({referencia})".strip()[:255]
+
+
+async def _anotar_referencia(phone: str, draft: dict, cliente: dict | None, mensaje: str) -> str:
+    referencia = " ".join(mensaje.split()).strip().rstrip(".")
+    previa = draft.get("referencia_entrega")
+    if previa and referencia.lower() not in previa.lower():
+        referencia_total = f"{previa}; {referencia}"
+    else:
+        referencia_total = previa or referencia
+    nuevo = {clave: valor for clave, valor in draft.items() if clave not in ("correccion_pendiente", "resta_pendiente")}
+    nuevo["referencia_entrega"] = referencia_total
+    logger.info("[order_flow] Referencia de entrega anotada para phone=%s: %r", phone, referencia_total)
+    _, siguiente = await _responder_siguiente_paso(phone, nuevo, cliente)
+    return f"Anotado: {referencia}.\n\n{siguiente}"
+
+
+# --------------------------------------------------------------------------
+# El LLM no calcula: ninguna respuesta redactada por el LLM puede traer
+# montos ni totales (ver _aplicar_resultado_llm). Las de consulta_precio y
+# consulta_pedidos las arma el backend desde la BD.
+# --------------------------------------------------------------------------
+
+_PATRON_MONTO = re.compile(r"\$\s*\d|\d[\d.,]*\s*(pesos|clp)\b", re.IGNORECASE)
+
+
+def _texto_con_montos(texto: str | None) -> bool:
+    if not texto:
+        return False
+    if _PATRON_MONTO.search(texto):
+        return True
+    return bool(re.search(r"\btotal\b", texto, re.IGNORECASE) and re.search(r"\d", texto))
+
+
+def _pregunta_por_total(texto_normalizado: str) -> bool:
+    """"¿cuánto me sale todo?", "¿y en total cuánto es?", "¿cuánto sería?"
+    (no "¿cuánto cuesta el dispensador?", que es una consulta de precio)."""
+    return bool(
+        re.search(r"\btotal\b|\bcuanto\b.*\b(todo|pedido)\b", texto_normalizado)
+        or (
+            re.search(r"\bcuanto (me |nos )?(sale|saldria|seria|queda|es)\b", texto_normalizado)
+            and not _menciona_algun_producto(texto_normalizado)
+        )
+    )
+
+
+async def _detalle_precios(productos: list[dict]) -> str | None:
+    """Detalle con precios y total armado en código (mismo cálculo que el
+    resumen), para reemplazar un texto del LLM que traía montos."""
+    try:
+        resumen = await construir_resumen_pedido(productos)
+    except ValueError:
+        return None
+    lineas = "\n".join(
+        f'- {linea["cantidad"]}x {linea["nombre"]} — {_formatear_clp(linea["subtotal"])}' for linea in resumen["lineas"]
+    )
+    return f"Tu pedido hasta ahora:\n{lineas}\nTotal: {_formatear_clp(resumen['total'])}"
 
 
 async def _procesar_mensaje_interno(
@@ -3480,6 +4155,10 @@ async def _procesar_mensaje_interno(
     message_text: str | None,
     location: dict | None,
 ) -> str:
+    # "1.000 bidones" es mil para todo el flujo (no "1 000").
+    if message_type == "text":
+        message_text = _unir_miles(message_text)
+
     # Identificación por teléfono (normalizado) en cada mensaje: si hay
     # más de un cliente con ese teléfono, no se elige uno.
     clientes = await _buscar_clientes(phone)
@@ -3490,6 +4169,17 @@ async def _procesar_mensaje_interno(
     draft = get_draft(phone)
     estado = draft.get("estado") if draft else None
 
+    # "nada más" / "eso es todo" a "¿Deseas agregar algo más?": es un no, se
+    # pasa directo al paso siguiente (antes de que "eso es todo, gracias" se
+    # tome como agradecimiento y se vuelva a preguntar).
+    if message_type == "text" and draft is not None and draft.get("paso") == "algo_mas" and _nada_mas_puro(message_text):
+        nuevo = {
+            clave: valor for clave, valor in draft.items() if clave not in ("correccion_pendiente", "resta_pendiente")
+        }
+        nuevo["algo_mas_respondido"] = True
+        _, texto = await _responder_siguiente_paso(phone, nuevo, cliente)
+        return texto
+
     # Historia #169: un agradecimiento no se interpreta ni cambia el borrador.
     if message_type == "text" and es_agradecimiento_puro(message_text):
         return _responder_agradecimiento(draft, cliente)
@@ -3498,6 +4188,34 @@ async def _procesar_mensaje_interno(
     # pasar por el LLM y sin tocar el borrador (ni sus ofertas pendientes).
     if message_type == "text" and pide_ejecutiva(message_text):
         return await _derivar_por_solicitud(phone, draft, cliente)
+
+    if message_type == "text":
+        # Cancelar un pedido ya confirmado: se deriva a la ejecutiva, sin
+        # tocar el borrador en curso (va antes de la cancelación del borrador).
+        cancela_confirmado, numero = _cancela_pedido_confirmado(message_text, draft)
+        if cancela_confirmado:
+            return await _derivar_cancelacion(phone, numero)
+
+        # Resta relativa ("quítale 998") o respuesta a "¿a cuál le quito N?".
+        if draft is not None and draft.get("productos"):
+            respuesta = await _responder_resta(phone, draft, cliente, message_text)
+            if respuesta is not None:
+                return respuesta
+            draft = get_draft(phone)
+            estado = draft.get("estado") if draft else None
+
+        # Cantidad inválida (fracción, cero/negativa, sobre la cota técnica): se
+        # responde una vez y el borrador no se toca.
+        invalida = _cantidad_invalida(
+            message_text, texto_libre=bool(draft) and draft.get("paso") in _PASOS_NUMERO_LIBRE
+        )
+        if invalida:
+            logger.info("[order_flow] Cantidad inválida de phone=%s: %r", phone, message_text)
+            return invalida
+
+        # Referencia de ubicación con un pedido en curso.
+        if _es_referencia_ubicacion(message_text, draft):
+            return await _anotar_referencia(phone, draft, cliente, message_text)
 
     # Historia #64: respuesta a la oferta de repetir el último pedido.
     if draft is not None and draft.get("oferta_repetir") and message_type == "text":

@@ -43,6 +43,9 @@ ESTADOS_ENTREGABLES = {EstadoPedido.CONFIRMADO, EstadoPedido.EN_DESPACHO}
 # Historia #68: un pedido entregado o cancelado ya no se edita (cambiaría ventas ya cerradas)
 ESTADOS_EDITABLES = {EstadoPedido.PENDIENTE, EstadoPedido.CONFIRMADO, EstadoPedido.EN_DESPACHO}
 
+# Campos de la revisión de pedido grande (los limpia la ejecutiva).
+CAMPOS_REVISION = {"requiere_revision", "motivo_revision"}
+
 
 def _lineas_snapshot(pedido: Pedido) -> list[dict]:
     """Productos del pedido para la auditoría (construir_snapshot solo guarda las columnas del pedido)."""
@@ -106,6 +109,8 @@ def _pedido_a_out(pedido: Pedido) -> PedidoOut:
         resultado_en=pedido.resultado_en,
         reagendado_para=pedido.reagendado_para,
         entrega_ajustada=pedido.entrega_ajustada,
+        requiere_revision=pedido.requiere_revision,
+        motivo_revision=pedido.motivo_revision,
     )
 
 
@@ -175,6 +180,7 @@ async def listar_pedidos(
     fecha_desde: date | None = Query(None),
     fecha_hasta: date | None = Query(None),
     revision_direccion: bool | None = Query(None),
+    requiere_revision: bool | None = Query(None),
 ):
     async with SessionLocal() as session:
         query = select(Pedido).options(
@@ -193,6 +199,9 @@ async def listar_pedidos(
             query = query.where(Pedido.motivo_revision_direccion.is_not(None))
         elif revision_direccion is False:
             query = query.where(Pedido.motivo_revision_direccion.is_(None))
+        # Pedidos grandes del bot por revisar (true) o ya revisados/normales (false).
+        if requiere_revision is not None:
+            query = query.where(Pedido.requiere_revision.is_(requiere_revision))
 
         result = await session.execute(query.order_by(Pedido.creado_en.desc()))
         pedidos = result.scalars().all()
@@ -375,7 +384,10 @@ async def actualizar_pedido(
         if pedido is None:
             raise HTTPException(status_code=404, detail="Pedido no encontrado")
 
-        if pedido.estado not in ESTADOS_EDITABLES:
+        # Limpiar la revisión de un pedido grande no edita el pedido: se
+        # permite en cualquier estado.
+        solo_revision = set(cambios) <= CAMPOS_REVISION
+        if pedido.estado not in ESTADOS_EDITABLES and not solo_revision:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=(
@@ -428,6 +440,13 @@ async def actualizar_pedido(
             pedido.motivo_revision_direccion = None
             if pedido.estado == EstadoPedido.CONFIRMADO:
                 pedido.orden_entrega = None
+
+        if "requiere_revision" in cambios and cambios["requiere_revision"] is not None:
+            pedido.requiere_revision = cambios["requiere_revision"]
+            if not pedido.requiere_revision:
+                pedido.motivo_revision = None
+        if "motivo_revision" in cambios and (pedido.requiere_revision or cambios["motivo_revision"] is None):
+            pedido.motivo_revision = cambios["motivo_revision"]
 
         pedido.actualizado_en = datetime.utcnow()
 

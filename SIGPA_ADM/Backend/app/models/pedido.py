@@ -57,6 +57,12 @@ class Pedido(Base):
     entrega_ajustada: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    # Pedido grande tomado por el bot: la ejecutiva debe revisarlo (ver
+    # order_flow.umbrales_superados). Ella lo limpia con PATCH /pedidos/{id}.
+    requiere_revision: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    motivo_revision: Mapped[str | None] = mapped_column(Text, nullable=True)
     cliente: Mapped["Cliente"] = relationship("Cliente", back_populates="pedidos")
     detalles: Mapped[list["DetallePedido"]] = relationship(
         "DetallePedido", back_populates="pedido", cascade="all, delete-orphan"

@@ -29,6 +29,9 @@ class PedidoOut(BaseModel):
     resultado_en: datetime | None = None
     reagendado_para: date | None = None
     entrega_ajustada: bool = False
+    # Pedido grande del bot que la ejecutiva debe revisar, y por qué.
+    requiere_revision: bool = False
+    motivo_revision: str | None = None
 
 
 class DetallePedidoLineaOut(BaseModel):
@@ -55,6 +58,10 @@ class PedidoUpdate(BaseModel):
     longitud: float | None = None
     # Historia #68: reemplaza los productos del pedido (al menos uno, sin repetir producto)
     lineas: "list[LineaPedidoCreate] | None" = Field(default=None, min_length=1)
+    # Revisión de pedido grande: la ejecutiva la limpia con requiere_revision
+    # false (el motivo se borra solo). Se permite en cualquier estado.
+    requiere_revision: bool | None = None
+    motivo_revision: str | None = None
 
 
 class LineaPedidoCreate(BaseModel):

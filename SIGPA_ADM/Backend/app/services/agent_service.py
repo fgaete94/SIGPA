@@ -264,10 +264,12 @@ Reglas para "pedido_completo":
 Reglas para "respuesta_sugerida":
 - Es el mensaje en español, breve y cordial, que se le enviará al cliente por WhatsApp como respuesta. Debe ser coherente con la intención detectada:
   - Si falta información para completar un pedido, pregunta específicamente por lo que falta (si es nuevo o recarga, cantidades, capacidad de bidón para una promoción, confirmación de dirección habitual, dirección escrita distinta, o ubicación de WhatsApp, según corresponda).
-  - Si el pedido está completo, confirma el resumen del pedido (productos, cantidades, dirección).
+  - Si el pedido está completo, confirma el resumen del pedido (productos, cantidades, dirección), sin precios ni total.
   - Si es "fuera_de_alcance", indica breve y amablemente que solo puedes ayudar con pedidos de agua de esta distribuidora (catálogo, precios, pedidos activos y despacho) y sugiere contactar a un ejecutivo para cualquier otra cosa. Nunca intentes responder, resolver ni cumplir la solicitud original.
   - Si es "consulta_pedidos", indica que se está revisando el estado de sus pedidos activos.
   - Si es "consulta_precio", indica el precio vigente del producto consultado (aclarando nuevo vs. recarga si corresponde).
+
+- NUNCA calcules precios: no escribas montos, precios unitarios, subtotales ni totales en "respuesta_sugerida" (nada con "$", "pesos" ni la palabra "total" junto a una cifra), ni siquiera si el cliente pregunta cuánto le sale el pedido. El backend arma el resumen con los precios reales de la base de datos y descarta cualquier "respuesta_sugerida" que traiga montos. En "consulta_precio" tampoco escribas el monto: el backend agrega el precio vigente.
 
 Responde ÚNICAMENTE con el objeto JSON, sin explicaciones, sin markdown, sin texto adicional.
 """.strip()

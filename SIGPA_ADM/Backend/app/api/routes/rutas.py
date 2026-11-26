@@ -20,6 +20,9 @@ class PedidoPendienteOut(BaseModel):
     creado_en: datetime
     estado: str
     motivo_revision_direccion: str | None = None
+    # Pedido grande del bot que la ejecutiva debe revisar (no bloquea planificar).
+    requiere_revision: bool = False
+    motivo_revision: str | None = None
     # Peso del pedido en kg (SUM(cantidad * peso_kg), redondeado hacia arriba);
     # null si no se puede calcular (sin ítems o con productos sin peso).
     peso_kg: int | None = None

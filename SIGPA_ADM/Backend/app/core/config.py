@@ -91,6 +91,19 @@ class Settings(BaseSettings):
     # ejecutiva).
     AGRADECIMIENTO_VENTANA_HORAS: int = 12
 
+    # Pedido grande (ver order_flow.umbrales_superados): un cliente existente
+    # que confirma más de estas unidades por pedido (sumando nuevo y recarga)
+    # igual crea el pedido, pero queda marcado para revisión y se avisa a la
+    # ejecutiva. Basta con superar uno; justo en el umbral sigue normal.
+    UMBRAL_BIDON_20L: int = 10
+    UMBRAL_BIDON_12L: int = 10
+    UMBRAL_DISPENSADOR_BASICO: int = 3
+    # Plantilla Utility para avisar a la ejecutiva de un pedido grande, con 4
+    # variables: {{1}} nombre, {{2}} teléfono, {{3}} detalle, {{4}} motivo.
+    # Sin nombre (o si Meta la rechaza) se envía texto libre.
+    WHATSAPP_TEMPLATE_PEDIDO_GRANDE_NAME: str = ""
+    WHATSAPP_TEMPLATE_PEDIDO_GRANDE_LANG: str = "es_CL"
+
     # Asistente virtual y horario de atención de las ejecutivas (hora de
     # Chile), ver app/services/horario_atencion.py. DIAS_ATENCION: días
     # separados por coma o un rango, ej. "lunes-viernes".

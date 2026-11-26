@@ -175,6 +175,9 @@ async def ejecutiva_avisada_desde(telefono: str, desde: datetime | None) -> bool
                     MensajeWhatsApp.estado == "enviado",
                     MensajeWhatsApp.creado_en >= desde - MARGEN_RELOJ_BD,
                     MensajeWhatsApp.contenido.contains(formatear_telefono(telefono)),
+                    # El aviso de pedido grande tiene su propia marca (uno por
+                    # pedido) y no cuenta como derivación de la conversación.
+                    ~MensajeWhatsApp.contenido.startswith(PREFIJO_PEDIDO_GRANDE),
                 )
                 .limit(1)
             )
@@ -182,3 +185,122 @@ async def ejecutiva_avisada_desde(telefono: str, desde: datetime | None) -> bool
         logger.exception("[notificacion_ejecutiva] Falló revisar avisos previos de %s", telefono)
         return False
     return encontrado is not None
+
+
+# --------------------------------------------------------------------------
+# Aviso de pedido grande (ver order_flow.umbrales_superados). Uno por pedido:
+# todo lo que se registra en mensaje_whatsapp empieza con "Pedido grande #N:"
+# (la marca propia), que ejecutiva_avisada_desde ignora, así que ni bloquea
+# ni lo bloquea el aviso único por conversación de la derivación.
+# --------------------------------------------------------------------------
+
+PREFIJO_PEDIDO_GRANDE = "Pedido grande #"
+MAX_CARACTERES_DETALLE = 200
+
+# Copia para el historial de la plantilla de pedido grande ({{1}} nombre,
+# {{2}} teléfono, {{3}} detalle, {{4}} motivo). Meta arma el mensaje con su
+# copia aprobada.
+_CUERPO_PLANTILLA_PEDIDO_GRANDE = (
+    "Hola, {} ({}) confirmó un pedido grande por el WhatsApp de pedidos. Detalle: {}. Motivo: {}. "
+    "Por favor revísalo y coordina la entrega."
+)
+
+# Avisos de pedido grande ya enviados en este proceso (ids de pedido). La
+# fuente durable es mensaje_whatsapp (ver aviso_pedido_grande_enviado).
+_pedidos_grandes_avisados: set[int] = set()
+
+
+def _una_linea(texto: str | None) -> str:
+    return " ".join((texto or "").split())
+
+
+def _recortar(texto: str, maximo: int = MAX_CARACTERES_DETALLE) -> str:
+    return texto if len(texto) <= maximo else texto[: maximo - 1].rstrip(" ,") + "…"
+
+
+def parametros_pedido_grande(nombre: str, telefono: str, detalle: str, motivo: str) -> list[str]:
+    """Las 4 variables de la plantilla, cada una en una sola línea (Meta
+    rechaza saltos de línea en las variables) y el detalle recortado."""
+    return [
+        _una_linea(nombre) or "Cliente",
+        formatear_telefono(telefono),
+        _recortar(_una_linea(detalle)),
+        _una_linea(motivo),
+    ]
+
+
+def texto_pedido_grande(pedido_id: int, parametros: list[str]) -> str:
+    """Texto libre (y registro) del aviso, con la marca "Pedido grande #N:"."""
+    nombre, telefono, detalle, motivo = parametros
+    return (
+        f"{PREFIJO_PEDIDO_GRANDE}{pedido_id}: {nombre} ({telefono}) confirmó un pedido grande por el "
+        f"WhatsApp de pedidos. Detalle: {detalle}. Motivo: {motivo}. Por favor revísalo y coordina la entrega."
+    )
+
+
+async def aviso_pedido_grande_enviado(pedido_id: int) -> bool:
+    """True si ya se avisó este pedido (marca en mensaje_whatsapp o en este
+    proceso). Si la consulta falla devuelve lo que sabe el proceso."""
+    if pedido_id in _pedidos_grandes_avisados:
+        return True
+    if not settings.EJECUTIVA_PHONE:
+        return False
+    try:
+        async with SessionLocal() as session:
+            encontrado = await session.scalar(
+                select(MensajeWhatsApp.id)
+                .where(
+                    MensajeWhatsApp.telefono == settings.EJECUTIVA_PHONE,
+                    MensajeWhatsApp.direccion == "saliente",
+                    MensajeWhatsApp.estado == "enviado",
+                    MensajeWhatsApp.contenido.startswith(f"{PREFIJO_PEDIDO_GRANDE}{pedido_id}:"),
+                )
+                .limit(1)
+            )
+    except Exception:
+        logger.exception("[notificacion_ejecutiva] Falló revisar el aviso del pedido grande #%s", pedido_id)
+        return False
+    return encontrado is not None
+
+
+async def avisar_pedido_grande(
+    pedido_id: int, nombre: str, telefono: str, detalle: str, motivo: str, send_text
+) -> bool:
+    """Avisa a la ejecutiva de un pedido grande, una sola vez por pedido: con
+    la plantilla WHATSAPP_TEMPLATE_PEDIDO_GRANDE_NAME si está configurada y,
+    si no o si Meta la rechaza, con texto libre (send_text, el
+    send_whatsapp_message de quien llama). True si se envió (o ya se había
+    enviado). Nunca lanza: un error se loguea y devuelve False."""
+    try:
+        if await aviso_pedido_grande_enviado(pedido_id):
+            logger.info("[notificacion_ejecutiva] Pedido grande #%s ya avisado: no se reenvía", pedido_id)
+            return True
+        parametros = parametros_pedido_grande(nombre, telefono, detalle, motivo)
+        texto = texto_pedido_grande(pedido_id, parametros)
+        nombre_plantilla = settings.WHATSAPP_TEMPLATE_PEDIDO_GRANDE_NAME.strip()
+        enviado = False
+        if nombre_plantilla:
+            respuesta = await send_whatsapp_template(
+                to=settings.EJECUTIVA_PHONE,
+                template_name=nombre_plantilla,
+                language_code=settings.WHATSAPP_TEMPLATE_PEDIDO_GRANDE_LANG.strip(),
+                body_params=parametros,
+                texto_registro=f"{PREFIJO_PEDIDO_GRANDE}{pedido_id}: " + _CUERPO_PLANTILLA_PEDIDO_GRANDE.format(*parametros),
+            )
+            enviado = respuesta is not None
+            if not enviado:
+                logger.warning(
+                    "[notificacion_ejecutiva] Meta rechazó la plantilla %s del pedido grande #%s: se envía texto libre",
+                    nombre_plantilla,
+                    pedido_id,
+                )
+        if not enviado:
+            enviado = await send_text(to=settings.EJECUTIVA_PHONE, message=texto) is not None
+        if enviado:
+            _pedidos_grandes_avisados.add(pedido_id)
+        else:
+            logger.error("[notificacion_ejecutiva] No se pudo avisar el pedido grande #%s", pedido_id)
+        return enviado
+    except Exception:
+        logger.exception("[notificacion_ejecutiva] Falló avisar el pedido grande #%s", pedido_id)
+        return False

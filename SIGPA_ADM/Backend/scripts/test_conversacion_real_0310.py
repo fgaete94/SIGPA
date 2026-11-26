@@ -1068,8 +1068,13 @@ async def caso_x(ctx: dict, v: Verificador) -> None:
         if original is not None:
             os.environ["RENDER_GIT_COMMIT"] = original
     print(f"  /health sin variable: {sin.json()} | con variable: {con.json()}")
-    v.check(sin.status_code == 200 and sin.json() == {"status": "ok", "commit": "desconocido"}, "sin RENDER_GIT_COMMIT: commit 'desconocido'")
-    v.check(con.status_code == 200 and con.json() == {"status": "ok", "commit": "abc1234def"}, "con RENDER_GIT_COMMIT: devuelve el commit")
+    # /health también trae el estado del recordatorio (commit 523730e): se
+    # verifican solo status y commit.
+    def status_y_commit(respuesta):
+        return {clave: respuesta.json().get(clave) for clave in ("status", "commit")}
+
+    v.check(sin.status_code == 200 and status_y_commit(sin) == {"status": "ok", "commit": "desconocido"}, "sin RENDER_GIT_COMMIT: commit 'desconocido'")
+    v.check(con.status_code == 200 and status_y_commit(con) == {"status": "ok", "commit": "abc1234def"}, "con RENDER_GIT_COMMIT: devuelve el commit")
 
 
 CASOS = [

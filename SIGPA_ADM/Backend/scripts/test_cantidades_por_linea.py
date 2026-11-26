@@ -28,6 +28,7 @@ Uso: python -m scripts.test_cantidades_por_linea
 """
 
 import asyncio
+import re
 import uuid
 
 from sqlalchemy import text
@@ -393,7 +394,8 @@ async def caso_g(ctx: dict, v: Verificador) -> None:
         "2 bidones de 20L" in respuestas[1] and "bidón de 12L" in respuestas[1],
         "pregunta por capacidad (2x 20L y 1x 12L)",
     )
-    v.check("32" not in " ".join(respuestas), "nunca pregunta por 32 bidones")
+    # Número completo: "Pedido #932" (el id que le toque al pedido) no cuenta.
+    v.check(re.search(r"\b32\b", " ".join(respuestas)) is None, "nunca pregunta por 32 bidones")
     v.check(CLIENTE["direccion"] in respuestas[2], "'20 nuevo y 12 recarga' resuelve y pasa a la dirección")
     v.check(
         _es_resumen(respuestas[4]) and "2x Bidón 20L Nuevo" in respuestas[4] and "1x Bidón 12L Recarga" in respuestas[4],
