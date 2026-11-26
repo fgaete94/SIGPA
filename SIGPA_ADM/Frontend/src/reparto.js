@@ -100,3 +100,15 @@ export function paradaMarcada(parada, cuerpo, ahora = new Date()) {
 
 // Reemplaza una parada de la ruta (por id) sin tocar las demás.
 export const reemplazarParada = (datos, parada) => (datos ? { ...datos, paradas: datos.paradas.map(p => (p.id === parada.id ? parada : p)) } : datos);
+
+// Ruta en curso: ver las paradas en el orden en que se resolvieron. Dentro de cada viaje van primero las
+// resueltas, por hora del resultado; después las pendientes, en el orden en que estaban.
+export function ordenarPorEntrega(paradas) {
+  const momento = p => (p.resultado_en ? aFecha(p.resultado_en).getTime() : Infinity);
+  const viajes = [...new Set(paradas.map(p => p.viaje ?? null))];
+  return viajes.flatMap(v => {
+    const del = paradas.filter(p => (p.viaje ?? null) === v);
+    const listas = del.filter(resuelta).sort((a, b) => momento(a) - momento(b));
+    return [...listas, ...del.filter(p => !resuelta(p))];
+  });
+}

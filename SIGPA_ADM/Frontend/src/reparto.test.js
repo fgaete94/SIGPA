@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { enlaceComoLlegar, estadoRuta, guardarEnCamino, paradaMarcada, reemplazarParada, leerEnCamino, paradaEnCamino, resumenEntregas, rutaEnCurso, textoResultado } from './reparto.js';
+import { enlaceComoLlegar, estadoRuta, guardarEnCamino, ordenarPorEntrega, paradaMarcada, reemplazarParada, leerEnCamino, paradaEnCamino, resumenEntregas, rutaEnCurso, textoResultado } from './reparto.js';
 
 const pedido = (id, estado, orden_entrega, extra = {}) => ({ id, cliente_id: id, cliente_nombre: `Cliente ${id}`, estado, orden_entrega, direccion_despacho: null, latitud: null, longitud: null, motivo_revision_direccion: null, ...extra });
 
@@ -107,4 +107,15 @@ test('paradaMarcada muestra el resultado al instante; reemplazarParada cambia so
   assert.deepEqual(nuevos.paradas.map(x => x.estado), ['entregado', 'confirmado']);
   assert.equal(datos.paradas[0].estado, 'en_despacho', 'no modifica el original');
   assert.equal(reemplazarParada(null, p), null);
+});
+
+test('ordenarPorEntrega: por viaje, primero lo resuelto por hora y luego lo pendiente', () => {
+  const paradas = [
+    { id: 1, viaje: 1, estado: 'entregado', resultado_en: '2026-11-26T15:30:00' },
+    { id: 2, viaje: 1, estado: 'en_despacho' },
+    { id: 3, viaje: 1, estado: 'no_entregado', resultado_en: '2026-11-26T15:10:00' },
+    { id: 4, viaje: 2, estado: 'confirmado' },
+    { id: 5, viaje: 2, estado: 'entregado', resultado_en: '2026-11-26T16:00:00' },
+  ];
+  assert.deepEqual(ordenarPorEntrega(paradas).map(p => p.id), [3, 1, 2, 5, 4]);
 });
