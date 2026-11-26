@@ -6,8 +6,8 @@ import { siguienteParada } from './capasMapa';
 import { MEDIOS_COMBUSTIBLE, etiquetaCombustible, leerMonto, resumenCombustible, textoCarga } from './combustible';
 import { agregarCatalogo, ajustarEntregada, datosEntrega, formEntrega, resumenEntrega } from './entregas';
 import { resuelta } from './estados';
-import { enlaceComoLlegar, guardarEnCamino, leerEnCamino, paradaEnCamino, textoResultado } from './reparto';
-import { agruparPorViaje, encabezadoViaje } from './viajes';
+import { enlaceComoLlegar, estadoRuta, guardarEnCamino, leerEnCamino, paradaEnCamino, textoResultado } from './reparto';
+import { agruparPorViaje } from './viajes';
 
 const dinero = n => new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP', maximumFractionDigits: 0 }).format(n);
 const RECARGA_MS = 30000;
@@ -76,17 +76,34 @@ export default function VistaRepartidor({ session, onLogout }) {
       {datos && !paradas.length && <p className="notice">No tienes una ruta asignada para hoy. Avísale a la administración si deberías tenerla.</p>}
       {paradas.length > 0 && <>
         <div className="repartidor-avance" aria-live="polite">
-          <h1>Ruta de hoy</h1>
-          <p><strong>{listas} de {paradas.length}</strong> paradas listas · {entregadas} {entregadas === 1 ? 'entregada' : 'entregadas'}</p>
+          <div className="avance-fila">
+            <p className="avance-cifra" aria-label={`${listas} de ${paradas.length} paradas listas`}>{listas}<span>/{paradas.length}</span></p>
+            <div className="avance-texto">
+              <h1>Ruta de hoy</h1>
+              <p>{listas === 1 ? 'parada lista' : 'paradas listas'} · {entregadas} {entregadas === 1 ? 'entregada' : 'entregadas'}</p>
+            </div>
+          </div>
           <div className="barra-avance"><span style={{ width: `${(listas / paradas.length) * 100}%` }}/></div>
+          {/* Sin mapa: en el celular basta "Cómo llegar" de cada parada, que abre la navegación. */}
+          <div className="mapa-filtros">{botonCombustible}</div>
         </div>
-        {/* Sin mapa: en el celular basta "Cómo llegar" de cada parada, que abre la navegación. */}
-        <div className="mapa-filtros">{botonCombustible}</div>
         {listas === paradas.length && <p role="status" className="ok">¡Ruta terminada! Marcaste todas las paradas.</p>}
-        {grupos.map(g => <div key={g.viaje ?? 'sin-viaje'}>
-          {grupos.length > 1 && g.viaje != null && <h2 className="viaje-titulo">{encabezadoViaje({ viaje: g.viaje })}</h2>}
-          {g.paradas.map((p, i) => <TarjetaParada key={p.id} parada={p} productos={productos} numero={i + 1} siguiente={p.id === siguiente?.id} enCamino={p.id === destino?.id} onComoLlegar={() => irA(p.id)} enviando={enviando} onMarcar={cuerpo => marcar(p.id, cuerpo)}/>)}
-        </div>)}
+        {grupos.map(g => {
+          const varias = grupos.length > 1 && g.viaje != null;
+          const estado = estadoRuta(g.paradas, siguiente);
+          return <div role="group" key={g.viaje ?? 'sin-viaje'} className={`ruta-repartidor${varias ? ` con-encabezado ${estado.clase}` : ''}`} aria-label={varias ? `Ruta ${g.viaje}` : undefined}>
+            {varias && <header className="ruta-encabezado" style={{ '--avance': `${estado.total ? (estado.listas / estado.total) * 100 : 0}%` }}>
+              {/* El avance se ve como agua que llena la franja a medida que se marcan las paradas. */}
+              <span className="ruta-agua" aria-hidden="true"/>
+              <h2>Ruta {g.viaje}</h2>
+              <div className="ruta-info">
+                <span className={`ruta-estado ${estado.clase}`}>{estado.texto}</span>
+                <span><strong>{estado.listas} de {estado.total}</strong> {estado.total === 1 ? 'lista' : 'listas'}</span>
+              </div>
+            </header>}
+            {g.paradas.map((p, i) => <TarjetaParada key={p.id} parada={p} productos={productos} numero={i + 1} siguiente={p.id === siguiente?.id} enCamino={p.id === destino?.id} onComoLlegar={() => irA(p.id)} enviando={enviando} onMarcar={cuerpo => marcar(p.id, cuerpo)}/>)}
+          </div>;
+        })}
       </>}
     </main>
     {verCombustible && <VentanaCombustible registros={combustible} onCambio={cargarCombustible} onCerrar={() => setVerCombustible(false)}/>}

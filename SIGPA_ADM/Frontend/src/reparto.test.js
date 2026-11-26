@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { enlaceComoLlegar, guardarEnCamino, leerEnCamino, paradaEnCamino, resumenEntregas, rutaEnCurso, textoResultado } from './reparto.js';
+import { enlaceComoLlegar, estadoRuta, guardarEnCamino, leerEnCamino, paradaEnCamino, resumenEntregas, rutaEnCurso, textoResultado } from './reparto.js';
 
 const pedido = (id, estado, orden_entrega, extra = {}) => ({ id, cliente_id: id, cliente_nombre: `Cliente ${id}`, estado, orden_entrega, direccion_despacho: null, latitud: null, longitud: null, motivo_revision_direccion: null, ...extra });
 
@@ -84,4 +84,13 @@ test('al volver de Cómo llegar se recuerda la parada mientras siga sin marcar',
   const roto = { getItem() { throw new Error('bloqueado'); }, setItem() { throw new Error('bloqueado'); } };
   assert.equal(leerEnCamino(roto), null, 'sin almacenamiento no falla');
   guardarEnCamino(3, roto);
+});
+
+test('estadoRuta: terminada, en curso (tiene la siguiente) o por hacer', () => {
+  const ruta1 = [{ id: 1, estado: 'entregado' }, { id: 2, estado: 'no_entregado' }];
+  const ruta2 = [{ id: 3, estado: 'entregado' }, { id: 4, estado: 'en_despacho' }];
+  const ruta3 = [{ id: 5, estado: 'confirmado' }];
+  assert.deepEqual(estadoRuta(ruta1, { id: 4 }), { listas: 2, total: 2, clase: 'terminada', texto: 'Terminada' });
+  assert.deepEqual(estadoRuta(ruta2, { id: 4 }), { listas: 1, total: 2, clase: 'en-curso', texto: 'En curso' });
+  assert.deepEqual(estadoRuta(ruta3, { id: 4 }), { listas: 0, total: 1, clase: 'por-hacer', texto: 'Por hacer' });
 });
