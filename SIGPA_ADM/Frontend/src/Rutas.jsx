@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { asignacionesPorRepartidor, nombreRutas } from './asignacionRutas';
 import { DIAS_REPARTO } from './clientes';
 import { SIN_DIA, diaHoy } from './agrupacionDespacho';
 import { api } from './api';
@@ -32,9 +33,10 @@ export default function Rutas({ pendientes, clientes = [], busy, onActualizar, o
   const [vista, setVista] = useState(null);
   const [guardando, setGuardando] = useState(false);
   const [errorVista, setErrorVista] = useState(null);
-  // A quién se le asigna la ruta al confirmarla. Es opcional: también se puede asignar en "Ruta en curso".
+  // A quién se le asigna cada ruta al confirmarla ({ [número de ruta]: repartidorId }). Es opcional:
+  // también se puede asignar en "Ruta en curso".
   const [repartidores, setRepartidores] = useState([]);
-  const [repartidorId, setRepartidorId] = useState('');
+  const [eleccion, setEleccion] = useState({});
   useEffect(() => { api('/repartidores').then(setRepartidores).catch(() => setRepartidores([])); }, []);
   // Al actualizar la lista se descartan los pedidos seleccionados que ya no son planificables.
   useEffect(() => { setSelected(ids => ids.filter(id => pendientes.some(p => p.pedido_id === id))); }, [pendientes]);
@@ -70,15 +72,16 @@ export default function Rutas({ pendientes, clientes = [], busy, onActualizar, o
     try {
       const datos = datosConfirmar(vista);
       const respuesta = await api('/rutas/confirmar', { method: 'POST', body: JSON.stringify(datos) });
-      const elegido = repartidores.find(r => String(r.id) === repartidorId);
-      let asignacion = {};
-      if (elegido && datos.paradas.length) {
-        // La ruta ya quedó guardada: si falla la asignación se avisa, sin volver atrás.
-        try { await api('/rutas/asignar', { method: 'POST', body: JSON.stringify({ repartidor_id: elegido.id, pedido_ids: datos.paradas.map(p => p.pedido_id) }) }); asignacion = { asignadaA: elegido.nombre }; }
-        catch { asignacion = { sinAsignarA: elegido.nombre }; }
+      // La ruta ya quedó guardada: si falla una asignación se avisa, sin volver atrás.
+      const asignadas = [], sinAsignar = [];
+      for (const a of asignacionesPorRepartidor(datos.paradas, eleccion)) {
+        const nombre = repartidores.find(r => r.id === a.repartidor_id)?.nombre || `repartidor ${a.repartidor_id}`;
+        const texto = `${nombreRutas(a.rutas)} a ${nombre}`;
+        try { await api('/rutas/asignar', { method: 'POST', body: JSON.stringify({ repartidor_id: a.repartidor_id, pedido_ids: a.pedido_ids }) }); asignadas.push(texto); }
+        catch { sinAsignar.push(texto); }
       }
-      setResult({ ...respuesta, ...asignacion });
-      setRepartidorId('');
+      setResult({ ...respuesta, asignadas, sinAsignar });
+      setEleccion({});
       setSelected([]); cerrarVista(); onActualizar();
     } catch (e) { setErrorVista({ mensaje: e.message, detalles: detallesErrorRuta(e) }); }
     finally { setGuardando(false); }
@@ -126,12 +129,12 @@ export default function Rutas({ pendientes, clientes = [], busy, onActualizar, o
       {error && <div role="alert" className="error"><strong>{error.mensaje}</strong><ul>{error.detalles.map(d => <li key={d}>{d}</li>)}</ul></div>}
       <button className="primary" disabled={!selected.length || planning || busy || !!vista} onClick={calcular}>{planning ? 'Calculando… (puede tardar hasta 2 minutos)' : `Calcular ruta (${selected.length})`}</button>
     </section>
-    {vista && <VistaPreviaRuta estado={vista} onCambiar={setVista} onCancelar={cerrarVista} onConfirmar={confirmar} onRecalcular={calcular} guardando={guardando} error={errorVista} repartidores={repartidores} repartidorId={repartidorId} onRepartidor={setRepartidorId}/>}
+    {vista && <VistaPreviaRuta estado={vista} onCambiar={setVista} onCancelar={cerrarVista} onConfirmar={confirmar} onRecalcular={calcular} guardando={guardando} error={errorVista} repartidores={repartidores} eleccion={eleccion} onRepartidor={(clave, valor) => setEleccion(e => ({ ...e, [clave]: valor }))}/>}
     {result && <section className="no-print">
       <div className="title"><h2>Última planificación</h2><button onClick={() => setResult(null)}>Ocultar</button></div>
       <p role="status" className="ok">Se confirmaron {result.pedidos_confirmados} pedidos: {result.ruta.length}{result.viajes?.length > 1 ? ` en ${result.viajes.length} rutas` : ' en la ruta'}{result.sin_resolver?.length ? ` y ${result.sin_resolver.length} sin ubicación` : ''}.{result.ruta.length ? ' El orden quedó guardado y se ve en "Ruta en curso".' : ' Ninguno entró a la ruta: quedaron marcados para revisar su dirección.'}</p>
-      {result.asignadaA && <p role="status" className="ok">Ruta asignada a {result.asignadaA}: ya la ve en su celular.</p>}
-      {result.sinAsignarA && <p role="alert" className="notice">La ruta quedó guardada, pero no se pudo asignar a {result.sinAsignarA}. Asígnala en "Ruta en curso".</p>}
+      {result.asignadas?.length > 0 && <p role="status" className="ok">Asignada: {result.asignadas.join('; ')}. Cada repartidor ya ve su ruta en el celular.</p>}
+      {result.sinAsignar?.length > 0 && <p role="alert" className="notice">La ruta quedó guardada, pero no se pudo asignar: {result.sinAsignar.join('; ')}. Asígnala en "Ruta en curso".</p>}
       {result.sin_resolver?.length > 0 && <div className="error"><h3>Pedidos sin ubicación resuelta</h3>{result.sin_resolver.map(p => <p key={p.pedido_id}>#{p.pedido_id} · {p.cliente_nombre}: {p.motivo}</p>)}<p>Quedaron confirmados pero fuera de la ruta. Aparecen en "Preparar ruta" como "Dirección por revisar": corrige su ubicación y vuelve a planificar.</p></div>}
       {result.confirmados_con_orden_fuera_de_solicitud?.length > 0 && <p className="notice">Hay {result.confirmados_con_orden_fuera_de_solicitud.length} pedidos confirmados con orden de otras planificaciones: aparecen mezclados en "Ruta en curso".</p>}
     </section>}
