@@ -30,10 +30,13 @@ const money = n => new Intl.NumberFormat('es-CL', { style: 'currency', currency:
 const name = c => [c.nombre, c.apellido_paterno, c.apellido_materno].filter(Boolean).join(' ');
 function Brand({ blanco }) { return <span className="brand"><img src={blanco ? '/marca/logo-blanco.svg' : '/marca/logo.svg'} alt="Agua DM" width="2320" height="2280"/><span>SIGPA<small>Panel de operación</small></span></span>; }
 const OPCIONES_RUTA = ['Preparar ruta', 'Ruta en curso'];
+// Abierto desde el ícono instalado en el celular (sin barra del navegador): va directo al ingreso, sin la landing.
+const esAppInstalada = () => window.matchMedia?.('(display-mode: standalone)').matches || window.navigator.standalone === true;
+const paginaInicial = () => esAppInstalada() ? 'login' : 'inicio';
 function App() {
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [page, setPage] = useState('inicio');
+  const [page, setPage] = useState(paginaInicial);
   const [avisoLogin, setAvisoLogin] = useState('');
   useEffect(() => {
     let active = true;
@@ -43,8 +46,8 @@ function App() {
   }, []);
   if (loading) return <p className="loading">Cargando sesión…</p>;
   // El repartidor solo tiene su interfaz: no pasa por el panel administrativo.
-  if (session?.user.rol === 'repartidor') return <VistaRepartidor session={session} onLogout={() => { setSession(null); setPage('inicio'); }}/>;
-  if (session) return <Dashboard key={session.user.id} session={session} onLogout={() => { setSession(null); setPage('inicio'); }} onInactividad={() => { setSession(null); setPage('login'); setAvisoLogin('Tu sesión se cerró por inactividad. Vuelve a ingresar.'); }}/>;
+  if (session?.user.rol === 'repartidor') return <VistaRepartidor session={session} onLogout={() => { setSession(null); setPage(paginaInicial()); }}/>;
+  if (session) return <Dashboard key={session.user.id} session={session} onLogout={() => { setSession(null); setPage(paginaInicial()); }} onInactividad={() => { setSession(null); setPage('login'); setAvisoLogin('Tu sesión se cerró por inactividad. Vuelve a ingresar.'); }}/>;
   if (page === 'inicio') return <Landing onAdmin={() => { setPage('login'); window.scrollTo(0, 0); }}/>;
   return <><header><Brand/><button onClick={() => setPage('inicio')}>Volver al inicio</button></header><Login aviso={avisoLogin} onLogin={user => { setAvisoLogin(''); setSession({ user }); }}/></>;
 }
