@@ -73,3 +73,13 @@ export function paradaEnCamino(paradas, id) {
   const p = id ? paradas.find(x => x.id === id) : null;
   return p && !resuelta(p) ? p : null;
 }
+
+// Estado de una ruta (viaje) en la vista del repartidor, para su encabezado: terminada, en curso (tiene
+// la siguiente parada) o por hacer.
+export function estadoRuta(paradas, siguiente) {
+  const listas = paradas.filter(resuelta).length;
+  const total = paradas.length;
+  if (total && listas === total) return { listas, total, clase: 'terminada', texto: 'Terminada' };
+  if (siguiente && paradas.some(p => p.id === siguiente.id)) return { listas, total, clase: 'en-curso', texto: 'En curso' };
+  return { listas, total, clase: 'por-hacer', texto: 'Por hacer' };
+}
