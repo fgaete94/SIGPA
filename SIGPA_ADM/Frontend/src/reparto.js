@@ -83,3 +83,20 @@ export function estadoRuta(paradas, siguiente) {
   if (siguiente && paradas.some(p => p.id === siguiente.id)) return { listas, total, clase: 'en-curso', texto: 'En curso' };
   return { listas, total, clase: 'por-hacer', texto: 'Por hacer' };
 }
+
+// Respuesta inmediata en la vista del repartidor: la parada se muestra marcada al tocar el botón y se
+// guarda por detrás. Si el guardado falla, se vuelve a la parada como estaba.
+// cuerpo: lo que se envía a POST /repartidor/paradas/{id}/resultado ({ resultado, medio_pago, lineas }).
+export function paradaMarcada(parada, cuerpo, ahora = new Date()) {
+  if (cuerpo.resultado === 'entregado') {
+    return { ...parada, estado: 'entregado', medio_pago: cuerpo.medio_pago ?? null, resultado_en: ahora.toISOString() };
+  }
+  if (cuerpo.resultado === 'no_entregado') {
+    return { ...parada, estado: 'no_entregado', medio_pago: null, resultado_en: ahora.toISOString() };
+  }
+  // Corregir: vuelve a estar por entregar, como lo deja el backend.
+  return { ...parada, estado: 'en_despacho', medio_pago: null, resultado_en: null, entrega_ajustada: false };
+}
+
+// Reemplaza una parada de la ruta (por id) sin tocar las demás.
+export const reemplazarParada = (datos, parada) => (datos ? { ...datos, paradas: datos.paradas.map(p => (p.id === parada.id ? parada : p)) } : datos);
