@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from './api';
 import { logout } from './auth';
@@ -6,7 +6,7 @@ import { siguienteParada } from './capasMapa';
 import { MEDIOS_COMBUSTIBLE, etiquetaCombustible, leerMonto, resumenCombustible, textoCarga } from './combustible';
 import { agregarCatalogo, ajustarEntregada, datosEntrega, formEntrega, resumenEntrega } from './entregas';
 import { resuelta } from './estados';
-import { enlaceComoLlegar, estadoRuta, guardarEnCamino, leerEnCamino, paradaEnCamino, textoResultado } from './reparto';
+import { enlaceComoLlegar, estadoRuta, guardarEnCamino, leerEnCamino, paradaEnCamino, paradaMarcada, reemplazarParada, textoResultado } from './reparto';
 import { agruparPorViaje } from './viajes';
 
 const dinero = n => new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP', maximumFractionDigits: 0 }).format(n);
@@ -17,14 +17,16 @@ const RECARGA_MS = 30000;
 export default function VistaRepartidor({ session, onLogout }) {
   const [datos, setDatos] = useState(null);
   const [error, setError] = useState('');
-  const [enviando, setEnviando] = useState(false);
+  // Paradas que se están guardando (la pantalla ya las muestra marcadas).
+  const [guardando, setGuardando] = useState(() => new Set());
+  const guardandoRef = useRef(0);
   const [combustible, setCombustible] = useState([]);
   const [verCombustible, setVerCombustible] = useState(false);
   // Parada a la que fue con "Cómo llegar" y cuántas veces volvió al panel (para llevarlo de nuevo a ella).
   const [enCamino, setEnCamino] = useState(leerEnCamino);
   const [vueltas, setVueltas] = useState(0);
 
-  const cargar = useCallback(() => api('/repartidor/ruta').then(d => { setDatos(d); setError(''); }).catch(e => setError(e.message)), []);
+  const cargar = useCallback(() => (guardandoRef.current > 0 ? Promise.resolve() : api('/repartidor/ruta').then(d => { if (guardandoRef.current === 0) { setDatos(d); setError(''); } }).catch(e => setError(e.message))), []);
   useEffect(() => { cargar(); }, [cargar]);
   const cargarCombustible = useCallback(() => api('/repartidor/combustible').then(setCombustible).catch(e => setError(e.message)), []);
   useEffect(() => { cargarCombustible(); }, [cargarCombustible]);
@@ -42,11 +44,26 @@ export default function VistaRepartidor({ session, onLogout }) {
     return () => document.removeEventListener('visibilitychange', alVolver);
   }, [cargar]);
 
+  // Respuesta inmediata: la parada se ve marcada al tocar el botón y se guarda por detrás. Mientras haya
+  // guardados en curso no se recarga la ruta, para que una recarga no muestre un estado anterior.
   async function marcar(id, cuerpo) {
-    setEnviando(true); setError('');
-    try { await api(`/repartidor/paradas/${id}/resultado`, { method: 'POST', body: JSON.stringify(cuerpo) }); await cargar(); }
-    catch (e) { setError(e.message); }
-    finally { setEnviando(false); }
+    const anterior = datos?.paradas.find(p => p.id === id);
+    if (!anterior) return;
+    setError('');
+    setDatos(d => reemplazarParada(d, paradaMarcada(anterior, cuerpo)));
+    setGuardando(g => new Set(g).add(id));
+    guardandoRef.current += 1;
+    try {
+      const guardada = await api(`/repartidor/paradas/${id}/resultado`, { method: 'POST', body: JSON.stringify(cuerpo) });
+      setDatos(d => reemplazarParada(d, guardada));
+    } catch (e) {
+      setDatos(d => reemplazarParada(d, anterior));
+      setError(`No se pudo guardar la parada de ${anterior.cliente_nombre || `el pedido ${id}`}: ${String(e.message).replace(/\.+$/, '')}. Vuelve a marcarla.`);
+      window.scrollTo({ top: 0 });
+    } finally {
+      guardandoRef.current -= 1;
+      setGuardando(g => { const n = new Set(g); n.delete(id); return n; });
+    }
   }
 
   const paradas = datos?.paradas || [];
@@ -101,7 +118,7 @@ export default function VistaRepartidor({ session, onLogout }) {
                 <span><strong>{estado.listas} de {estado.total}</strong> {estado.total === 1 ? 'lista' : 'listas'}</span>
               </div>
             </header>}
-            {g.paradas.map((p, i) => <TarjetaParada key={p.id} parada={p} productos={productos} numero={i + 1} siguiente={p.id === siguiente?.id} enCamino={p.id === destino?.id} onComoLlegar={() => irA(p.id)} enviando={enviando} onMarcar={cuerpo => marcar(p.id, cuerpo)}/>)}
+            {g.paradas.map((p, i) => <TarjetaParada key={p.id} parada={p} productos={productos} numero={i + 1} siguiente={p.id === siguiente?.id} enCamino={p.id === destino?.id} onComoLlegar={() => irA(p.id)} enviando={guardando.has(p.id)} onMarcar={cuerpo => marcar(p.id, cuerpo)}/>)}
           </div>;
         })}
       </>}
@@ -181,6 +198,7 @@ function TarjetaParada({ parada: p, productos, numero, siguiente, enCamino, onCo
   useEffect(() => { setPaso(null); }, [p.estado]);
   const clase = p.estado === 'entregado' ? ' entregada' : p.estado === 'no_entregado' ? ' no-entregada' : enCamino ? ' en-camino' : siguiente ? ' siguiente' : '';
   return <article id={`parada-${p.id}`} className={`tarjeta-parada${clase}`}>
+    {enviando && <span className="guardando-parada" role="status" aria-label="Guardando" title="Guardando"/>}
     <div className="tarjeta-datos">
       <b className="number">{numero}</b>
       <div>
@@ -192,7 +210,7 @@ function TarjetaParada({ parada: p, productos, numero, siguiente, enCamino, onCo
     </div>
     {lista ? <div className="tarjeta-resultado">
       <strong>{textoResultado(p)}</strong>
-      <button type="button" className="enlace" disabled={enviando} onClick={() => onMarcar({ resultado: null })}>Corregir</button>
+      {!enviando && <button type="button" className="enlace" onClick={() => onMarcar({ resultado: null })}>Corregir</button>}
     </div> : <>
       {paso === null && <>
         <div className="tarjeta-contacto">

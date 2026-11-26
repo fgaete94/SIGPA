@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { enlaceComoLlegar, estadoRuta, guardarEnCamino, leerEnCamino, paradaEnCamino, resumenEntregas, rutaEnCurso, textoResultado } from './reparto.js';
+import { enlaceComoLlegar, estadoRuta, guardarEnCamino, paradaMarcada, reemplazarParada, leerEnCamino, paradaEnCamino, resumenEntregas, rutaEnCurso, textoResultado } from './reparto.js';
 
 const pedido = (id, estado, orden_entrega, extra = {}) => ({ id, cliente_id: id, cliente_nombre: `Cliente ${id}`, estado, orden_entrega, direccion_despacho: null, latitud: null, longitud: null, motivo_revision_direccion: null, ...extra });
 
@@ -93,4 +93,18 @@ test('estadoRuta: terminada, en curso (tiene la siguiente) o por hacer', () => {
   assert.deepEqual(estadoRuta(ruta1, { id: 4 }), { listas: 2, total: 2, clase: 'terminada', texto: 'Terminada' });
   assert.deepEqual(estadoRuta(ruta2, { id: 4 }), { listas: 1, total: 2, clase: 'en-curso', texto: 'En curso' });
   assert.deepEqual(estadoRuta(ruta3, { id: 4 }), { listas: 0, total: 1, clase: 'por-hacer', texto: 'Por hacer' });
+});
+
+test('paradaMarcada muestra el resultado al instante; reemplazarParada cambia solo esa parada', () => {
+  const ahora = new Date('2026-11-26T18:30:00Z');
+  const p = { id: 7, estado: 'en_despacho', total: 5000 };
+  assert.deepEqual(paradaMarcada(p, { resultado: 'entregado', medio_pago: 'efectivo' }, ahora), { ...p, estado: 'entregado', medio_pago: 'efectivo', resultado_en: '2026-11-26T18:30:00.000Z' });
+  assert.equal(paradaMarcada(p, { resultado: 'no_entregado' }, ahora).estado, 'no_entregado');
+  const corregida = paradaMarcada({ ...p, estado: 'entregado', medio_pago: 'efectivo', resultado_en: 'x' }, { resultado: null });
+  assert.deepEqual([corregida.estado, corregida.medio_pago, corregida.resultado_en], ['en_despacho', null, null]);
+  const datos = { repartidor: { nombre: 'R' }, paradas: [p, { id: 8, estado: 'confirmado' }] };
+  const nuevos = reemplazarParada(datos, { id: 7, estado: 'entregado' });
+  assert.deepEqual(nuevos.paradas.map(x => x.estado), ['entregado', 'confirmado']);
+  assert.equal(datos.paradas[0].estado, 'en_despacho', 'no modifica el original');
+  assert.equal(reemplazarParada(null, p), null);
 });

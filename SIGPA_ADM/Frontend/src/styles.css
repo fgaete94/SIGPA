@@ -696,3 +696,8 @@ td.celda-acciones button+button{margin-left:6px}
 .repartidor .repartidor-cabecera{border-bottom:0}
 .repartidor .tarjeta-parada.entregada{background:#f1f8ec;border-color:#cfe6c2}
 .repartidor .tarjeta-parada.no-entregada{background:#fdf0ef;border-color:#f0c9c5}
+/* Guardando por detrás: un círculo girando en la esquina de la tarjeta; se puede seguir marcando otras. */
+.repartidor .tarjeta-parada{position:relative}
+.guardando-parada{position:absolute;top:12px;right:12px;width:22px;height:22px;border-radius:50%;border:3px solid rgba(29,59,179,.2);border-top-color:var(--azul-2);animation:girar-guardando .8s linear infinite}
+@keyframes girar-guardando{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.guardando-parada{animation:none;border-color:var(--azul-2)}}
