@@ -282,6 +282,7 @@ button.despachar{background:#e3e0fb;border-color:#cdc6f5;color:#3b2f9a}
 .popup-resultado{margin-top:2px;font-weight:700;color:var(--verde-osc)}
 .popup-resultado.no-entregada{color:var(--estado-no-entregado)}
 .badge.siguiente{background:var(--amarillo);color:var(--tinta)}
+.badge.en-camino{background:var(--azul);color:#fff}
 .stop.parada-entregada,.stop.parada-entregada:hover{background:#e3f3da !important}
 .stop.parada-no-entregada,.stop.parada-no-entregada:hover{background:#fbe3e1 !important}
 .parada-entregada .number{background:var(--verde-osc)}
@@ -395,6 +396,7 @@ button.calendario-semana-fila.elegida,button.calendario-semana-fila.elegida:hove
 .repartidor .viaje-titulo{margin:16px 0 8px}
 .tarjeta-parada{margin-bottom:10px;padding:14px;border:1px solid var(--borde);border-radius:14px;background:var(--superficie)}
 .tarjeta-parada.siguiente{border:2px solid var(--amarillo);box-shadow:0 6px 18px -8px rgba(16,21,74,.35)}
+.tarjeta-parada.en-camino{border:3px solid var(--azul);box-shadow:0 0 0 4px var(--amarillo),0 8px 22px -8px rgba(16,21,74,.45);scroll-margin:16px}
 .tarjeta-parada.entregada{background:#e3f3da;border-color:#b9dfa6}
 .tarjeta-parada.no-entregada{background:#fbe3e1;border-color:#efb7b2}
 .tarjeta-datos{display:flex;gap:12px;align-items:flex-start}

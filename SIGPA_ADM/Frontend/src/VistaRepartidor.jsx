@@ -6,7 +6,7 @@ import { siguienteParada } from './capasMapa';
 import { MEDIOS_COMBUSTIBLE, etiquetaCombustible, leerMonto, resumenCombustible, textoCarga } from './combustible';
 import { agregarCatalogo, ajustarEntregada, datosEntrega, formEntrega, resumenEntrega } from './entregas';
 import { resuelta } from './estados';
-import { enlaceComoLlegar, textoResultado } from './reparto';
+import { enlaceComoLlegar, guardarEnCamino, leerEnCamino, paradaEnCamino, textoResultado } from './reparto';
 import { agruparPorViaje, encabezadoViaje } from './viajes';
 
 const dinero = n => new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP', maximumFractionDigits: 0 }).format(n);
@@ -20,6 +20,9 @@ export default function VistaRepartidor({ session, onLogout }) {
   const [enviando, setEnviando] = useState(false);
   const [combustible, setCombustible] = useState([]);
   const [verCombustible, setVerCombustible] = useState(false);
+  // Parada a la que fue con "Cómo llegar" y cuántas veces volvió al panel (para llevarlo de nuevo a ella).
+  const [enCamino, setEnCamino] = useState(leerEnCamino);
+  const [vueltas, setVueltas] = useState(0);
 
   const cargar = useCallback(() => api('/repartidor/ruta').then(d => { setDatos(d); setError(''); }).catch(e => setError(e.message)), []);
   useEffect(() => { cargar(); }, [cargar]);
@@ -32,6 +35,12 @@ export default function VistaRepartidor({ session, onLogout }) {
     const timer = setInterval(() => { if (!document.hidden) cargar(); }, RECARGA_MS);
     return () => clearInterval(timer);
   }, [cargar]);
+  // Al volver desde Google Maps: datos frescos y la parada a la vista.
+  useEffect(() => {
+    const alVolver = () => { if (!document.hidden) { cargar(); setVueltas(v => v + 1); } };
+    document.addEventListener('visibilitychange', alVolver);
+    return () => document.removeEventListener('visibilitychange', alVolver);
+  }, [cargar]);
 
   async function marcar(id, cuerpo) {
     setEnviando(true); setError('');
@@ -43,6 +52,13 @@ export default function VistaRepartidor({ session, onLogout }) {
   const paradas = datos?.paradas || [];
   const grupos = agruparPorViaje(paradas, datos?.viajes || []);
   const siguiente = siguienteParada(grupos);
+  const destino = paradaEnCamino(paradas, enCamino);
+  const irA = id => { guardarEnCamino(id); setEnCamino(id); };
+  useEffect(() => {
+    if (destino) document.getElementById(`parada-${destino.id}`)?.scrollIntoView({ block: 'center' });
+  }, [destino?.id, vueltas]);
+  // Ya marcada o fuera de la ruta: se olvida (solo con la ruta cargada, para no borrarla mientras carga).
+  useEffect(() => { if (datos && enCamino && !destino) { guardarEnCamino(null); setEnCamino(null); } }, [datos, enCamino, destino]);
   const listas = paradas.filter(resuelta).length;
   const entregadas = paradas.filter(p => p.estado === 'entregado').length;
   const hayCarga = resumenCombustible(combustible).cargas.length > 0;
@@ -69,7 +85,7 @@ export default function VistaRepartidor({ session, onLogout }) {
         {listas === paradas.length && <p role="status" className="ok">¡Ruta terminada! Marcaste todas las paradas.</p>}
         {grupos.map(g => <div key={g.viaje ?? 'sin-viaje'}>
           {grupos.length > 1 && g.viaje != null && <h2 className="viaje-titulo">{encabezadoViaje({ viaje: g.viaje })}</h2>}
-          {g.paradas.map((p, i) => <TarjetaParada key={p.id} parada={p} productos={productos} numero={i + 1} siguiente={p.id === siguiente?.id} enviando={enviando} onMarcar={cuerpo => marcar(p.id, cuerpo)}/>)}
+          {g.paradas.map((p, i) => <TarjetaParada key={p.id} parada={p} productos={productos} numero={i + 1} siguiente={p.id === siguiente?.id} enCamino={p.id === destino?.id} onComoLlegar={() => irA(p.id)} enviando={enviando} onMarcar={cuerpo => marcar(p.id, cuerpo)}/>)}
         </div>)}
       </>}
     </main>
@@ -134,7 +150,7 @@ function FilaCantidad({ linea: l, detalle, enviando, onCambio }) {
   </div>;
 }
 
-function TarjetaParada({ parada: p, productos, numero, siguiente, enviando, onMarcar }) {
+function TarjetaParada({ parada: p, productos, numero, siguiente, enCamino, onComoLlegar, enviando, onMarcar }) {
   // paso: null (botones), 'total' (¿se entregó todo?), 'ajustar' (cuánto entregó), 'pago' (elegir el método) o 'no' (confirmar que no se pudo entregar).
   const [paso, setPaso] = useState(null);
   const [form, setForm] = useState([]);
@@ -146,12 +162,12 @@ function TarjetaParada({ parada: p, productos, numero, siguiente, enviando, onMa
   const enlace = enlaceComoLlegar(p);
   const nombre = p.cliente_nombre || `Pedido ${p.id}`;
   useEffect(() => { setPaso(null); }, [p.estado]);
-  const clase = p.estado === 'entregado' ? ' entregada' : p.estado === 'no_entregado' ? ' no-entregada' : siguiente ? ' siguiente' : '';
-  return <article className={`tarjeta-parada${clase}`}>
+  const clase = p.estado === 'entregado' ? ' entregada' : p.estado === 'no_entregado' ? ' no-entregada' : enCamino ? ' en-camino' : siguiente ? ' siguiente' : '';
+  return <article id={`parada-${p.id}`} className={`tarjeta-parada${clase}`}>
     <div className="tarjeta-datos">
       <b className="number">{numero}</b>
       <div>
-        {siguiente && <span className="badge siguiente">Siguiente</span>}
+        {enCamino ? <span className="badge en-camino">¿Llegaste? Marca cómo te fue</span> : siguiente && <span className="badge siguiente">Siguiente</span>}
         <h3>{nombre}</h3>
         <p>{p.direccion || 'Sin dirección registrada'}</p>
         {!lista && paso === null && <p className="por-cobrar">Por cobrar: <b>{dinero(p.total)}</b></p>}
@@ -163,7 +179,7 @@ function TarjetaParada({ parada: p, productos, numero, siguiente, enviando, onMa
     </div> : <>
       {paso === null && <>
         <div className="tarjeta-contacto">
-          {enlace && <a className="boton" href={enlace} target="_blank" rel="noopener noreferrer">Cómo llegar</a>}
+          {enlace && <a className="boton" href={enlace} target="_blank" rel="noopener noreferrer" onClick={onComoLlegar}>Cómo llegar</a>}
           {p.cliente_telefono && <a className="boton" href={`tel:+${p.cliente_telefono}`}>Llamar</a>}
         </div>
         <div className="tarjeta-acciones">

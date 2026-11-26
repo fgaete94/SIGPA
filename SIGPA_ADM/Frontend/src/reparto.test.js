@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { enlaceComoLlegar, resumenEntregas, rutaEnCurso, textoResultado } from './reparto.js';
+import { enlaceComoLlegar, guardarEnCamino, leerEnCamino, paradaEnCamino, resumenEntregas, rutaEnCurso, textoResultado } from './reparto.js';
 
 const pedido = (id, estado, orden_entrega, extra = {}) => ({ id, cliente_id: id, cliente_nombre: `Cliente ${id}`, estado, orden_entrega, direccion_despacho: null, latitud: null, longitud: null, motivo_revision_direccion: null, ...extra });
 
@@ -67,4 +67,21 @@ test('resumenEntregas cuenta las paradas por estado y suma lo entregado y lo que
   const paradas = [pedido(1, 'entregado', 1, { total: 5000 }), pedido(2, 'no_entregado', 2, { total: 9000 }), pedido(3, 'confirmado', 3, { total: 3000 }), pedido(4, 'en_despacho', 4, { total: 2000 })];
   assert.deepEqual(resumenEntregas(paradas), { total: 4, entregadas: 1, noEntregadas: 1, porEntregar: 2, montoEntregado: 5000, montoPorEntregar: 5000 });
   assert.deepEqual(resumenEntregas([]), { total: 0, entregadas: 0, noEntregadas: 0, porEntregar: 0, montoEntregado: 0, montoPorEntregar: 0 });
+});
+
+test('al volver de Cómo llegar se recuerda la parada mientras siga sin marcar', () => {
+  const datos = new Map();
+  const almacen = { getItem: k => datos.get(k) ?? null, setItem: (k, v) => datos.set(k, v), removeItem: k => datos.delete(k) };
+  assert.equal(leerEnCamino(almacen), null);
+  guardarEnCamino(7, almacen);
+  assert.equal(leerEnCamino(almacen), 7);
+  const paradas = [{ id: 7, estado: 'en_despacho' }, { id: 8, estado: 'entregado' }];
+  assert.equal(paradaEnCamino(paradas, 7)?.id, 7);
+  assert.equal(paradaEnCamino(paradas, 8), null, 'ya marcada: no se destaca');
+  assert.equal(paradaEnCamino(paradas, 9), null, 'fuera de la ruta');
+  guardarEnCamino(null, almacen);
+  assert.equal(leerEnCamino(almacen), null);
+  const roto = { getItem() { throw new Error('bloqueado'); }, setItem() { throw new Error('bloqueado'); } };
+  assert.equal(leerEnCamino(roto), null, 'sin almacenamiento no falla');
+  guardarEnCamino(3, roto);
 });
