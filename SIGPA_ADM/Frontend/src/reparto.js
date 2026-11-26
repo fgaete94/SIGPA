@@ -55,3 +55,21 @@ export function enlaceComoLlegar(parada) {
   const destino = tieneCoordenadas(parada) ? `${parada.latitud},${parada.longitud}` : parada.direccion ? `${parada.direccion}, Chile` : null;
   return destino && `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(destino)}`;
 }
+
+// "Cómo llegar" abre Google Maps y el repartidor sale del panel. Se recuerda a qué parada fue para
+// mostrársela destacada al volver. sessionStorage: dura mientras la pestaña siga abierta.
+const CLAVE_EN_CAMINO = 'sigpa.repartidor.enCamino';
+
+export function leerEnCamino(almacen = globalThis.sessionStorage) {
+  try { const id = Number(almacen?.getItem(CLAVE_EN_CAMINO)); return id > 0 ? id : null; } catch { return null; }
+}
+
+export function guardarEnCamino(id, almacen = globalThis.sessionStorage) {
+  try { id ? almacen?.setItem(CLAVE_EN_CAMINO, String(id)) : almacen?.removeItem(CLAVE_EN_CAMINO); } catch { /* sin almacenamiento: solo no se recuerda */ }
+}
+
+// La parada a la que fue, mientras siga en la ruta y sin marcar. Ya marcada (o fuera de la ruta), null.
+export function paradaEnCamino(paradas, id) {
+  const p = id ? paradas.find(x => x.id === id) : null;
+  return p && !resuelta(p) ? p : null;
+}
