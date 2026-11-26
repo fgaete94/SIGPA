@@ -55,7 +55,7 @@ function RutaDelDia({ ruta }) {
           <h4>{g.viaje != null ? `Ruta ${g.viaje}` : 'Sin ruta'}</h4>
           <p><b>{listas} de {res.total}</b> {res.total === 1 ? 'parada' : 'paradas'}</p>
           <p><b>{dinero(res.montoEntregado)}</b> entregado</p>
-          {res.noEntregadas > 0 && <p className="ruta-hoy-fallas">{res.noEntregadas} no {res.noEntregadas === 1 ? 'entregada' : 'entregadas'}</p>}
+          {res.noEntregadas > 0 && <p className="ruta-hoy-fallas">{res.noEntregadas} no {res.noEntregadas === 1 ? 'entregado' : 'entregados'}</p>}
         </div>
         <div className="table entregas-dia"><table className="tabla-movil">
           <thead><tr><th>Orden</th><th>Cliente</th><th>Dirección</th><th className="num">Total</th><th>Resultado</th></tr></thead>
