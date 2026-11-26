@@ -9,6 +9,7 @@ import { enlaceComoLlegar, rutaEnCurso, textoResultado } from './reparto';
 import { useArrastre } from './Arrastre';
 import { moverA } from './route';
 import { agruparPorViaje, contarViajes, reemplazarViaje, tituloGrupo } from './viajes';
+import { claveRuta, repartidorDeRuta } from './asignacionRutas';
 import { siguienteParada } from './capasMapa';
 import { resumenCombustible, textoCarga } from './combustible';
 
@@ -72,7 +73,7 @@ export default function RutaEnCurso({ pedidos, clientes, productos, viajes = [],
       <div><h2>Ruta en curso</h2><p className="muted">{paradas.length === 1 ? '1 parada' : `${paradas.length} paradas`}{contarViajes(grupos) > 1 && ` en ${contarViajes(grupos)} rutas`}{entregadas + noEntregadas > 0 && <strong aria-live="polite"> · {entregadas} {entregadas === 1 ? 'entregada' : 'entregadas'}{noEntregadas > 0 && `, ${noEntregadas} no ${noEntregadas === 1 ? 'entregada' : 'entregadas'}`}</strong>} · en el orden guardado al planificar</p></div>
     </div>
     {paradas.length > 0 && <div className="barra-ruta no-print">
-      <AsignarRepartidor paradas={paradas} porEntregar={porEntregar} onAsignada={onActualizar}/>
+      <AsignarRepartidor grupos={grupos} onAsignada={onActualizar}/>
       <div className="acciones">
         <button aria-expanded={verMapa} onClick={() => setVerMapa(v => !v)}>{verMapa ? 'Ocultar mapa' : 'Ver mapa'}</button>
         {porEntregar.length > 0 && <DescargarPdf opciones={opcionesDescarga(agruparPorViaje(porEntregar, viajes))} onElegir={o => setHoja({ paradas: o.paradas, viajes, ruta: o.ruta })}/>}
@@ -116,27 +117,29 @@ function DescargarPdf({ opciones, onElegir }) {
   </div>;
 }
 
-// Asignar la ruta a un repartidor: desde ahí la ve en su celular y solo esa.
-function AsignarRepartidor({ paradas, porEntregar, onAsignada }) {
+// Asignar cada ruta a un repartidor: desde ahí la ve en su celular y solo la suya. Con dos camiones,
+// cada ruta puede ir a una persona distinta.
+function AsignarRepartidor({ grupos, onAsignada }) {
   const [repartidores, setRepartidores] = useState(null);
-  const [elegido, setElegido] = useState('');
-  const [guardando, setGuardando] = useState(false);
+  const [guardando, setGuardando] = useState(null);
   const [error, setError] = useState('');
-  // Lo que falta por entregar dice quién lleva la ruta ahora; con todo resuelto, quién la llevó.
-  const asignado = (porEntregar.length ? porEntregar : paradas).find(p => p.repartidor_id)?.repartidor_id ?? '';
   useEffect(() => { api('/repartidores').then(setRepartidores).catch(() => setRepartidores([])); }, []);
-  useEffect(() => { setElegido(String(asignado)); }, [asignado]);
   if (!repartidores?.length) return null;
-  // Elegir un repartidor lo asigna de inmediato. Si falla, el selector vuelve a quien estaba.
-  async function asignar(valor) {
-    setElegido(valor);
-    setGuardando(true); setError('');
+  const varias = grupos.length > 1;
+  // Elegir un repartidor asigna de inmediato lo que falta por entregar de esa ruta.
+  async function asignar(grupo, valor) {
+    const porEntregar = grupo.paradas.filter(p => !resuelta(p));
+    setGuardando(claveRuta(grupo.viaje)); setError('');
     try { await api('/rutas/asignar', { method: 'POST', body: JSON.stringify({ repartidor_id: valor ? Number(valor) : null, pedido_ids: porEntregar.map(p => p.id) }) }); onAsignada(); }
-    catch (e) { setError(e.message); setElegido(String(asignado)); }
-    finally { setGuardando(false); }
+    catch (e) { setError(e.message); }
+    finally { setGuardando(null); }
   }
   return <div className="asignar-repartidor no-print">
-    <label>Repartidor<select value={elegido} disabled={guardando || !porEntregar.length} onChange={e => asignar(e.target.value)}><option value="">Sin asignar</option>{repartidores.map(r => <option key={r.id} value={r.id}>{r.nombre}</option>)}</select></label>
+    {grupos.map(g => {
+      const clave = claveRuta(g.viaje);
+      const pendientes = g.paradas.some(p => !resuelta(p));
+      return <label key={clave}>{varias ? (g.viaje != null ? `Ruta ${g.viaje}` : 'Sin ruta') : 'Repartidor'}<select value={repartidorDeRuta(g.paradas, resuelta)} disabled={guardando !== null || !pendientes} onChange={e => asignar(g, e.target.value)}><option value="">Sin asignar</option>{repartidores.map(r => <option key={r.id} value={r.id}>{r.nombre}</option>)}</select></label>;
+    })}
     {error && <p role="alert" className="error">{error}</p>}
   </div>;
 }

@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { claveRuta } from './asignacionRutas';
 import { createPortal } from 'react-dom';
 import { useArrastre } from './Arrastre';
 import MapaRuta, { NumeroParada } from './MapaRuta';
@@ -10,7 +11,7 @@ const paradasTexto = n => (n === 1 ? '1 parada' : `${n} paradas`);
 // Historia #87: ruta propuesta por n8n, todavía sin guardar. Se puede reordenar o sacar paradas por
 // factores que el cálculo no conoce (horarios, un accidente, una calle cortada) y recién después confirmar.
 // Las paradas se reordenan arrastrándolas dentro de su viaje y se pueden pasar a otro viaje. Se muestra sobre toda la página (portal): cambiar de pestaña no la oculta.
-export default function VistaPreviaRuta({ estado, onCambiar, onCancelar, onConfirmar, onRecalcular, guardando, error, repartidores = [], repartidorId = '', onRepartidor }) {
+export default function VistaPreviaRuta({ estado, onCambiar, onCancelar, onConfirmar, onRecalcular, guardando, error, repartidores = [], eleccion = {}, onRepartidor }) {
   const titulo = useRef(null);
   const [foco, setFoco] = useState(null);
   useEffect(() => { titulo.current?.focus(); }, []);
@@ -52,7 +53,11 @@ export default function VistaPreviaRuta({ estado, onCambiar, onCancelar, onConfi
       <p>Al confirmar quedan confirmadas pero fuera de la ruta, marcadas "Dirección por revisar": corrige su ubicación y vuelve a calcular.</p>
     </div>}
 
-    {repartidores.length > 0 && paradas.length > 0 && <label className="asignar-previa">Asignar la ruta a<select value={repartidorId} disabled={guardando} onChange={e => onRepartidor(e.target.value)}><option value="">Seleccione repartidor</option>{repartidores.map(r => <option key={r.id} value={r.id}>{r.nombre}</option>)}</select></label>}
+    {repartidores.length > 0 && paradas.length > 0 && <fieldset className="asignar-previa">
+      <legend>{viajes.length > 1 ? 'Asignar cada ruta a un repartidor' : 'Asignar la ruta a'}</legend>
+      {viajes.length > 1 && <p className="muted">Puedes dar cada ruta a un repartidor distinto (un camión cada uno) o todas al mismo.</p>}
+      <div className="asignar-rutas">{viajes.map(v => { const clave = claveRuta(v.numero); return <label key={clave}>{viajes.length > 1 ? (v.numero != null ? `Ruta ${v.numero}` : 'Sin ruta') : 'Repartidor'}<select value={eleccion[clave] || ''} disabled={guardando} onChange={e => onRepartidor(clave, e.target.value)}><option value="">Sin asignar</option>{repartidores.map(r => <option key={r.id} value={r.id}>{r.nombre}</option>)}</select></label>; })}</div>
+    </fieldset>}
     {error && <div role="alert" className="error"><strong>{error.mensaje}</strong>{error.detalles?.length > 0 && <ul>{error.detalles.map(d => <li key={d}>{d}</li>)}</ul>}</div>}
     <div className="actions">
       <button type="button" onClick={onCancelar} disabled={guardando}>Cancelar</button>
