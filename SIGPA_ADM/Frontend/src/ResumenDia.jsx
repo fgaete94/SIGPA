@@ -51,7 +51,7 @@ function EntregasDelDia({ pedidos, clientes }) {
             <h3>{g.viaje != null ? `Ruta ${g.viaje}` : 'Sin ruta'}</h3>
             <p><b>{listas} de {ruta.total}</b> {ruta.total === 1 ? 'parada' : 'paradas'}</p>
             <p><b>{dinero(ruta.montoEntregado)}</b> entregado</p>
-            {ruta.noEntregadas > 0 && <p className="ruta-hoy-fallas">{ruta.noEntregadas} no {ruta.noEntregadas === 1 ? 'entregada' : 'entregadas'}</p>}
+            {ruta.noEntregadas > 0 && <p className="ruta-hoy-fallas">{ruta.noEntregadas} no {ruta.noEntregadas === 1 ? 'entregado' : 'entregados'}</p>}
           </div>
           <div className="table"><table className="tabla-movil">
             <thead><tr><th>Parada</th><th>Cliente</th><th>Dirección</th><th className="num">Total</th><th>Estado</th></tr></thead>

@@ -1046,3 +1046,5 @@ td.celda-acciones button+button{margin-left:6px}
 .reportes-vista .barra span{background:var(--azul-2)}
 .reportes-vista section .title button,.reportes-vista section button{border-radius:999px}
 @media (max-width:760px){.reportes-vista>section{padding:16px 12px}.reportes-vista .kpis article{padding:8px 12px}.reportes-vista .kpis article:nth-child(odd){padding-left:0;border-left:0}}
+/* "N no entregadas" en la franja de cada ruta: etiqueta roja, que se note. */
+.ruta-hoy-franja p.ruta-hoy-fallas,.despachos-vista .ruta-hoy-franja p.ruta-hoy-fallas{background:var(--estado-no-entregado);color:#fff;font-weight:800}
