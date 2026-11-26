@@ -13,6 +13,7 @@ export const REPARTO = [
   { dia: 2, nombre: 'Martes', zona: 'Recreo' },
   { dia: 3, nombre: 'Miércoles', zona: 'Viña Centro' },
   { dia: 4, nombre: 'Jueves', zona: 'Concón' },
+  { dia: 5, nombre: 'Viernes', zona: 'Reñaca' },
 ];
 
 // producto: nombre exacto en la tabla producto; de ahí sale el precio. Si un producto deja de
