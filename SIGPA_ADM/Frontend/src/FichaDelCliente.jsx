@@ -27,18 +27,21 @@ export default function FichaDelCliente({ clienteId, onClose, onVerPedido, onEdi
   const r = cliente && resumenCliente(cliente.pedidos);
   const sector = cliente && sectores.find(s => s.id === cliente.sector_id)?.nombre;
 
-  return <div className="modal" role="dialog" aria-modal="true" aria-label="Ficha del cliente"><section className="ficha">
-    <button autoFocus onClick={onClose}>Cerrar ficha</button>
-    <span className="eyebrow">Ficha del cliente</span>
+  return <div className="modal" role="dialog" aria-modal="true" aria-label="Ficha del cliente"><section className="ficha ficha-cliente">
+    <header className="ficha-cabecera">
+      <div>
+        <h2>{cliente ? nombre(cliente) : 'Ficha del cliente'}</h2>
+        {cliente && <p className="etiquetas-ficha">
+          <span className={`estado-cliente${cliente.activo ? ' activo' : ''}`}>{cliente.activo ? 'Activo' : 'Inactivo'}</span>
+          <span className="etiqueta-cliente">{textoTipo(cliente.tipo_cliente_nombre)}</span>
+          {cliente.opt_out_whatsapp && <span className="etiqueta-cliente aviso">No recibe recordatorios</span>}
+        </p>}
+      </div>
+      <button autoFocus className="cerrar-ficha" onClick={onClose}>Cerrar ficha</button>
+    </header>
     {!cliente && !error && <p role="status">Cargando la ficha…</p>}
     {error && <p role="alert" className="error">{error}</p>}
     {cliente && <>
-      <h2>{nombre(cliente)}</h2>
-      <p className="etiquetas-ficha">
-        <span className={`badge ${cliente.activo ? 'entregado' : 'cancelado'}`}>{cliente.activo ? 'Activo' : 'Inactivo'}</span>
-        <span className="badge">{textoTipo(cliente.tipo_cliente_nombre)}</span>
-        {cliente.opt_out_whatsapp && <span className="badge revisar">No recibe recordatorios</span>}
-      </p>
       <dl className="datos-ficha">
         <div><dt>Teléfono</dt><dd>{cliente.telefono || '—'}</dd></div>
         <div><dt>Dirección</dt><dd>{cliente.direccion || 'Sin dirección'}</dd></div>
@@ -46,12 +49,12 @@ export default function FichaDelCliente({ clienteId, onClose, onVerPedido, onEdi
         <div><dt>Día de reparto</dt><dd>{cliente.dia_reparto ? dia(cliente.dia_reparto) : 'Sin asignar'}</dd></div>
       </dl>
 
-      <div className="kpis kpis-ficha">
-        <article><span>Pedidos</span><strong>{r.cantidad}</strong></article>
-        <article><span>Entregados</span><strong>{r.entregados}</strong></article>
-        <article><span>Comprado</span><strong>{dinero(r.comprado)}</strong></article>
-        <article><span>Promedio por entrega</span><strong>{r.promedio == null ? '—' : dinero(r.promedio)}</strong></article>
-      </div>
+      <dl className="cifras-ficha">
+        <div><dt>Pedidos</dt><dd>{r.cantidad}</dd></div>
+        <div><dt>Entregados</dt><dd>{r.entregados}</dd></div>
+        <div><dt>Comprado</dt><dd>{dinero(r.comprado)}</dd></div>
+        <div><dt>Promedio por entrega</dt><dd>{r.promedio == null ? '—' : dinero(r.promedio)}</dd></div>
+      </dl>
       <p className="muted">
         {r.ultimo ? `Último pedido: #${r.ultimo.id} del ${fechaCorta(r.ultimo.creado_en)} (${ETIQUETA_ESTADO[r.ultimo.estado]?.toLowerCase()}).` : 'Todavía no tiene pedidos.'}
         {r.enCurso > 0 && ` ${r.enCurso === 1 ? 'Tiene 1 pedido en curso' : `Tiene ${r.enCurso} pedidos en curso`}.`}
@@ -63,15 +66,15 @@ export default function FichaDelCliente({ clienteId, onClose, onVerPedido, onEdi
       {r.cantidad > 0 ? <div className="table"><table className="tabla-movil">
         <thead><tr><th>Pedido</th><th>Fecha</th><th>Estado</th><th>Total</th><th>Detalle</th></tr></thead>
         <tbody>{r.pedidos.map(p => <tr key={p.id}>
-          <td data-label="Pedido">#{p.id}</td>
+          <td data-label="Pedido" className="col-pedido">#{p.id}</td>
           <td data-label="Fecha">{fechaCorta(p.creado_en)}</td>
           <td data-label="Estado"><span className={`badge ${p.estado}`}>{ETIQUETA_ESTADO[p.estado] || p.estado}</span></td>
-          <td data-label="Total">{dinero(Number(p.total))}</td>
+          <td data-label="Total" className="col-total">{dinero(Number(p.total))}</td>
           <td className="celda-acciones"><button aria-label={`Ver pedido ${p.id}`} onClick={() => onVerPedido(p.id)}>Ver detalle</button></td>
         </tr>)}</tbody>
       </table></div> : <p>Sin pedidos registrados.</p>}
 
-      <div className="actions"><button onClick={() => onEditar(cliente)}>Editar cliente</button></div>
+      <div className="actions"><button className="primary" onClick={() => onEditar(cliente)}>Editar cliente</button></div>
     </>}
   </section></div>;
 }

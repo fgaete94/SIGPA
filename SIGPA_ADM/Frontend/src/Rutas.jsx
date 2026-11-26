@@ -88,9 +88,9 @@ export default function Rutas({ pendientes, clientes = [], busy, onActualizar, o
   }
 
   return <>
-    <section className="no-print">
+    <section className="no-print preparar-vista">
       <div className="title"><h2>Preparar ruta</h2><span className={`contador${lleno ? ' lleno' : ''}`} aria-live="polite">{selected.length} / {RUTA_MAX_PEDIDOS} pedidos</span></div>
-      <p>Selecciona los pedidos que se incluirán, hasta {RUTA_MAX_PEDIDOS} por planificación, y calcula la ruta: antes de guardarla podrás revisarla y cambiar el orden. Se muestran todas las fechas: el backend todavía no registra una fecha de entrega.</p>
+      <p className="preparar-ayuda">Marca los pedidos que van en la ruta y calcúlala. Antes de guardarla puedes revisar y cambiar el orden.</p>
       {porRevisar > 0 && <p className="notice">{porRevisar === 1 ? 'Hay 1 pedido' : `Hay ${porRevisar} pedidos`} con la dirección por revisar: corrige su ubicación para que entren a la próxima ruta.</p>}
       <div className="filters filtros-ruta">
         <select aria-label="Día de reparto" value={dia} onChange={e => { setDia(e.target.value); setComuna(''); }}>
@@ -105,7 +105,6 @@ export default function Rutas({ pendientes, clientes = [], busy, onActualizar, o
         <button disabled={planning || !visibles.some(p => selected.includes(p.pedido_id))} onClick={() => { setSelected(ids => desmarcarVisibles(ids, visibles)); setAviso(''); }}>Desmarcar visibles</button>
       </div>
       {aviso && <p role="status" className="ok">{aviso}</p>}
-      {conPesos && selected.length > 0 && <p className="peso-ruta" aria-live="polite">Peso de lo marcado: <strong>{kilos(peso.total)}</strong>{peso.sinPeso.length > 0 && ' sin contar los que no tienen peso'}{!peso.excedido && ` · ${peso.viajes === 1 ? '1 ruta' : `al menos ${peso.viajes} rutas`} (el camión carga hasta ${kilos(CAPACIDAD_KG)} por ruta)`}</p>}
       {conPesos && peso.excedido && <p className="notice">Lo marcado supera el máximo por planificación ({kilos(CAPACIDAD_KG * MAX_VIAJES)}, {MAX_VIAJES} rutas): desmarca pedidos y déjalos para otra planificación.</p>}
       {peso.sobreCapacidad.length > 0 && <p className="notice">{peso.sobreCapacidad.map(p => `#${p.pedido_id}`).join(', ')} {peso.sobreCapacidad.length === 1 ? 'pesa' : 'pesan'} más de lo que carga el camión ({kilos(CAPACIDAD_KG)}) por sí {peso.sobreCapacidad.length === 1 ? 'solo' : 'solos'}: no se puede planificar así.</p>}
       {conPesos && peso.sinPeso.length > 0 && selected.length > 0 && <p className="notice">{peso.sinPeso.map(p => `#${p.pedido_id}`).join(', ')} no {peso.sinPeso.length === 1 ? 'tiene' : 'tienen'} peso calculable (algún producto sin peso registrado): {peso.sinPeso.length === 1 ? 'desmárcalo' : 'desmárcalos'} o la ruta no se podrá calcular.</p>}
@@ -127,7 +126,17 @@ export default function Rutas({ pendientes, clientes = [], busy, onActualizar, o
       {pendientes.length > 0 && !visibles.length && <p>No hay pedidos pendientes con estos filtros.</p>}
       {lleno && <p className="muted">Llegaste al máximo de {RUTA_MAX_PEDIDOS} pedidos por planificación. Desmarca alguno para elegir otro.</p>}
       {error && <div role="alert" className="error"><strong>{error.mensaje}</strong><ul>{error.detalles.map(d => <li key={d}>{d}</li>)}</ul></div>}
-      <button className="primary" disabled={!selected.length || planning || busy || !!vista} onClick={calcular}>{planning ? 'Calculando… (puede tardar hasta 2 minutos)' : `Calcular ruta (${selected.length})`}</button>
+      {/* La carga del camión: cuántos pedidos y kilos van marcados, y cuántas cargas (rutas) llenan. */}
+      <div className="carga-camion" aria-live="polite">
+        <p className="carga-datos"><b>{selected.length}</b> de {RUTA_MAX_PEDIDOS} pedidos{conPesos && <> · <b>{kilos(peso.total)}</b></>}</p>
+        {conPesos && <div className={`carga-medidor${peso.excedido ? ' excedido' : ''}`} role="img" aria-label={peso.excedido ? `Lo marcado supera ${MAX_VIAJES} cargas del camión` : `Lo marcado llena ${selected.length ? peso.viajes : 0} de ${MAX_VIAJES} cargas del camión`}>
+          {Array.from({ length: MAX_VIAJES }, (_, n) => {
+            const lleno = Math.max(0, Math.min(1, (peso.total - n * CAPACIDAD_KG) / CAPACIDAD_KG));
+            return <span key={n} className={`carga-tramo${lleno > 0 ? ' con-carga' : ''}`}><i style={{ width: `${lleno * 100}%` }}/><small>Ruta {n + 1}</small></span>;
+          })}
+        </div>}
+        <button className="primary" disabled={!selected.length || planning || busy || !!vista} onClick={calcular}>{planning ? 'Calculando… (puede tardar hasta 2 minutos)' : `Calcular ruta (${selected.length})`}</button>
+      </div>
     </section>
     {vista && <VistaPreviaRuta estado={vista} onCambiar={setVista} onCancelar={cerrarVista} onConfirmar={confirmar} onRecalcular={calcular} guardando={guardando} error={errorVista} repartidores={repartidores} eleccion={eleccion} onRepartidor={(clave, valor) => setEleccion(e => ({ ...e, [clave]: valor }))}/>}
     {result && <section className="no-print">

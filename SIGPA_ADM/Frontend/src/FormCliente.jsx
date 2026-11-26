@@ -57,14 +57,15 @@ export default function FormCliente({ cliente, clientes, onClose, onSaved }) {
     } catch (e) { setError(e.message); setBusy(false); }
   }
 
-  return <div className="modal" role="dialog" aria-modal="true" aria-label={nuevo ? 'Nuevo cliente' : 'Editar cliente'}><section><form onSubmit={submit} noValidate>
-    <span className="eyebrow">{nuevo ? 'Alta manual' : `Cliente #${cliente.id}`}</span><h2>{nuevo ? 'Nuevo cliente' : 'Editar cliente'}</h2>
-    <p>{nuevo ? 'El bot de WhatsApp solo atiende a clientes registrados: desde que lo guardes, podrá pedir con este número.' : nombreCompleto(cliente)}</p>
+  return <div className="modal" role="dialog" aria-modal="true" aria-label={nuevo ? 'Nuevo cliente' : 'Editar cliente'}><section className="form-cliente"><form onSubmit={submit} noValidate>
+    <header className="ficha-cabecera"><div><h2>{nuevo ? 'Nuevo cliente' : nombreCompleto(cliente)}</h2><p>{nuevo ? 'El bot de WhatsApp solo atiende a clientes registrados: desde que lo guardes, podrá pedir con este número.' : `Editar cliente #${cliente.id}`}</p></div></header>
+    <h3 className="grupo-form">Contacto</h3>
     <div className="campos">
       {field('nombre', 'Nombre', { required: true, autoFocus: true })}{field('apellido_paterno', 'Apellido paterno')}{field('apellido_materno', 'Apellido materno')}
       {field('telefono', 'Teléfono (celular)', { required: true, inputMode: 'tel', placeholder: '9 1234 5678' })}
     </div>
     {resultado.aviso && <p className="notice">{resultado.aviso}</p>}
+    <h3 className="grupo-form">Dirección</h3>
     {field('direccion', 'Dirección', { placeholder: 'Calle y número, depto o block' })}
     {field('coordenadas', 'Coordenadas (latitud, longitud)', { inputMode: 'decimal', placeholder: '-33.0458, -71.6197' })}
     <p className="muted ayuda-coordenadas">Opcional. Sin coordenadas, se busca por la dirección al calcular la ruta. {form.direccion.trim() && <a href={enlaceMapa(form.direccion.trim())} target="_blank" rel="noopener noreferrer">Buscar en Google Maps</a>}</p>
@@ -72,6 +73,7 @@ export default function FormCliente({ cliente, clientes, onClose, onSaved }) {
       <label>Comuna<select value={form.comuna_id} required={nuevo} onChange={e => setForm(f => elegirComuna(f, e.target.value, sectores))}><option value="">{nuevo ? 'Elige una comuna' : 'Sin asignar'}</option>{actual(comunas, cliente?.comuna_id, cliente?.comuna_nombre || `Comuna ${cliente?.comuna_id}`)}{comunas.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}</select></label>
       <label>Sector (opcional)<select value={form.sector_id} disabled={!form.comuna_id} onChange={e => set('sector_id', e.target.value)}><option value="">{form.comuna_id ? 'Sin sector' : 'Elige primero la comuna'}</option>{form.sector_id && !sectoresDeComuna(sectores, form.comuna_id).some(s => String(s.id) === form.sector_id) && <option value={form.sector_id}>{`Sector ${form.sector_id}`}</option>}{sectoresDeComuna(sectores, form.comuna_id).map(s => <option key={s.id} value={s.id}>{s.nombre}</option>)}</select></label>
     </div>
+    <h3 className="grupo-form">Reparto</h3>
     <div className="campos">
       <label>Día de reparto<select value={form.dia_reparto} onChange={e => set('dia_reparto', e.target.value)}><option value="">Sin asignar</option>{DIAS_REPARTO.map(([valor, texto]) => <option key={valor} value={valor}>{texto}</option>)}</select>
         {sugerencia && <span className="sugerencia-dia" role="status">
@@ -83,6 +85,7 @@ export default function FormCliente({ cliente, clientes, onClose, onSaved }) {
       </label>
       <label>Tipo de cliente<select value={form.tipo_cliente_id} onChange={e => set('tipo_cliente_id', e.target.value)}><option value="">Sin asignar</option>{actual(tipos, cliente?.tipo_cliente_id, cliente?.tipo_cliente_nombre || `Tipo ${cliente?.tipo_cliente_id}`)}{tipos.map(t => <option key={t.id} value={t.id}>{t.nombre}</option>)}</select></label>
     </div>
+    <h3 className="grupo-form">Estado y mensajes</h3>
     {check('activo', 'Cliente activo')}{check('opt_out_whatsapp', 'No desea recibir recordatorios por WhatsApp')}
     {!form.dia_reparto && form.activo && !form.opt_out_whatsapp && <p className="muted">Sin día de reparto no recibe el recordatorio del día anterior.</p>}
     {!nuevo && form.direccion.trim() !== (cliente.direccion || '') && !('latitud' in (resultado.cambios || {})) && cliente.latitud != null && <p className="notice">Al cambiar la dirección se borran las coordenadas guardadas, salvo que escribas las nuevas.</p>}

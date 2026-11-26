@@ -5,7 +5,7 @@ import { ETIQUETA_ESTADO, despachables, enDespacho, resuelta } from './estados';
 import HojaDeRuta from './HojaDeRuta';
 import MapaRuta, { NumeroParada } from './MapaRuta';
 import { opcionesDescarga } from './hojaRuta';
-import { enlaceComoLlegar, rutaEnCurso, textoResultado } from './reparto';
+import { enlaceComoLlegar, ordenarPorEntrega, rutaEnCurso, textoResultado } from './reparto';
 import { useArrastre } from './Arrastre';
 import { moverA } from './route';
 import { agruparPorViaje, contarViajes, reemplazarViaje, tituloGrupo } from './viajes';
@@ -34,7 +34,11 @@ export default function RutaEnCurso({ pedidos, clientes, productos, viajes = [],
   const porEntregar = paradas.filter(p => !resuelta(p));
   const entregadas = paradas.filter(p => p.estado === 'entregado').length;
   const noEntregadas = paradas.filter(p => p.estado === 'no_entregado').length;
-  const grupos = agruparPorViaje(paradas, viajes);
+  // "Ordenar por hora de entrega" es por ruta y solo cambia cómo se ve: sigue actualizándose y esa ruta no
+  // se arrastra mientras tanto. Guarda las claves de las rutas ordenadas así.
+  const [porEntrega, setPorEntrega] = useState(() => new Set());
+  const alternarEntrega = clave => setPorEntrega(s => { const n = new Set(s); if (n.has(clave)) n.delete(clave); else n.add(clave); return n; });
+  const grupos = agruparPorViaje(paradas, viajes).map(g => (porEntrega.has(g.viaje ?? 'sin-viaje') ? { ...g, paradas: ordenarPorEntrega(g.paradas) } : g));
   const siguiente = siguienteParada(grupos);
   // Mientras se ve esta pantalla, se recarga sola para mostrar lo que marca el repartidor, y de inmediato al volver a la pestaña.
   // Se pausa con la hoja abierta o el orden cambiado a mano, que una recarga perdería.
@@ -68,7 +72,7 @@ export default function RutaEnCurso({ pedidos, clientes, productos, viajes = [],
     onActualizar();
   }
 
-  return <section className="print-route">
+  return <section className="print-route curso-vista">
     <div className="title">
       <div><h2>Ruta en curso</h2><p className="muted">{paradas.length === 1 ? '1 parada' : `${paradas.length} paradas`}{contarViajes(grupos) > 1 && ` en ${contarViajes(grupos)} rutas`}{entregadas + noEntregadas > 0 && <strong aria-live="polite"> · {entregadas} {entregadas === 1 ? 'entregada' : 'entregadas'}{noEntregadas > 0 && `, ${noEntregadas} no ${noEntregadas === 1 ? 'entregada' : 'entregadas'}`}</strong>} · en el orden guardado al planificar</p></div>
     </div>
@@ -88,7 +92,7 @@ export default function RutaEnCurso({ pedidos, clientes, productos, viajes = [],
     {manual && <p className="notice">Orden cambiado solo para imprimir o enviar. No se guarda en el servidor: al actualizar los datos vuelve al orden planificado. <button className="no-print enlace" onClick={() => setParadas(guardadas)}>Volver al orden planificado</button></p>}
     {verMapa && paradas.length > 0 && <MapaRuta grupos={grupos} foco={foco} avance/>}
     {paradas.length > 0 && !porEntregar.length && <p role="status" className="ok">Ruta terminada: el repartidor marcó todas las paradas.</p>}
-    {grupos.map(v => <ViajeEnCurso key={v.viaje ?? 'sin-viaje'} viaje={v} titulo={tituloGrupo(v, grupos)} onMover={moverEnViaje(v.viaje)} onEntregar={onEntregar} onVer={verParada} siguienteId={siguiente?.id} despachando={despachando} onCambiarRuta={destino => cambiarRuta(v, destino)}/>)}
+    {grupos.map(v => <ViajeEnCurso key={v.viaje ?? 'sin-viaje'} viaje={v} titulo={tituloGrupo(v, grupos)} onMover={porEntrega.has(v.viaje ?? 'sin-viaje') ? () => {} : moverEnViaje(v.viaje)} porEntrega={porEntrega.has(v.viaje ?? 'sin-viaje')} onPorEntrega={() => alternarEntrega(v.viaje ?? 'sin-viaje')} onEntregar={onEntregar} onVer={verParada} siguienteId={siguiente?.id} despachando={despachando} onCambiarRuta={destino => cambiarRuta(v, destino)}/>)}
     {!paradas.length && <p>No hay una ruta en curso. Selecciona pedidos en "Preparar ruta" y planifícala.</p>}
     {hoja && <HojaDeRuta paradas={hoja.paradas} viajes={hoja.viajes} ruta={hoja.ruta} clientes={clientes} productos={productos} onClose={() => setHoja(null)}/>}
     {sinUbicacion > 0 && <p className="notice no-print">{sinUbicacion === 1 ? '1 pedido confirmado quedó' : `${sinUbicacion} pedidos confirmados quedaron`} fuera de la ruta por dirección por revisar. Corrige su ubicación en "Preparar ruta" y vuelve a planificar.</p>}
@@ -145,16 +149,20 @@ function AsignarRepartidor({ grupos, onAsignada }) {
 }
 
 // Un viaje de la ruta en curso: encabezado y paradas, que se pueden reordenar arrastrando dentro del viaje.
-function ViajeEnCurso({ viaje, titulo, onMover, onEntregar, onVer, siguienteId, despachando, onCambiarRuta }) {
+function ViajeEnCurso({ viaje, titulo, onMover, onEntregar, onVer, siguienteId, despachando, onCambiarRuta, porEntrega = false, onPorEntrega }) {
   const { paradas } = viaje;
   const { propsFila, propsManilla } = useArrastre(paradas.length, onMover);
   const porDespachar = despachables(paradas).length;
   const despachados = enDespacho(paradas).length;
   const clave = viaje.viaje ?? 'sin-viaje';
   const delViaje = viaje.viaje != null ? ` de la ruta ${viaje.viaje}` : '';
+  const listas = paradas.filter(resuelta).length;
+  const terminada = paradas.length > 0 && listas === paradas.length;
   return <>
-    {(titulo || porDespachar > 0 || despachados > 0) && <div className="encabezado-ruta">
-      {titulo && <h3 className="viaje-titulo">{titulo}</h3>}
+    {(titulo || porDespachar > 0 || despachados > 0 || listas > 0) && <div className={`encabezado-ruta${titulo ? ' franja-curso' : ''}${terminada ? ' terminada' : ''}`} style={{ '--avance': `${paradas.length ? (listas / paradas.length) * 100 : 0}%` }}>
+      {titulo && <span className="ruta-agua" aria-hidden="true"/>}
+      {titulo && <h3 className="viaje-titulo">{titulo}<small>{listas} de {paradas.length} {paradas.length === 1 ? 'parada' : 'paradas'}</small></h3>}
+      {listas > 0 && <button className="no-print" aria-pressed={porEntrega} aria-label={`${porEntrega ? 'Ver orden planificado' : 'Ordenar por hora de entrega'}${delViaje}`} onClick={onPorEntrega}>{porEntrega ? 'Ver orden planificado' : 'Ordenar por hora de entrega'}</button>}
       {despachados > 0 && <button className="no-print" disabled={despachando !== null} aria-label={`Deshacer confirmación${delViaje}: ${despachados} ${despachados === 1 ? 'pedido' : 'pedidos'}`} onClick={() => onCambiarRuta('confirmado')}>{despachando === `${clave}:confirmado` ? 'Marcando…' : 'Deshacer confirmación'}</button>}
       {porDespachar > 0 && <button className="primary no-print" disabled={despachando !== null} aria-label={`Salió a reparto${delViaje}: ${porDespachar} ${porDespachar === 1 ? 'pedido' : 'pedidos'}`} onClick={() => onCambiarRuta('en_despacho')}>{despachando === `${clave}:en_despacho` ? 'Marcando…' : `Salió a reparto (${porDespachar})`}</button>}
     </div>}
@@ -163,7 +171,7 @@ function ViajeEnCurso({ viaje, titulo, onMover, onEntregar, onVer, siguienteId, 
       const fila = propsFila(i);
       const lista = resuelta(p);
       const claseResultado = p.estado === 'entregado' ? ' parada-entregada' : p.estado === 'no_entregado' ? ' parada-no-entregada' : '';
-      return <div key={p.id} {...fila} className={`stop ${fila.className}${claseResultado}${p.id === siguienteId ? ' parada-siguiente' : ''}`}>
+      return <div key={p.id} {...fila} className={`stop ${fila.className}${claseResultado}${p.id === siguienteId ? ' parada-siguiente' : ''}${porEntrega ? ' orden-entrega' : ''}`}>
         <button {...propsManilla(i, p.cliente_nombre || `pedido ${p.id}`)} className="manilla no-print">⠿</button>
         <NumeroParada numero={i + 1} parada={p} nombre={p.cliente_nombre || `pedido ${p.id}`} onVer={() => onVer(p.id)}/>
         <span>

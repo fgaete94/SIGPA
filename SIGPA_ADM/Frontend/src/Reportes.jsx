@@ -27,7 +27,7 @@ export default function Reportes({ pedidos, pedidosConAnteriores, clientes, actu
   const elegirPeriodo = valor => { setPeriodo(valor); if (valor !== 'otro') setRango(rangoPeriodo(valor, hoyChile())); };
   const cambiarFecha = (campo, valor) => { setPeriodo('otro'); setRango(r => ({ ...r, [campo]: valor })); };
 
-  return <>
+  return <div className="reportes-vista">
     <section className="no-print">
       <div className="filters periodo">
         <label>Período<select value={periodo} onChange={e => elegirPeriodo(e.target.value)}>{PERIODOS.map(([valor, texto]) => <option key={valor} value={valor}>{texto}</option>)}</select></label>
@@ -44,7 +44,7 @@ export default function Reportes({ pedidos, pedidosConAnteriores, clientes, actu
       <ProductosVendidos rango={rango} actualizadoEn={actualizadoEn}/>
       <PorComuna pedidos={pedidos} rango={rango}/>
     </>}
-  </>;
+  </div>;
 }
 
 // Pedidos entregados y no entregados del período elegido.
@@ -104,7 +104,7 @@ function Ventas({ pedidos, clientes, rango }) {
       <article><span>En curso (aún sin entregar)</span><strong>{dinero(ventas.enCurso.monto)}</strong><small>{ventas.enCurso.pedidos === 1 ? '1 pedido' : `${ventas.enCurso.pedidos} pedidos`}</small></article>
     </div>
     {ventas.serie.length > 0 ? <GraficoVentas serie={ventas.serie} unidad={unidad}/> : <p>No hay ventas en el período y filtros elegidos.</p>}
-    <p className="muted">Unidades vendidas: pendiente. El listado de pedidos del backend todavía no trae las cantidades por producto.{agrupar !== 'dia' && ' La primera y la última barra pueden cubrir un período incompleto, según las fechas elegidas.'}</p>
+    {agrupar !== 'dia' && <p className="muted">La primera y la última barra pueden cubrir un período incompleto, según las fechas elegidas.</p>}
   </section>;
 }
 
@@ -116,7 +116,7 @@ function GraficoVentas({ serie, unidad }) {
   return <figure className="grafico">
     <div className="barras" role="img" aria-label={`Ventas por ${unidad}: ${serie.length} barras. Mayor venta: ${dinero(maximo)}. El detalle está en la tabla de abajo.`}>
       {serie.map((s, i) => <div className="columna" key={s.clave} title={`${s.etiqueta}: ${dinero(s.monto)} (${s.pedidos} ${s.pedidos === 1 ? 'pedido' : 'pedidos'})`}>
-        <div className="area"><span className={`valor${s.monto ? '' : ' vacio'}`} style={{ height: maximo ? `${(s.monto / maximo) * 100}%` : 0 }}/></div>
+        <div className="area"><span className={`valor${s.monto ? '' : ' vacio'}${s.monto && s.monto === maximo ? ' maximo' : ''}`} style={{ height: maximo ? `${(s.monto / maximo) * 100}%` : 0 }}/></div>
         <small aria-hidden="true">{i % paso === 0 ? s.etiqueta : ''}</small>
       </div>)}
     </div>

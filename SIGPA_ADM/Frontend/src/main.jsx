@@ -8,7 +8,7 @@ import EditarPedido from './EditarPedido';
 import FichaDelCliente from './FichaDelCliente';
 import { ACCION_DESPACHO, ESTADOS, ETIQUETA_ESTADO, textoAccion, textoCambio } from './estados';
 import { puedeEntregarse } from './entregas';
-import { fechaCorta, fechaHora, hoyChile } from './fechas';
+import { fechaCorta, fechaHora, horaCorta, hoyChile } from './fechas';
 import { VISTA_INICIAL, VISTAS_PEDIDOS, cuentaVistas, filtrarPedidos, nombreDia, opcionesFiltros, siguienteDiaReparto, totalDe } from './filtrosPedidos';
 import FormCliente from './FormCliente';
 import { vigilarInactividad } from './inactividad';
@@ -29,6 +29,7 @@ import './styles.css';
 const money = n => new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP' }).format(n);
 const name = c => [c.nombre, c.apellido_paterno, c.apellido_materno].filter(Boolean).join(' ');
 function Brand({ blanco }) { return <span className="brand"><img src={blanco ? '/marca/logo-blanco.svg' : '/marca/logo.svg'} alt="Agua DM" width="2320" height="2280"/><span>SIGPA<small>Panel de operación</small></span></span>; }
+const fechaLarga = d => new Intl.DateTimeFormat('es-CL', { timeZone: 'America/Santiago', weekday: 'long', day: 'numeric', month: 'long' }).format(d);
 const OPCIONES_RUTA = ['Preparar ruta', 'Ruta en curso'];
 // Abierto desde el ícono instalado en el celular (sin barra del navegador): va directo al ingreso, sin la landing.
 const esAppInstalada = () => window.matchMedia?.('(display-mode: standalone)').matches || window.navigator.standalone === true;
@@ -98,11 +99,15 @@ function Dashboard({ session, onLogout, onInactividad }) {
     return () => controller.abort();
   }, [revision]);
   const pedidosConAnteriores = useMemo(() => [...(data?.pedidos ?? []), ...(data?.noEntregadosAnteriores ?? [])], [data]);
-  // #73 pide datos casi en tiempo real: con Reportes abierto se recargan cada minuto (no durante una planificación).
+  // #73 pide datos casi en tiempo real: Resumen se recarga cada 15 s y al volver a la pestaña (como Ruta en
+  // curso, para ver lo que marca el repartidor); Reportes, cada minuto. No durante una planificación.
   useEffect(() => {
-    if (tab !== 'Reportes' || planning) return;
-    const timer = setInterval(() => { if (!document.hidden) setRevision(r => r + 1); }, 60000);
-    return () => clearInterval(timer);
+    const cada = tab === 'Resumen' ? 15000 : tab === 'Reportes' ? 60000 : 0;
+    if (!cada || planning) return undefined;
+    const recargar = () => { if (!document.hidden) setRevision(r => r + 1); };
+    const timer = setInterval(recargar, cada);
+    if (tab === 'Resumen') document.addEventListener('visibilitychange', recargar);
+    return () => { clearInterval(timer); document.removeEventListener('visibilitychange', recargar); };
   }, [tab, planning]);
   const actualizarRuta = useCallback(() => setRevision(r => r + 1), []);
   // El historial (#70) se pide junto al detalle; si falla, el detalle se muestra igual.
@@ -164,17 +169,17 @@ function Dashboard({ session, onLogout, onInactividad }) {
   const navButton = t => <button key={t} className={tab === t ? 'active' : ''} aria-current={tab === t ? 'page' : undefined} onClick={e => { setRutaAbierta(false); irA(t, e); }}>{t}</button>;
   const opcionRuta = t => <button key={t} className={`nav-sub${tab === t ? ' active' : ''}`} aria-current={tab === t ? 'page' : undefined} onClick={e => irA(t, e)}>{t}</button>;
   const enRuta = OPCIONES_RUTA.includes(tab);
-  return <div className="shell"><aside><Brand blanco/><nav className="pestanas" aria-label="Secciones del panel"><div className="nav-label">Operación</div>{['Resumen','Pedidos'].map(navButton)}<button className={`nav-grupo${enRuta ? ' en-grupo' : ''}`} aria-expanded={rutaAbierta} onClick={() => setRutaAbierta(a => !a)}>Ruta<span aria-hidden="true">{rutaAbierta ? '▴' : '▾'}</span></button>{rutaAbierta && OPCIONES_RUTA.map(opcionRuta)}{['Despachos'].map(navButton)}<div className="nav-label">Administración</div>{['Clientes','Productos'].map(navButton)}<div className="nav-label">Análisis</div>{navButton('Reportes')}</nav><div className="account"><small>{session.user.email}</small><button onClick={async () => { await logout(); onLogout(); }}>Cerrar sesión</button></div></aside><main className="workspace"><header><span>Panel administrativo</span><span className="badge">Agua DM</span></header><div className="content"><div className="title"><div><span className="eyebrow">Centro de operaciones</span><h1>{tab}</h1><p>Consulta y organiza la información de SIGPA.</p></div><button disabled={busy || planning} onClick={() => setRevision(r => r + 1)}>Actualizar datos</button></div>{error && <p role="alert" className="error">{error}</p>}{aviso && <p role="status" className="ok">{aviso}</p>}{busy && <p role="status">Cargando información…</p>}{data && <>
+  return <div className="shell"><aside><Brand blanco/><nav className="pestanas" aria-label="Secciones del panel">{['Resumen','Pedidos'].map(navButton)}<button className={`nav-grupo${enRuta ? ' en-grupo' : ''}`} aria-expanded={rutaAbierta} onClick={() => setRutaAbierta(a => !a)}>Ruta<span aria-hidden="true">{rutaAbierta ? '▴' : '▾'}</span></button>{rutaAbierta && OPCIONES_RUTA.map(opcionRuta)}{['Despachos'].map(navButton)}<span className="nav-espacio" aria-hidden="true"/>{['Clientes','Productos'].map(navButton)}<span className="nav-espacio" aria-hidden="true"/>{navButton('Reportes')}</nav><div className="account"><small>{session.user.email}</small><button onClick={async () => { await logout(); onLogout(); }}>Cerrar sesión</button></div></aside><main className="workspace"><header className="barra-dia"><span className="barra-dia-fecha">{fechaLarga(new Date())}</span>{actualizadoEn && <span className="barra-dia-hora" aria-live="polite">{`Actualizado a las ${horaCorta(actualizadoEn)}`}</span>}</header><div className="content"><div className="title"><div><h1>{tab}</h1></div><button disabled={busy || planning} onClick={() => setRevision(r => r + 1)}>Actualizar datos</button></div>{error && <p role="alert" className="error">{error}</p>}{aviso && <p role="status" className="ok">{aviso}</p>}{busy && !data && <p role="status">Cargando información…</p>}{data && <>
   {tab === 'Resumen' && <><ResumenDia pedidos={pedidosConAnteriores} clientes={data.clientes}/></>}
   {tab === 'Despachos' && <Despacho pedidos={pedidosConAnteriores} clientes={data.clientes}/>}
-  {tab === 'Pedidos' && <section><div className="vistas-pedidos" role="group" aria-label="Qué pedidos ver">{VISTAS_PEDIDOS.map(([v, texto]) => <button type="button" key={v} aria-pressed={vistaPedidos === v} onClick={() => setVistaPedidos(v)}>{texto} ({cuentas.get(v) ?? 0})</button>)}</div><div className="filtros-pedidos">
+  {tab === 'Pedidos' && <section className="pedidos-vista"><div className="vistas-pedidos" role="group" aria-label="Qué pedidos ver">{VISTAS_PEDIDOS.map(([v, texto]) => <button type="button" key={v} aria-pressed={vistaPedidos === v} onClick={() => setVistaPedidos(v)}><b>{cuentas.get(v) ?? 0}</b><span>{texto}</span></button>)}</div><div className="filtros-pedidos">
     <label className="filtro-buscar">Cliente<input placeholder="Buscar por nombre o N° de pedido…" value={query} onChange={e=>setQuery(e.target.value)}/></label>
     <label>Comuna<select value={comuna} onChange={e=>setComuna(e.target.value)}><option value="">Todas</option>{opciones.comunas.map(([c,n])=><option key={c} value={c}>{c} ({n})</option>)}</select></label>
     <label>Día de reparto<select value={diaReparto} onChange={e=>setDiaReparto(e.target.value)}><option value="">Todos</option>{opciones.dias.map(([d,n])=><option key={d} value={d}>{nombreDia(d)} ({n})</option>)}</select></label>
   </div>
-  <div className="resultado-filtros"><p className="resumen-filtros muted" aria-live="polite">{pedidos.length === 1 ? `1 pedido ${ETIQUETA_ESTADO[vistaPedidos].toLowerCase()}` : `${pedidos.length} pedidos ${ETIQUETA_ESTADO[vistaPedidos].toLowerCase()}s`} · {money(totalDe(pedidos))}{hayFiltros && <> · <button type="button" className="enlace" onClick={limpiarFiltros}>Limpiar filtros</button></>}</p><button className="primary" onClick={()=>{setCreandoPedido(true); setAviso('');}}>Nuevo pedido</button></div>
+  <div className="resultado-filtros"><p className="resumen-filtros muted" aria-live="polite">{pedidos.length === 1 ? `1 pedido ${ETIQUETA_ESTADO[vistaPedidos].toLowerCase()}` : `${pedidos.length} pedidos ${ETIQUETA_ESTADO[vistaPedidos].toLowerCase()}s`} por <b className="total-filtro">{money(totalDe(pedidos))}</b>{hayFiltros && <> <button type="button" className="enlace" onClick={limpiarFiltros}>Limpiar filtros</button></>}</p><button className="primary" onClick={()=>{setCreandoPedido(true); setAviso('');}}>Nuevo pedido</button></div>
   {pedidos.length ? <OrderTable paraPestanaPedidos rows={pedidos} view={view} cambiarEstado={cambiarEstado} cambiando={cambiando} entregar={entregar} reagendar={reagendar} cancelarPedido={cancelarPedido}/> : <p>No hay pedidos con estos filtros.</p>}</section>}
-  {tab === 'Clientes' && <section><div className="filters"><input aria-label="Buscar clientes" placeholder="Buscar nombre o teléfono…" value={query} onChange={e=>setQuery(e.target.value)}/><button className="primary" onClick={()=>{setEditing('nuevo'); setAviso('');}}>Nuevo cliente</button></div><TablaClientes clientes={clientes} onEditar={c => { setEditing(c); setAviso(''); }} onVerFicha={id => { setAviso(''); setFicha(id); }}/></section>}
+  {tab === 'Clientes' && <section className="clientes-vista"><div className="filters"><input aria-label="Buscar clientes" placeholder="Buscar nombre o teléfono…" value={query} onChange={e=>setQuery(e.target.value)}/><span className="cuenta-clientes" aria-live="polite"><b>{clientes.length}</b> {clientes.length === 1 ? 'cliente' : 'clientes'}</span><button className="primary" onClick={()=>{setEditing('nuevo'); setAviso('');}}>Nuevo cliente</button></div><TablaClientes clientes={clientes} onEditar={c => { setEditing(c); setAviso(''); }} onVerFicha={id => { setAviso(''); setFicha(id); }}/></section>}
   {tab === 'Productos' && <Productos productos={data.productos} onCambio={() => setRevision(r => r + 1)}/>}
   <div hidden={tab !== 'Reportes'}><Reportes pedidos={data.pedidos} pedidosConAnteriores={pedidosConAnteriores} clientes={data.clientes} actualizadoEn={actualizadoEn}/></div>
   <div hidden={tab !== 'Ruta en curso'}><RutaEnCurso pedidos={data.pedidos} clientes={data.clientes} productos={data.productos} viajes={data.viajes} activa={tab === 'Ruta en curso' && !planning} onActualizar={actualizarRuta} onEntregar={entregar}/></div>
@@ -212,16 +217,16 @@ function TablaClientes({ clientes, onEditar, onVerFicha }) {
       </thead>
       <tbody>
         {filas.map(c => <tr key={c.id}>
-          <td data-label="Cliente">{name(c)}</td>
-          <td data-label="Teléfono">{c.telefono || '—'}</td>
-          <td data-label="Dirección">{c.direccion || 'Sin dirección'}</td>
-          <td data-label="Comuna">{c.comuna_nombre || 'Sin comuna'}</td>
-          <td data-label="Tipo">{c.tipo_cliente_nombre || '—'}</td>
-          <td data-label="Día de reparto">{c.dia_reparto ? dia(c.dia_reparto) : 'Sin asignar'}</td>
-          <td data-label="Estado">{c.activo ? 'Activo' : 'Inactivo'}</td>
+          <td data-label="Cliente" className="col-cliente">{name(c)}</td>
+          <td data-label="Teléfono" className="col-telefono">{c.telefono || '—'}</td>
+          <td data-label="Dirección" className="col-direccion">{c.direccion || <span className="falta">Sin dirección</span>}</td>
+          <td data-label="Comuna" className="col-comuna">{c.comuna_nombre || <span className="falta">Sin comuna</span>}</td>
+          <td data-label="Tipo">{c.tipo_cliente_nombre ? <span className="etiqueta-cliente">{c.tipo_cliente_nombre}</span> : '—'}</td>
+          <td data-label="Día de reparto">{c.dia_reparto ? <span className="etiqueta-cliente dia">{dia(c.dia_reparto)}</span> : <span className="falta">Sin asignar</span>}</td>
+          <td data-label="Estado"><span className={`estado-cliente${c.activo ? ' activo' : ''}`}>{c.activo ? 'Activo' : 'Inactivo'}</span></td>
           <td className="celda-acciones">
-            <button aria-label={`Ver ficha de ${name(c)}`} onClick={() => onVerFicha(c.id)}>Ver ficha</button>
-            <button aria-label={`Editar a ${name(c)}`} onClick={() => onEditar(c)}>Editar</button>
+            <button className="ver-ficha" aria-label={`Ver ficha de ${name(c)}`} onClick={() => onVerFicha(c.id)}>Ver ficha</button>
+            <button className="editar" aria-label={`Editar a ${name(c)}`} onClick={() => onEditar(c)}>Editar</button>
           </td>
         </tr>)}
       </tbody>
@@ -279,12 +284,12 @@ function OrderTable({ rows, view, cambiarEstado, cambiando, entregar, paraPestan
           const accion = ACCION_DESPACHO[p.estado];
           const decidir = paraPestanaPedidos && p.estado === 'no_entregado';
           return <tr key={p.id}>
-            <td data-label="Pedido">#{p.id}</td>
+            <td data-label="Pedido" className="col-pedido">#{p.id}</td>
             {paraPestanaPedidos && <td data-label="Fecha">{fechaCorta(p.creado_en)}{p.reagendado_para && <small className="reagendado">Reagendado para el {fechaCorta(`${p.reagendado_para}T12:00:00Z`)}</small>}</td>}
-            <td data-label="Cliente">{p.cliente_nombre || `Cliente ${p.cliente_id}`}</td>
-            <td data-label="Comuna">{p.comuna_nombre || '—'}</td>
+            <td data-label="Cliente" className="col-cliente">{p.cliente_nombre || `Cliente ${p.cliente_id}`}</td>
+            <td data-label="Comuna" className="col-comuna">{p.comuna_nombre || '—'}</td>
             {!paraPestanaPedidos && <td data-label="Estado"><span className={`badge ${p.estado}`}>{ETIQUETA_ESTADO[p.estado] || p.estado}</span></td>}
-            <td data-label="Total">{money(p.total)}</td>
+            <td data-label="Total" className="col-total">{money(p.total)}</td>
             <td className={accion || decidir ? 'celda-acciones' : 'sin-accion'}>
               {accion
                 ? <button className={p.estado === 'confirmado' ? 'despachar' : ''} disabled={cambiando !== null} aria-label={`${accion.texto}: pedido ${p.id}`} onClick={() => cambiarEstado(p)}>

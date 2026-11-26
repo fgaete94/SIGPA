@@ -24,56 +24,81 @@ export default function ResumenDia({ pedidos, clientes }) {
     api(`/combustible?desde=${hoy}&hasta=${hoy}`, { signal: controller.signal }).then(setCombustible).catch(e => { if (e.name !== 'AbortError') setCombustible(null); });
     return () => controller.abort();
   }, [hoy, pedidos]);
-  return <div className="resumen-periodo">
+  return <div className="resumen-periodo resumen-hoy">
     <IndicesContables delDia={delDia} combustible={combustible} hoy={hoy}/>
     <EntregasDelDia pedidos={pedidos} clientes={clientes}/>
   </div>;
 }
 
 // Lo que se está entregando hoy: las paradas de la ruta con su avance. Solo se consulta; se gestiona en Rutas.
+// Cada ruta abre con la misma franja de agua que ve el repartidor en su celular.
 function EntregasDelDia({ pedidos, clientes }) {
   const { paradas } = rutaEnCurso(pedidos, clientes);
   const r = resumenEntregas(paradas);
-  return <section className="entregas-dia">
-    <div className="title grafico-titulo"><h2>Entregas del día</h2><span className="etiqueta-hoy">Hoy</span></div>
-    {!paradas.length ? <p className="muted">Hoy no hay una ruta en curso.</p> : <>
-      <ul className="resumen-entregas" aria-live="polite">
-        <li><b>{r.total}</b> {r.total === 1 ? 'parada' : 'paradas'}</li>
-        <li>✓ <b>{r.entregadas}</b> {r.entregadas === 1 ? 'entregada' : 'entregadas'} · {dinero(r.montoEntregado)}</li>
-        <li>✗ <b>{r.noEntregadas}</b> {r.noEntregadas === 1 ? 'no entregada' : 'no entregadas'}</li>
-        <li><b>{r.porEntregar}</b> por entregar · {dinero(r.montoPorEntregar)}</li>
-      </ul>
-      {agruparPorViaje(paradas).map(g => { const ruta = resumenEntregas(g.paradas); return <div className="ruta-resumen" key={g.viaje ?? 'sin-ruta'}>
-        <h3 className="viaje-titulo">{g.viaje != null ? `Ruta ${g.viaje}` : 'Sin ruta'}<small>{ruta.total} {ruta.total === 1 ? 'parada' : 'paradas'} · ✓ {ruta.entregadas} · ✗ {ruta.noEntregadas} · {ruta.porEntregar} por entregar</small></h3>
-        <div className="table"><table className="tabla-movil">
-          <thead><tr><th>Parada</th><th>Cliente</th><th>Dirección</th><th>Total</th><th>Estado</th></tr></thead>
-          <tbody>{g.paradas.map((p, i) => <tr key={p.id} className={p.estado === 'entregado' ? 'fila-entregada' : p.estado === 'no_entregado' ? 'fila-no-entregada' : ''}>
-            <td data-label="Parada">{i + 1}</td>
-            <td data-label="Cliente">{p.cliente_nombre || `Cliente ${p.cliente_id}`}</td>
-            <td data-label="Dirección">{p.direccion || 'Sin dirección registrada'}</td>
-            <td data-label="Total">{dinero(p.total)}</td>
-            <td data-label="Estado"><span className={`badge ${p.estado}`}>{textoResultado(p) ?? ETIQUETA_ESTADO[p.estado]}</span></td>
-          </tr>)}</tbody>
-        </table></div>
-      </div>; })}
+  return <section className="entregas-dia entregas-hoy">
+    <div className="entregas-hoy-titulo">
+      <h2>Entregas del día</h2>
+      {paradas.length > 0 && <p aria-live="polite"><b>{r.entregadas + r.noEntregadas}</b> de <b>{r.total}</b> paradas resueltas{r.porEntregar > 0 && <> · faltan <b>{r.porEntregar}</b> ({dinero(r.montoPorEntregar)})</>}</p>}
+    </div>
+    {!paradas.length ? <p className="muted">Hoy no hay una ruta en curso. Cuando confirmes una en "Preparar ruta", su avance aparece aquí.</p> : <>
+      {agruparPorViaje(paradas).map(g => {
+        const ruta = resumenEntregas(g.paradas);
+        const listas = ruta.entregadas + ruta.noEntregadas;
+        const terminada = ruta.total > 0 && listas === ruta.total;
+        return <div className={`ruta-resumen ruta-hoy${terminada ? ' terminada' : ''}`} key={g.viaje ?? 'sin-ruta'}>
+          <div className="ruta-hoy-franja" style={{ '--avance': `${ruta.total ? (listas / ruta.total) * 100 : 0}%` }}>
+            <span className="ruta-agua" aria-hidden="true"/>
+            <h3>{g.viaje != null ? `Ruta ${g.viaje}` : 'Sin ruta'}</h3>
+            <p><b>{listas} de {ruta.total}</b> {ruta.total === 1 ? 'parada' : 'paradas'}</p>
+            <p><b>{dinero(ruta.montoEntregado)}</b> entregado</p>
+            {ruta.noEntregadas > 0 && <p className="ruta-hoy-fallas">{ruta.noEntregadas} no {ruta.noEntregadas === 1 ? 'entregada' : 'entregadas'}</p>}
+          </div>
+          <div className="table"><table className="tabla-movil">
+            <thead><tr><th>Parada</th><th>Cliente</th><th>Dirección</th><th className="num">Total</th><th>Estado</th></tr></thead>
+            <tbody>{g.paradas.map((p, i) => <tr key={p.id} className={p.estado === 'entregado' ? 'fila-entregada' : p.estado === 'no_entregado' ? 'fila-no-entregada' : ''}>
+              <td data-label="Parada" className="parada-num">{i + 1}</td>
+              <td data-label="Cliente">{p.cliente_nombre || `Cliente ${p.cliente_id}`}</td>
+              <td data-label="Dirección">{p.direccion || 'Sin dirección registrada'}</td>
+              <td data-label="Total" className="num">{dinero(p.total)}</td>
+              <td data-label="Estado"><span className={`badge ${p.estado}`}>{textoResultado(p) ?? ETIQUETA_ESTADO[p.estado]}</span></td>
+            </tr>)}</tbody>
+          </table></div>
+        </div>;
+      })}
     </>}
   </section>;
 }
 
 // Índices en dinero. Son montos brutos: el sistema no registra IVA ni costos.
+// La venta del día es la cifra principal; debajo, una sola barra con cómo se pagó.
 function IndicesContables({ delDia, combustible, hoy }) {
   const { total, pagos } = delDia;
   const gasto = resumenCombustible(combustible ?? []);
   const cargasTexto = gasto.cargas.length === 1 ? '1 carga' : `${gasto.cargas.length} cargas`;
-  return <>
-    <div className="kpis indices">{[
-      ['Venta del día', dinero(total), delDia.entregados === 1 ? '1 pedido entregado hoy' : `${delDia.entregados} pedidos entregados hoy`],
-      ['Efectivo del día', dinero(pagos.efectivo), `${porcentaje(pagos.efectivo, total)}% de la venta del día`],
-      ['Transferencias del día', dinero(pagos.transferencia), `${porcentaje(pagos.transferencia, total)}% de la venta del día`],
-      ['Combustible del día', combustible ? dinero(gasto.total) : '—', combustible ? `${cargasTexto} · ${porcentaje(gasto.total, total)}% de la venta del día` : 'No se pudo consultar'],
-    ].map(([etiqueta, valor, detalle]) => <article key={etiqueta}><span>{etiqueta}</span><strong>{valor}</strong><small>{detalle}</small></article>)}</div>
-    <p className="muted">Operación de hoy, {fechaDe(hoy)}. Montos brutos según lo entregado: la venta no descuenta IVA, costos ni combustible.{pagos.sinDato > 0 && ` Hay ${dinero(pagos.sinDato)} en ventas sin método de pago registrado.`}</p>
-  </>;
+  const tramos = [
+    ['efectivo', 'Efectivo', pagos.efectivo],
+    ['transferencia', 'Transferencia', pagos.transferencia],
+    ['sin-dato', 'Sin método registrado', pagos.sinDato],
+  ].filter(([, , monto]) => monto > 0);
+  return <section className="venta-hoy">
+    <div className="venta-hoy-cifra">
+      <h2>Venta de hoy</h2>
+      <p className="venta-hoy-total">{dinero(total)}</p>
+      <div className="mezcla-pagos" role="img" aria-label={tramos.length ? tramos.map(([, nombre, monto]) => `${nombre} ${dinero(monto)}`).join(', ') : 'Todavía no hay ventas hoy'}>
+        {tramos.map(([clase, nombre, monto]) => <span key={clase} className={`tramo ${clase}`} style={{ flexGrow: monto }} title={`${nombre}: ${dinero(monto)}`}/>)}
+      </div>
+      <ul className="mezcla-leyenda">
+        <li><i className="tramo efectivo"/>Efectivo <b>{dinero(pagos.efectivo)}</b> <small>{porcentaje(pagos.efectivo, total)}%</small></li>
+        <li><i className="tramo transferencia"/>Transferencia <b>{dinero(pagos.transferencia)}</b> <small>{porcentaje(pagos.transferencia, total)}%</small></li>
+        {pagos.sinDato > 0 && <li><i className="tramo sin-dato"/>Sin método registrado <b>{dinero(pagos.sinDato)}</b></li>}
+      </ul>
+    </div>
+    <dl className="venta-hoy-datos">
+      <div><dt>Pedidos entregados</dt><dd>{delDia.entregados}</dd></div>
+      <div><dt>Combustible</dt><dd>{combustible ? dinero(gasto.total) : '—'}</dd><small>{combustible ? `${cargasTexto} · ${porcentaje(gasto.total, total)}% de la venta` : 'No se pudo consultar'}</small></div>
+    </dl>
+    <p className="venta-hoy-nota">{fechaDe(hoy)}. Montos brutos según lo entregado: la venta no descuenta IVA, costos ni combustible.</p>
+  </section>;
 }
 
 // Con muchas barras se muestra una etiqueta cada tantas, para que no se monten.
