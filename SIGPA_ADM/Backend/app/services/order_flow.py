@@ -416,11 +416,44 @@ _PREFIJOS_NOMBRE = ("a nombre de", "mi nombre es", "me llamo", "soy")
 
 
 def _normalizar_texto(texto: str | None) -> str:
-    """Minúsculas, sin tildes ni puntuación, espacios colapsados."""
+    """Minúsculas, sin tildes ni puntuación, espacios colapsados. Las erratas
+    de "bidón" ("bidoens", "vidones") se corrigen (ver _corregir_errata_bidon)."""
     texto = unicodedata.normalize("NFKD", (texto or "").lower())
     texto = "".join(c for c in texto if not unicodedata.combining(c))
     texto = re.sub(r"[^\w\s]", " ", texto)
-    return " ".join(texto.split())
+    return " ".join(_corregir_errata_bidon(t) for t in texto.split())
+
+
+def _distancia_edicion(a: str, b: str) -> int:
+    """Distancia de edición con transposiciones de letras vecinas (Damerau
+    restringida): "bidoens" → "bidones" es 1."""
+    d = [[0] * (len(b) + 1) for _ in range(len(a) + 1)]
+    for i in range(len(a) + 1):
+        d[i][0] = i
+    for j in range(len(b) + 1):
+        d[0][j] = j
+    for i in range(1, len(a) + 1):
+        for j in range(1, len(b) + 1):
+            costo = 0 if a[i - 1] == b[j - 1] else 1
+            d[i][j] = min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + costo)
+            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                d[i][j] = min(d[i][j], d[i - 2][j - 2] + 1)
+    return d[len(a)][len(b)]
+
+
+def _corregir_errata_bidon(token: str) -> str:
+    """"bidoens", "bidonez", "vidones", "bidn" → "bidones" / "bidon". Debe
+    empezar con "bi" o "vi" y estar a 1 edición (a 2 solo palabras de 6 letras
+    o más, contra "bidones"): "bien", "bidé", "bidet", "video", "botones" o
+    "dirección" no se tocan."""
+    if token in ("bidon", "bidones") or not 4 <= len(token) <= 9 or token[:2] not in ("bi", "vi"):
+        return token
+    a_singular, a_plural = _distancia_edicion(token, "bidon"), _distancia_edicion(token, "bidones")
+    if min(a_singular, a_plural) == 1:
+        return "bidones" if a_plural <= a_singular else "bidon"
+    if a_plural == 2 and len(token) >= 6:
+        return "bidones"
+    return token
 
 
 def _empieza_con(texto_normalizado: str, frases: tuple[str, ...]) -> bool:
@@ -4299,6 +4332,226 @@ async def _responder_resta(phone: str, draft: dict, cliente: dict | None, mensaj
 
 
 # --------------------------------------------------------------------------
+# Corrección de cantidad ("perdón me equivoqué, solo quiero 10", "que sea
+# solamente 1", "me gustaría 10 bidones"), en código y antes del LLM, como
+# las restas (pruebas por WhatsApp del 2026-11-26: el LLM las marcaba como
+# duda sin extraer nada, o el código las sumaba como bidones nuevos). Fija
+# la cantidad de la única línea candidata: una línea del pedido o un bidón
+# pendiente de aclarar. Con varias candidatas pregunta a cuál; un bidón
+# pendiente sin señal de corrección pregunta si es en total o se suma.
+# --------------------------------------------------------------------------
+
+MENSAJE_FIJAR_CUAL = "¿A cuál producto le dejo {cantidad}? Tengo anotado: {pedido}."
+MENSAJE_TOTAL_O_SUMA = "¿Son {cantidad} en total o sumo {cantidad} a los {actual} que tenías?"
+MENSAJE_CANTIDAD_FIJADA = "Listo, dejé {cantidad}x {nombre}."
+
+_PATRON_SENAL_CORRECCION = re.compile(
+    r"\b(solo|solamente|mejor|que sean?|equivoque|equivoco|equivocado|equivocada|corrij\w*|correg\w*"
+    r"|corrige|en total|son|nada mas que|no mas que)\b"
+)
+_PATRON_ADICION_CANTIDAD = re.compile(r"\b(agreg\w*|sum\w*|anad\w*|tambien|ademas|otr[oa]s?|mas)\b")
+_PATRON_OTRO_CAMBIO = re.compile(rf"\b({_VERBO_RESTA}|cambi\w*|reemplaz\w*|en vez|en lugar|cancel\w*|anul\w*)\b")
+# Lo que puede acompañar a la cantidad, además del producto y la señal.
+_RELLENO_CORRECCION = _RELLENO_CANTIDAD | {
+    "perdon", "perdona", "disculpa", "disculpe", "sorry", "equivoque", "equivoco", "equivocado", "equivocada",
+    "solamente", "sea", "total", "corrijo", "corrige", "corregir", "corrijan", "nada", "gustaria", "gustarian",
+    "quisiera", "del", "pedido", "eso", "esos", "esas", "a", "le", "lo", "era", "eran", "dije", "mal", "porfavor",
+    "realidad", "verdad", "mejor", "solo",
+}
+_PATRON_TOTAL = re.compile(r"\b(total|reemplaz\w*|cambi\w*|solo|solamente|nada mas|son|esos|esas)\b")
+_PATRON_SUMA = re.compile(r"\b(sum\w*|agreg\w*|anad\w*|ademas|tambien|mas|los dos|ambos|juntos)\b")
+
+
+def _correccion_cantidad(texto_normalizado: str) -> tuple[int, bool] | None:
+    """(N, trae señal de corrección) si el mensaje es solo una cantidad con
+    producto, señal y relleno ("solo quiero 10", "me gustaría 10 bidones",
+    "que sea solamente 1"), o None. No lo es si suma ("agrega 5"), resta
+    ("quítale 2"), cambia otra cosa, trae más de una cantidad o palabras
+    ajenas ("Los Leones 456", "son las 5")."""
+    sin_nada_mas = re.sub(r"\b(nada|no) mas que\b", "solo", texto_normalizado)
+    if _PATRON_ADICION_CANTIDAD.search(sin_nada_mas) or _PATRON_OTRO_CAMBIO.search(texto_normalizado):
+        return None
+    cantidades = _cantidades_mensaje(texto_normalizado)
+    if len(cantidades) != 1 or cantidades[0] < 1:
+        return None
+    tokens = texto_normalizado.split()
+    for k, token in enumerate(tokens):
+        if token.isdigit() or token in _NUMEROS_TEXTO:
+            if k > 0 and tokens[k - 1] == "las":
+                return None  # "son las 5"
+            continue
+        if not (
+            token in _RELLENO_CORRECCION
+            or _PATRON_PALABRA_PRODUCTO.fullmatch(token)
+            or _capacidad_en(tokens, k) is not None
+            or _menciona_algun_producto(token)
+        ):
+            return None
+    return cantidades[0], bool(_PATRON_SENAL_CORRECCION.search(sin_nada_mas))
+
+
+def _candidatos_correccion(draft: dict, texto_normalizado: str) -> list[tuple[str, int]]:
+    """Líneas del pedido ("linea", índice) y bidones pendientes de aclarar
+    ("aclaracion", índice) que calzan con lo que nombra el mensaje; sin
+    producto nombrado, todos. Un bidón pendiente no calza si el mensaje dice
+    la variante (eso responde la aclaración) o un atributo de otra familia."""
+    tipos = [tipo for tipo in _PATRONES_TIPO_PRODUCTO if _menciona_tipo(tipo, texto_normalizado)]
+    atributos = _atributos_mensaje(texto_normalizado)
+    candidatos = [
+        ("linea", i)
+        for i, p in enumerate(draft.get("productos") or [])
+        if (not tipos or _tipo_producto(p.get("nombre_producto") or "") in tipos)
+        and atributos <= _atributos(p.get("nombre_producto") or "")
+    ]
+    capacidades = {a for a in atributos if re.fullmatch(r"\d+l", a)}
+    if (not tipos or "bidon" in tipos) and atributos == capacidades:
+        for j, pendiente in enumerate(_lista_aclaraciones(draft.get("aclaracion_pendiente"))):
+            capacidad = pendiente.get("capacidad_litros")
+            if capacidades <= ({f"{capacidad}l"} if capacidad else set()):
+                candidatos.append(("aclaracion", j))
+    return candidatos
+
+
+def _cantidad_candidato(draft: dict, candidato: tuple[str, int]) -> int:
+    tipo, indice = candidato
+    if tipo == "linea":
+        return _cantidad_valida(draft["productos"][indice].get("cantidad"))
+    return _cantidad_valida(_lista_aclaraciones(draft.get("aclaracion_pendiente"))[indice].get("cantidad"))
+
+
+_CLAVES_DE_UN_TURNO = (
+    "resta_pendiente", "correccion_pendiente", "no_encontrados", "fijar_pendiente", "total_o_suma_pendiente",
+    "fallos_aclaracion", "opciones_numeradas",
+)
+
+
+async def _fijar_cantidad(
+    phone: str, draft: dict, cliente: dict | None, candidato: tuple[str, int], cantidad: int
+) -> str:
+    """Deja `cantidad` en la línea o el bidón pendiente y responde con el
+    siguiente paso (la pregunta pendiente, la dirección o el resumen)."""
+    if cantidad > COTA_TECNICA_POR_LINEA:
+        return MENSAJE_CANTIDAD_ALTA
+    tipo, indice = candidato
+    nuevo = {clave: valor for clave, valor in draft.items() if clave not in _CLAVES_DE_UN_TURNO}
+    aviso = None
+    if tipo == "linea":
+        productos = [dict(p) for p in draft.get("productos") or []]
+        anterior = productos[indice].get("cantidad")
+        productos[indice]["cantidad"] = cantidad
+        nuevo["productos"] = productos
+        aviso = MENSAJE_CANTIDAD_FIJADA.format(cantidad=cantidad, nombre=productos[indice]["nombre_producto"])
+        logger.info("[order_flow] Cantidad fijada para phone=%s: %s %s -> %d",
+                    phone, productos[indice]["nombre_producto"], anterior, cantidad)
+    else:
+        aclaraciones = [dict(a) for a in _lista_aclaraciones(draft.get("aclaracion_pendiente"))]
+        logger.info("[order_flow] Cantidad pendiente fijada para phone=%s: %s -> %d",
+                    phone, aclaraciones[indice], cantidad)
+        aclaraciones[indice]["cantidad"] = cantidad
+        aclaraciones[indice].pop("variantes", None)
+        nuevo["aclaracion_pendiente"] = _empaquetar_aclaraciones(aclaraciones)
+    # Cambio pedido explícitamente: lo pedido pasa a ser lo que quedó.
+    nuevo["unidades_pedidas"] = _unidades_draft(nuevo)
+    paso, texto = await _responder_siguiente_paso(phone, nuevo, cliente)
+    if not aviso:
+        return texto
+    return f"{aviso}\n\n{texto}" if paso == "confirmacion" else f"{aviso} {texto}"
+
+
+def _total_o_suma(texto_normalizado: str, pendiente: dict) -> int | None:
+    """Respuesta a "¿Son N en total o sumo N a los M que tenías?": la
+    cantidad que queda, o None si no responde eso."""
+    cantidad, actual = pendiente["cantidad"], pendiente["actual"]
+    numeros = _cantidades_mensaje(texto_normalizado)
+    total = bool(_PATRON_TOTAL.search(texto_normalizado)) or numeros == [cantidad]
+    suma = bool(_PATRON_SUMA.search(texto_normalizado)) or numeros == [actual + cantidad]
+    if total == suma:
+        return None
+    return cantidad if total else actual + cantidad
+
+
+async def _responder_correccion_cantidad(
+    phone: str, draft: dict | None, cliente: dict | None, mensaje: str | None
+) -> str | None:
+    """Corrección de cantidad sobre el borrador, o la respuesta a "¿A cuál
+    producto le dejo N?" / "¿Son N en total o sumo N...?". None si el
+    mensaje no es eso (sigue el flujo normal)."""
+    if not draft or not (draft.get("productos") or draft.get("aclaracion_pendiente")):
+        return None
+    texto = _normalizar_texto(mensaje)
+
+    # Preguntas de este mecanismo: valen solo para el mensaje siguiente.
+    total_o_suma = draft.get("total_o_suma_pendiente")
+    fijar = draft.get("fijar_pendiente")
+    if total_o_suma or fijar:
+        draft = {clave: valor for clave, valor in draft.items() if clave not in ("total_o_suma_pendiente", "fijar_pendiente")}
+        save_draft(phone, draft)
+    if total_o_suma:
+        candidato = (total_o_suma["tipo"], total_o_suma["indice"])
+        if _cantidad_candidato(draft, candidato) == total_o_suma["actual"]:
+            cantidad = _total_o_suma(texto, total_o_suma)
+            if cantidad is not None:
+                return await _fijar_cantidad(phone, draft, cliente, candidato, cantidad)
+    if fijar and _correccion_cantidad(texto) is None and _menciona_algun_producto(texto):
+        candidatos = _candidatos_correccion(draft, texto)
+        if len(candidatos) == 1:
+            return await _fijar_cantidad(phone, draft, cliente, candidatos[0], fijar)
+
+    correccion = _correccion_cantidad(texto)
+    if correccion is None:
+        return None
+    cantidad, con_senal = correccion
+    # "12" / "20" a secas no nombran un producto, y con un bidón pendiente
+    # sin capacidad son la respuesta a "¿de 12L o de 20L?", no una cantidad.
+    sin_capacidades = " ".join(t for t in texto.split() if t not in _CAPACIDADES_TEXTO)
+    nombra_producto = _menciona_algun_producto(sin_capacidades)
+    capacidad_pendiente = any(
+        a.get("capacidad_litros") is None for a in _lista_aclaraciones(draft.get("aclaracion_pendiente"))
+    )
+    if capacidad_pendiente and str(cantidad) in _CAPACIDADES_TEXTO:
+        return None
+    if draft.get("paso") in _PASOS_NUMERO_LIBRE and not nombra_producto:
+        return None
+    candidatos = _candidatos_correccion(draft, texto)
+    if not candidatos:
+        return None
+    if con_senal:
+        if len(candidatos) == 1:
+            return await _fijar_cantidad(phone, draft, cliente, candidatos[0], cantidad)
+        save_draft(phone, {**draft, "fijar_pendiente": cantidad})
+        return MENSAJE_FIJAR_CUAL.format(cantidad=cantidad, pedido=_resumen_pedido_y_pendientes(draft))
+
+    # Sin señal ("me gustaría 10 bidones", "10 bidones de 20 litros"): solo
+    # con el producto nombrado y una única candidata con otra cantidad.
+    if not nombra_producto or len(candidatos) != 1:
+        return None
+    actual = _cantidad_candidato(draft, candidatos[0])
+    if cantidad == actual:
+        return None
+    tipo, indice = candidatos[0]
+    if tipo == "aclaracion":
+        # El código sumaba ("¿1010 bidón(es)...?"): se pregunta.
+        save_draft(phone, {**draft, "total_o_suma_pendiente": {
+            "tipo": tipo, "indice": indice, "cantidad": cantidad, "actual": actual,
+        }})
+        return MENSAJE_TOTAL_O_SUMA.format(cantidad=cantidad, actual=actual)
+    if draft.get("paso") in ("producto", "algo_mas"):
+        # Mientras arma el pedido, "quiero 10 bidones" agrega (flujo normal).
+        return None
+    return await _fijar_cantidad(phone, draft, cliente, candidatos[0], cantidad)
+
+
+def _resumen_pedido_y_pendientes(draft: dict) -> str:
+    partes = [_resumen_productos_corto(draft.get("productos") or [])] if draft.get("productos") else []
+    partes += [
+        f"{_cantidad_valida(a.get('cantidad'))}x bidón" + (f" de {a['capacidad_litros']}L" if a.get("capacidad_litros") else "")
+        + " (por aclarar)"
+        for a in _lista_aclaraciones(draft.get("aclaracion_pendiente"))
+    ]
+    return ", ".join(partes)
+
+
+# --------------------------------------------------------------------------
 # "¿Deseas agregar algo más?" → "nada más", "eso es todo", "es todo", "no
 # necesito nada más", "nada más gracias": es un no, en código (antes "eso es
 # todo, gracias" se tomaba como agradecimiento y se volvía a preguntar).
@@ -4485,6 +4738,14 @@ async def _procesar_mensaje_interno(
         if invalida:
             logger.info("[order_flow] Cantidad inválida de phone=%s: %r", phone, message_text)
             return invalida
+
+        # Corrección de cantidad ("solo quiero 10", "que sea solamente 1") o
+        # respuesta a "¿A cuál producto le dejo N?" / "¿Son N en total...?".
+        respuesta = await _responder_correccion_cantidad(phone, draft, cliente, message_text)
+        if respuesta is not None:
+            return respuesta
+        draft = get_draft(phone)
+        estado = draft.get("estado") if draft else None
 
         # Referencia de ubicación con un pedido en curso.
         if _es_referencia_ubicacion(message_text, draft):

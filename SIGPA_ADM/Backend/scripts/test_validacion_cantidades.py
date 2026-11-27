@@ -306,7 +306,10 @@ async def caso_alta(v: Verificador) -> None:
     v.check(r != order_flow.MENSAJE_CANTIDAD_ALTA, "1000 ya no se rechaza")
     todas = list(_lineas(phone).values()) + _pendientes(phone)
     v.check(1000 in todas, f"los 1000 entran al borrador (líneas {_lineas(phone)}, pendientes {_pendientes(phone)})")
-    v.check(_lineas(phone).get(B20R) == 2, "la línea anterior sigue con 2")
+    # Con "¿Despachamos a ...?" pendiente y una sola línea de bidones, "1000
+    # bidones" fija esa línea (corrección de cantidad, ver
+    # test_correcciones_cantidad B1), no agrega una línea aparte.
+    v.check(_lineas(phone) == {B20R: 1000}, "fija la única línea de bidones en 1000")
     r = await _decir(phone, "2 water jugs")
     todas = list(_lineas(phone).values()) + _pendientes(phone)
     v.check(all(n <= order_flow.COTA_TECNICA_POR_LINEA for n in todas), "nada sobre la cota técnica")
