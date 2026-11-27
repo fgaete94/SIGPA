@@ -136,6 +136,25 @@ PREGUNTA_ACLARACION_BIDON = (
     "(solo el agua, entregando tu bidón vacío)?"
 )
 
+# Capacidad con una sola variante en el catálogo: no se pregunta por la que
+# no hay; se ofrece la que sí (ver _variantes_unicas). "sí" / "déjalo así" la
+# acepta.
+PREGUNTA_VARIANTE_UNICA = "Por ahora el bidón de {capacidad}L solo lo tengo {variante}. ¿Lo dejo así ({cantidad}x {producto})?"
+AVISO_VARIANTE_UNICA = "Por ahora el bidón de {capacidad}L solo lo tengo {variante}."
+_TEXTO_VARIANTE = {"Nuevo": "nuevo (con envase)", "Recarga": "de recarga"}
+
+# Anti-bucle de la aclaración de bidones (ver _aplicar_resultado_llm): la
+# misma pregunta sin avanzar se repite una vez; al segundo fallo seguido se
+# ofrecen opciones numeradas y al tercero se deriva a la ejecutiva (aviso
+# único por conversación, ver _avisar_ejecutiva_una_vez).
+FALLOS_ACLARACION_NUMERADAS = 2
+FALLOS_ACLARACION_DERIVAR = 3
+PREGUNTA_OPCIONES_NUMERADAS = "Perdona, no logré entenderte con {bidones}. Responde {opciones}."
+MENSAJE_DERIVACION_ACLARACION = (
+    "Perdona, no logré entender tu respuesta. Ya le avisé a una ejecutiva para que te ayude. {complemento} "
+    "Tu pedido en curso sigue guardado: si prefieres, respóndeme {opciones} y seguimos por aquí."
+)
+
 # Varios bidones pendientes de distinta capacidad (ver
 # _pregunta_variantes_bidones).
 PREGUNTA_ACLARACION_BIDONES = (
@@ -721,11 +740,23 @@ def _mencion_bidon(tokens: list[str], indice: int) -> tuple[int | None, int | No
     return _mencion_bidon_rango(tokens, indice)[:2]
 
 
-def _menciones_bidon_con_rango(texto_normalizado: str) -> list[tuple[str, int | None, int | None, int, int]]:
+# Palabras que, justo antes de "nuevo/a", indican que no se habla de un
+# bidón ("un pedido nuevo", "una dirección nueva").
+_NO_BIDON_ANTES_DE_NUEVO = {"pedido", "direccion", "numero", "telefono", "cliente", "nombre", "chat", "mensaje"}
+
+
+def _menciones_bidon_con_rango(
+    texto_normalizado: str, en_aclaracion: bool = False
+) -> list[tuple[str, int | None, int | None, int, int]]:
     """[(variante, cantidad, capacidad, primer token, último token)] de cada
     "recarga"/"nuevo" del mensaje, en orden. "nuevo" solo cuenta si el
     mensaje habla de bidones (dice "bidón", una capacidad o "recarga"): "un
-    pedido nuevo" o "es una dirección nueva" no son bidones."""
+    pedido nuevo" o "es una dirección nueva" no son bidones.
+
+    Con en_aclaracion=True (respuesta a "¿nuevo o recarga?") "nuevo" cuenta
+    aunque el mensaje no nombre bidones: es la respuesta a lo que se
+    preguntó (bug del 2026-11-26: "Nuevos" a secas no resolvía y el bot
+    repitió la misma pregunta tres veces, mientras "Recarga" sí avanzaba)."""
     tokens = _expandir_multiplicacion(texto_normalizado).split()
     habla_de_bidones = any(
         re.fullmatch(r"bidon(es)?|recargas?", t) or _capacidad_en(tokens, j) is not None
@@ -735,7 +766,9 @@ def _menciones_bidon_con_rango(texto_normalizado: str) -> list[tuple[str, int | 
     for i, token in enumerate(tokens):
         if re.fullmatch(r"recargas?", token):
             variante = "Recarga"
-        elif re.fullmatch(r"nuev[oa]s?", token) and habla_de_bidones:
+        elif re.fullmatch(r"nuev[oa]s?", token) and (
+            habla_de_bidones or (en_aclaracion and not (i > 0 and tokens[i - 1] in _NO_BIDON_ANTES_DE_NUEVO))
+        ):
             variante = "Nuevo"
         else:
             continue
@@ -743,10 +776,10 @@ def _menciones_bidon_con_rango(texto_normalizado: str) -> list[tuple[str, int | 
     return menciones
 
 
-def _menciones_bidon(texto_normalizado: str) -> list[tuple[str, int | None, int | None]]:
+def _menciones_bidon(texto_normalizado: str, en_aclaracion: bool = False) -> list[tuple[str, int | None, int | None]]:
     """[(variante, cantidad, capacidad)] de cada "recarga"/"nuevo" del
     mensaje, en orden (ver _menciones_bidon_con_rango)."""
-    return [mencion[:3] for mencion in _menciones_bidon_con_rango(texto_normalizado)]
+    return [mencion[:3] for mencion in _menciones_bidon_con_rango(texto_normalizado, en_aclaracion)]
 
 
 def _lineas_bidon(texto_normalizado: str, desglose: bool = True) -> tuple[list[dict], set[int]]:
@@ -812,12 +845,14 @@ def _agrupar_variantes(menciones: list[tuple[str, int | None, int | None]]) -> d
     return cantidades
 
 
-def _cantidades_por_variante(texto_normalizado: str, capacidad: int | None) -> dict[str, int | None]:
+def _cantidades_por_variante(
+    texto_normalizado: str, capacidad: int | None, en_aclaracion: bool = False
+) -> dict[str, int | None]:
     """{"Recarga": n, "Nuevo": m} según lo que el mensaje dice de cada
     variante de esa capacidad (o sin capacidad explícita), en el orden en que
     se mencionan (None = mencionada sin cantidad)."""
     return _agrupar_variantes(
-        [m for m in _menciones_bidon(texto_normalizado) if m[2] in (None, capacidad)]
+        [m for m in _menciones_bidon(texto_normalizado, en_aclaracion) if m[2] in (None, capacidad)]
     )
 
 
@@ -1112,6 +1147,18 @@ def _validar_extraidos(
     return aceptados, no_encontrados
 
 
+def _variante_fuera_de_catalogo(nombre: str, catalogo: list[dict]) -> bool:
+    """"Bidón 12L Nuevo" cuando el catálogo solo tiene el de 12L de recarga:
+    no es un producto inexistente, es una variante que no se puede ofrecer
+    (la menciona el código y queda pendiente, ver _resolver_menciones)."""
+    coincidencia = re.fullmatch(r"Bidón (\d+)L (?:Nuevo|Recarga)", str(nombre))
+    return bool(
+        coincidencia
+        and int(coincidencia.group(1)) in _CAPACIDADES
+        and _variantes_disponibles(int(coincidencia.group(1)), catalogo)
+    )
+
+
 def _capacidad_respuesta(texto_normalizado: str) -> int | None:
     """Capacidad que da el cliente al preguntarle "¿de 12L o de 20L?": "de
     20", "20 litros", "20l" o, en una respuesta corta, "20" a secas."""
@@ -1211,6 +1258,31 @@ def _mismo_resultado(a: dict, b: dict) -> bool:
     return clave(a) == clave(b)
 
 
+# Otras formas de responder "¿nuevo (con envase) o de recarga (solo el
+# agua)?" que repiten las palabras de la pregunta (texto normalizado).
+_SINONIMOS_VARIANTE = (
+    (re.compile(r"\b(?:con (?:el |su |un )?envases?|envases? nuevos?)\b"), "nuevo"),
+    (re.compile(r"\b(?:(?:solo|solamente|nomas) (?:el |la )?agua|sin (?:el )?envase|recargar)\b"), "recarga"),
+)
+
+
+def _texto_respuesta_variante(texto_normalizado: str) -> str:
+    """Reescribe los sinónimos de la variante con su palabra ("solo el
+    agua" → "recarga", "con envase" → "nuevo"). Si la variante ya va justo
+    antes ("nuevo con envase", "recarga solo el agua") el sinónimo se quita,
+    para no contarla dos veces."""
+    for patron, variante in _SINONIMOS_VARIANTE:
+
+        def reemplazo(coincidencia: re.Match, texto=texto_normalizado, variante=variante) -> str:
+            antes = texto[: coincidencia.start()].split()
+            if antes and _atributo_de(antes[-1]) == variante:
+                return ""
+            return variante
+
+        texto_normalizado = " ".join(patron.sub(reemplazo, texto_normalizado).split())
+    return texto_normalizado
+
+
 def _resolver_aclaracion_bidon(aclaracion, mensaje: str | None) -> dict | None:
     """Resuelve la respuesta a los bidones pendientes de aclarar (ver
     _resolver_aclaracion_bidon_texto), desambiguando antes si un número es
@@ -1225,7 +1297,7 @@ def _resolver_aclaracion_bidon(aclaracion, mensaje: str | None) -> dict | None:
       pendiente y se vuelve a preguntar con un aviso ("aviso" en el
       resultado).
     """
-    texto = _normalizar_texto(mensaje)
+    texto = _texto_respuesta_variante(_normalizar_texto(mensaje))
     alterno = _reinterpretar_capacidades(texto, _capacidades_pendientes(aclaracion))
     if alterno == texto:
         return _resolver_aclaracion_bidon_texto(aclaracion, texto)
@@ -1299,7 +1371,7 @@ def _resolver_aclaracion_bidon_texto(aclaracion, mensaje: str | None) -> dict | 
     elif capacidad not in _CAPACIDADES:
         return None
 
-    cantidades = _cantidades_por_variante(texto, capacidad)
+    cantidades = _cantidades_por_variante(texto, capacidad, en_aclaracion=True)
     if cantidades:
         respondio = True
     else:
@@ -1385,7 +1457,7 @@ def _resolver_aclaraciones_bidon(aclaraciones: list[dict], mensaje: str | None) 
       capacidad ("de 20"); mientras tanto no se le asigna variante.
     """
     texto = _normalizar_texto(mensaje)
-    menciones = _menciones_bidon(texto)
+    menciones = _menciones_bidon(texto, en_aclaracion=True)
     sin_capacidad = [m for m in menciones if m[2] is None]
     conocidas = [a for a in aclaraciones if a.get("capacidad_litros") in _CAPACIDADES]
     otras = [a for a in aclaraciones if a not in conocidas]
@@ -1503,6 +1575,19 @@ def _resolver_menciones(
             continue
         cantidad = mencion["cantidad"]
         candidatos = _candidatos(mencion["familia"], mencion["atributos"], catalogo)
+        capacidad = mencion.get("capacidad")
+        if (
+            mencion["familia"] == "Bidón"
+            and capacidad in _CAPACIDADES
+            and _variantes_disponibles(capacidad, catalogo)
+            and (not candidatos or (len(candidatos) == 1 and not mencion.get("variante")))
+        ):
+            # Capacidad con una sola variante en el catálogo, sin decir la
+            # variante o pidiendo la que no hay: queda pendiente y se le dice
+            # cuál hay (ver PREGUNTA_VARIANTE_UNICA), en vez de agregar la que
+            # existe sin avisar o decir que los de esa capacidad no existen.
+            bidones.append({"capacidad_litros": capacidad, "cantidad": cantidad or 1})
+            continue
         if len(candidatos) == 1:
             lineas.append({"nombre_producto": candidatos[0]["nombre"], "cantidad": cantidad or 1})
             continue
@@ -2087,6 +2172,88 @@ def _pregunta_variantes_bidones(aclaraciones: list[dict]) -> str:
     )
 
 
+def _variantes_disponibles(capacidad, catalogo: list[dict]) -> list[str]:
+    """Variantes ("Nuevo", "Recarga") del bidón de esa capacidad que están en
+    el catálogo vigente."""
+    nombres = {p["nombre"] for p in catalogo}
+    return [v for v in ("Nuevo", "Recarga") if f"Bidón {capacidad}L {v}" in nombres]
+
+
+def _variantes_unicas(aclaracion, catalogo: list[dict]) -> dict[str, str]:
+    """{"12": "Recarga"} para cada capacidad pendiente que tiene una sola
+    variante en el catálogo (no se pregunta por la que no se puede
+    ofrecer)."""
+    unicas = {}
+    for pendiente in _lista_aclaraciones(aclaracion):
+        capacidad = pendiente.get("capacidad_litros")
+        if capacidad in _CAPACIDADES:
+            disponibles = _variantes_disponibles(capacidad, catalogo)
+            if len(disponibles) == 1:
+                unicas[str(capacidad)] = disponibles[0]
+    return unicas
+
+
+# Respuestas que aceptan la única variante ofrecida ("¿Lo dejo así?").
+_PATRON_DEJALO_ASI = re.compile(r"\b(dej\w* (?:asi|eso|esa|ese|esos|esas)|asi (?:esta|nomas|no mas|mismo)|da igual|bueno)\b")
+
+
+def _acepta_variante_unica(mensaje: str | None) -> bool:
+    texto = _normalizar_texto(mensaje)
+    return _es_afirmativa(mensaje) or bool(_PATRON_DEJALO_ASI.search(texto))
+
+
+def _descripcion_bidones(aclaracion: dict) -> str:
+    cantidad = _cantidad_valida(aclaracion.get("cantidad"))
+    capacidad = aclaracion.get("capacidad_litros")
+    sufijo = f" de {capacidad}L" if capacidad else ""
+    return f"el bidón{sufijo}" if cantidad == 1 else f"los {cantidad} bidones{sufijo}"
+
+
+def _opciones_numeradas(draft: dict) -> tuple[str, list[str], list[str]] | None:
+    """(bidones de los que se pregunta, textos de las opciones, respuestas a
+    las que equivale cada número) para la aclaración de bidones pendiente, en
+    el mismo orden en que la pregunta _pregunta_pendiente_producto: primero
+    la capacidad del que no la tiene, después la variante."""
+    aclaraciones = _lista_aclaraciones(draft.get("aclaracion_pendiente"))
+    if not aclaraciones:
+        return None
+    sin_capacidad = next((a for a in aclaraciones if a.get("capacidad_litros") is None), None)
+    if sin_capacidad:
+        return (
+            _descripcion_bidones(sin_capacidad),
+            [f"{c}L" for c in _CAPACIDADES],
+            [f"de {c}" for c in _CAPACIDADES],
+        )
+    bidones = _lista_natural([_descripcion_bidones(a) for a in aclaraciones])
+    unicas = draft.get("variantes_unicas") or {}
+    if len(aclaraciones) == 1 and str(aclaraciones[0]["capacidad_litros"]) in unicas:
+        variante = unicas[str(aclaraciones[0]["capacidad_litros"])]
+        return (
+            bidones,
+            [f"dejarlo {_TEXTO_VARIANTE[variante].split(' (')[0]}", "hablar con una ejecutiva"],
+            [variante.lower(), "quiero hablar con una ejecutiva"],
+        )
+    return bidones, ["nuevo", "recarga"], ["nuevo", "recarga"]
+
+
+def _texto_opciones(etiquetas: list[str]) -> str:
+    return " o ".join(f"{i} para {etiqueta}" for i, etiqueta in enumerate(etiquetas, start=1))
+
+
+_NUMEROS_OPCION = {"uno": 1, "una": 1, "dos": 2, "tres": 3}
+_RELLENO_OPCION = {"la", "el", "opcion", "numero", "nro", "n", "porfa", "por", "favor", "gracias", "ok", "ya"}
+
+
+def _opcion_elegida(mensaje: str | None, total: int) -> int | None:
+    """Índice (desde 0) de la opción numerada que eligió el cliente ("2", "la
+    1", "opción dos"), o None si el mensaje no es solo eso."""
+    tokens = [t for t in _normalizar_texto(mensaje).split() if t not in _RELLENO_OPCION]
+    if len(tokens) != 1:
+        return None
+    numero = int(tokens[0]) if tokens[0].isdigit() else _NUMEROS_OPCION.get(tokens[0])
+    return numero - 1 if numero is not None and 1 <= numero <= total else None
+
+
 def _pregunta_pendiente_producto(draft: dict) -> str | None:
     """Pregunta, armada en código, por lo primero que falta aclarar de los
     productos: algo que no existe en el catálogo, la capacidad de un bidón,
@@ -2106,7 +2273,10 @@ def _pregunta_pendiente_producto(draft: dict) -> str | None:
     aclaraciones = _lista_aclaraciones(draft.get("aclaracion_pendiente"))
     sin_capacidad = next((a for a in aclaraciones if a.get("capacidad_litros") is None), None)
     aclaracion = sin_capacidad or (aclaraciones[0] if len(aclaraciones) == 1 else None)
+    unicas = draft.get("variantes_unicas") or {}
     if aclaraciones and aclaracion is None:
+        for capacidad, variante in unicas.items():
+            partes.append(AVISO_VARIANTE_UNICA.format(capacidad=capacidad, variante=_TEXTO_VARIANTE[variante]))
         partes.append(_pregunta_variantes_bidones(aclaraciones))
     elif aclaracion and aclaracion.get("capacidad_litros") is None:
         cantidad = _cantidad_valida(aclaracion.get("cantidad"))
@@ -2115,6 +2285,16 @@ def _pregunta_pendiente_producto(draft: dict) -> str | None:
             PREGUNTA_CAPACIDAD_BIDON.format(
                 bidones=bidones,
                 capacidades=" o de ".join(f"{c}L" for c in _CAPACIDADES),
+            )
+        )
+    elif aclaracion and str(aclaracion.get("capacidad_litros")) in unicas:
+        variante = unicas[str(aclaracion["capacidad_litros"])]
+        partes.append(
+            PREGUNTA_VARIANTE_UNICA.format(
+                capacidad=aclaracion["capacidad_litros"],
+                variante=_TEXTO_VARIANTE[variante],
+                cantidad=_cantidad_valida(aclaracion.get("cantidad")),
+                producto=f"Bidón {aclaracion['capacidad_litros']}L {variante}",
             )
         )
     elif aclaracion:
@@ -2382,7 +2562,20 @@ async def _aplicar_resultado_llm(
     # en código; lo que el LLM haya extraído de esas familias en este turno
     # se ignora para no sumarlo dos veces.
     aclaracion_pendiente = aclaracion_previa
-    resolucion = _resolver_aclaracion_bidon(aclaracion_previa, mensaje)
+    mensaje_aclaracion = mensaje
+    unicas_previas = _variantes_unicas(aclaracion_previa, catalogo)
+    if (
+        unicas_previas
+        and _acepta_variante_unica(mensaje)
+        and not _menciones_bidon(_normalizar_texto(mensaje), en_aclaracion=True)
+    ):
+        # "sí" / "déjalo así" a "Por ahora el bidón de 12L solo lo tengo de
+        # recarga. ¿Lo dejo así?": se toma la variante que se ofreció.
+        if len(_lista_aclaraciones(aclaracion_previa)) == 1:
+            mensaje_aclaracion = next(iter(unicas_previas.values())).lower()
+        else:
+            mensaje_aclaracion = " y ".join(f"los de {c} {v.lower()}" for c, v in unicas_previas.items())
+    resolucion = _resolver_aclaracion_bidon(aclaracion_previa, mensaje_aclaracion)
     if resolucion is not None:
         aclaracion_pendiente = resolucion["aclaracion"]
         lineas_codigo += resolucion["lineas"]
@@ -2390,6 +2583,20 @@ async def _aplicar_resultado_llm(
         if resolucion["no_encontrado"]:
             no_encontrados.append(
                 {"texto": resolucion["no_encontrado"], "opciones": []}
+            )
+        # Una variante que no está en el catálogo ("nuevo" cuando el de 12L
+        # solo está de recarga) no se agrega: esos bidones siguen pendientes
+        # y la pregunta dice cuál hay (ver PREGUNTA_VARIANTE_UNICA).
+        nombres_catalogo = {p["nombre"] for p in catalogo}
+        for linea in [l for l in lineas_codigo if l["nombre_producto"] not in nombres_catalogo]:
+            coincidencia = re.match(r"Bidón (\d+)L\b", linea["nombre_producto"])
+            if not coincidencia:
+                continue
+            logger.info("[order_flow] %s fuera del catálogo: queda pendiente", linea["nombre_producto"])
+            lineas_codigo.remove(linea)
+            aclaracion_pendiente = _sumar_aclaraciones(
+                aclaracion_pendiente,
+                {"capacidad_litros": int(coincidencia.group(1)), "cantidad": linea["cantidad"]},
             )
     pendientes_modelo, lineas, resueltas = _resolver_pendientes_modelo(
         draft_previo.get("pendientes_modelo") or [], mensaje, catalogo
@@ -2417,6 +2624,7 @@ async def _aplicar_resultado_llm(
     if familia_atributo in familias_resueltas:
         cambio_atributo = familia_atributo = None
     aceptados, nombres_no_encontrados = _validar_extraidos(extraidos, mensaje, productos_previos, catalogo)
+    nombres_no_encontrados = [n for n in nombres_no_encontrados if not _variante_fuera_de_catalogo(n, catalogo)]
     no_encontrados += [
         {"texto": f"«{nombre}»", "opciones": _sugerencias(nombre, None, catalogo)}
         for nombre in nombres_no_encontrados
@@ -2669,6 +2877,28 @@ async def _aplicar_resultado_llm(
     }
     if draft_previo.get("referencia_entrega"):
         nuevo_draft["referencia_entrega"] = draft_previo["referencia_entrega"]
+    variantes_unicas = _variantes_unicas(aclaracion_pendiente, catalogo)
+    if variantes_unicas:
+        nuevo_draft["variantes_unicas"] = variantes_unicas
+    # Anti-bucle: respuestas seguidas a la aclaración de bidones que no la
+    # hacen avanzar (bug del 2026-11-26: el bot repitió la misma pregunta
+    # tres veces). Una consulta o una duda en medio no cuenta, pero tampoco
+    # reinicia el conteo; cualquier avance lo reinicia.
+    sin_cambios = (
+        bool(_lista_aclaraciones(aclaracion_previa))
+        and aclaracion_pendiente == aclaracion_previa
+        and productos == productos_previos
+        and pendientes_modelo == (draft_previo.get("pendientes_modelo") or [])
+    )
+    fallos_aclaracion = 0
+    fallo_aclaracion = False
+    if sin_cambios and paso_previo == "producto":
+        fallos_aclaracion = draft_previo.get("fallos_aclaracion") or 0
+        if not es_duda and intencion not in ("consulta_precio", "consulta_pedidos"):
+            fallos_aclaracion += 1
+            fallo_aclaracion = True
+    if fallos_aclaracion:
+        nuevo_draft["fallos_aclaracion"] = fallos_aclaracion
     nuevo_draft["unidades_pedidas"] = _actualizar_unidades_pedidas(
         draft_previo, nuevo_draft, familias_modificadas
     )
@@ -2816,6 +3046,21 @@ async def _aplicar_resultado_llm(
 
     if aviso_aclaracion and paso == "producto":
         texto = f"{aviso_aclaracion} {texto}"
+
+    opciones = _opciones_numeradas(nuevo_draft) if paso == "producto" and fallo_aclaracion else None
+    if opciones and fallos_aclaracion >= FALLOS_ACLARACION_NUMERADAS:
+        bidones, etiquetas, respuestas = opciones
+        guardado = {**(get_draft(phone) or nuevo_draft), "opciones_numeradas": respuestas}
+        if fallos_aclaracion >= FALLOS_ACLARACION_DERIVAR:
+            # Tercer fallo seguido: se deriva (aviso único por conversación)
+            # y el conteo vuelve a empezar; el pedido en curso y las opciones
+            # numeradas siguen valiendo.
+            guardado.pop("fallos_aclaracion", None)
+            texto = await _derivar_por_aclaracion(phone, _texto_opciones(etiquetas))
+        else:
+            logger.info("[order_flow] Aclaración sin avanzar para phone=%s: opciones numeradas", phone)
+            texto = PREGUNTA_OPCIONES_NUMERADAS.format(bidones=bidones, opciones=_texto_opciones(etiquetas))
+        save_draft(phone, guardado)
 
     if es_primer_turno:
         texto = f"{_saludo(cliente)} {_quitar_saludo_inicial(texto)}"
@@ -3677,6 +3922,28 @@ async def _avisar_ejecutiva_una_vez(phone: str, fuera_de_horario: bool) -> bool:
     return False
 
 
+def _complemento_derivacion(fuera_de_horario: bool) -> str:
+    return (
+        COMPLEMENTO_DERIVACION_FUERA_DE_HORARIO.format(horario=texto_horario_atencion())
+        if fuera_de_horario
+        else COMPLEMENTO_DERIVACION_EN_HORARIO
+    )
+
+
+async def _derivar_por_aclaracion(phone: str, opciones: str) -> str:
+    """La aclaración de bidones no avanzó ni con opciones numeradas: se
+    avisa a la ejecutiva (una sola vez por conversación, el mismo aviso de
+    siempre) y se le dice al cliente que puede seguir respondiendo."""
+    fuera_de_horario = not en_horario_atencion(_ahora())
+    if await _avisar_ejecutiva_una_vez(phone, fuera_de_horario):
+        logger.info("[order_flow] Aclaración sin avanzar para phone=%s: ya se avisó, no se reenvía", phone)
+    else:
+        logger.info("[order_flow] Aclaración sin avanzar para phone=%s: se avisó a la ejecutiva", phone)
+    return MENSAJE_DERIVACION_ACLARACION.format(
+        complemento=_complemento_derivacion(fuera_de_horario), opciones=opciones
+    )
+
+
 async def _derivar_por_solicitud(phone: str, draft: dict | None, cliente: dict | None) -> str:
     """Respuesta a "pásame con la ejecutiva": se avisa a la ejecutiva con el
     mismo aviso que la derivación espontánea (con la marca de fuera de
@@ -3687,11 +3954,7 @@ async def _derivar_por_solicitud(phone: str, draft: dict | None, cliente: dict |
     ahora = _ahora()
     fuera_de_horario = not en_horario_atencion(ahora)
     nombre = f", {cliente['nombre']}" if cliente and cliente.get("nombre") else ""
-    complemento = (
-        COMPLEMENTO_DERIVACION_FUERA_DE_HORARIO.format(horario=texto_horario_atencion())
-        if fuera_de_horario
-        else COMPLEMENTO_DERIVACION_EN_HORARIO
-    )
+    complemento = _complemento_derivacion(fuera_de_horario)
     if draft and draft.get("productos"):
         complemento = f"{complemento} {COMPLEMENTO_DERIVACION_CON_PEDIDO}"
 
@@ -4168,6 +4431,16 @@ async def _procesar_mensaje_interno(
 
     draft = get_draft(phone)
     estado = draft.get("estado") if draft else None
+
+    # Respuesta a las opciones numeradas del anti-bucle ("Responde 1 para
+    # nuevo o 2 para recarga"): el número se reemplaza por lo que significa
+    # antes de cualquier otra regla (y del LLM), para que "2" no se lea como
+    # una cantidad.
+    if message_type == "text" and draft is not None and draft.get("opciones_numeradas"):
+        eleccion = _opcion_elegida(message_text, len(draft["opciones_numeradas"]))
+        if eleccion is not None:
+            logger.info("[order_flow] Opción numerada %d de phone=%s", eleccion + 1, phone)
+            message_text = draft["opciones_numeradas"][eleccion]
 
     # "nada más" / "eso es todo" a "¿Deseas agregar algo más?": es un no, se
     # pasa directo al paso siguiente (antes de que "eso es todo, gracias" se
