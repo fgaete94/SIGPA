@@ -184,7 +184,7 @@ function Dashboard({ session, onLogout, onInactividad }) {
   <div hidden={tab !== 'Reportes'}><Reportes pedidos={data.pedidos} pedidosConAnteriores={pedidosConAnteriores} clientes={data.clientes} actualizadoEn={actualizadoEn}/></div>
   <div hidden={tab !== 'Ruta en curso'}><RutaEnCurso pedidos={data.pedidos} clientes={data.clientes} productos={data.productos} viajes={data.viajes} activa={tab === 'Ruta en curso' && !planning} onActualizar={actualizarRuta} onEntregar={entregar}/></div>
   <div hidden={tab !== 'Preparar ruta'}><Rutas pendientes={data.pendientes} clientes={data.clientes} busy={busy} onActualizar={() => setRevision(r => r + 1)} onPlanificando={setPlanning}/></div>
-  </>}{detail && <DetallePedido detail={detail} onClose={()=>setDetail(null)} onEntregar={entregar} onEditar={p => { setDetail(null); setAviso(''); setEditandoPedido(p); }}/>}{editandoPedido && data && <EditarPedido pedido={editandoPedido} cliente={data.clientes.find(c => c.id === editandoPedido.cliente_id)} productos={data.productos} onClose={()=>setEditandoPedido(null)} onSaved={p => { const { lineas, ...pedido } = p; setData(d => ({ ...d, pedidos: d.pedidos.map(x => x.id === pedido.id ? pedido : x) })); setAviso(`Pedido #${p.id} actualizado: ${lineas.map(l => `${l.cantidad_solicitada} × ${l.producto_nombre}`).join(', ')} · ${money(p.total)}.`); setEditandoPedido(null); setRevision(r => r + 1); }}/>}{ficha && <FichaDelCliente clienteId={ficha} onClose={()=>setFicha(null)} onVerPedido={id => { setFicha(null); view(id); }} onEditar={c => { setFicha(null); setEditing(data?.clientes.find(x => x.id === c.id) || c); }}/>}{entregando && <RegistrarEntrega pedidoId={entregando} onClose={()=>setEntregando(null)} onRegistrado={entregaRegistrada}/>}{editing && <FormCliente cliente={editing === 'nuevo' ? null : editing} clientes={data?.clientes || []} onClose={()=>setEditing(null)} onSaved={c=>{setAviso(editing === 'nuevo' ? `Cliente ${name(c)} creado (#${c.id}). Ya puede pedir por WhatsApp desde su número.` : `Cambios de ${name(c)} guardados.`); setEditing(null); setRevision(r=>r+1);}}/>}{creandoPedido && data && <NuevoPedido clientes={data.clientes} productos={data.productos} onClose={()=>setCreandoPedido(false)} onSaved={p=>{setAviso(`Pedido #${p.id} creado para ${p.cliente_nombre || 'el cliente'} por ${money(p.total)}. Quedó pendiente.`); setCreandoPedido(false); setRevision(r=>r+1);}}/>}</div></main></div>;
+  </>}{detail && <DetallePedido detail={detail} onClose={()=>setDetail(null)} onEntregar={entregar} onEditar={p => { setDetail(null); setAviso(''); setEditandoPedido(p); }} onRevisado={id => { setAviso(`Pedido #${id} marcado como revisado.`); setRevision(r => r + 1); view(id); }}/>}{editandoPedido && data && <EditarPedido pedido={editandoPedido} cliente={data.clientes.find(c => c.id === editandoPedido.cliente_id)} productos={data.productos} onClose={()=>setEditandoPedido(null)} onSaved={p => { const { lineas, ...pedido } = p; setData(d => ({ ...d, pedidos: d.pedidos.map(x => x.id === pedido.id ? pedido : x) })); setAviso(`Pedido #${p.id} actualizado: ${lineas.map(l => `${l.cantidad_solicitada} × ${l.producto_nombre}`).join(', ')} · ${money(p.total)}.`); setEditandoPedido(null); setRevision(r => r + 1); }}/>}{ficha && <FichaDelCliente clienteId={ficha} onClose={()=>setFicha(null)} onVerPedido={id => { setFicha(null); view(id); }} onEditar={c => { setFicha(null); setEditing(data?.clientes.find(x => x.id === c.id) || c); }}/>}{entregando && <RegistrarEntrega pedidoId={entregando} onClose={()=>setEntregando(null)} onRegistrado={entregaRegistrada}/>}{editing && <FormCliente cliente={editing === 'nuevo' ? null : editing} clientes={data?.clientes || []} onClose={()=>setEditing(null)} onSaved={c=>{setAviso(editing === 'nuevo' ? `Cliente ${name(c)} creado (#${c.id}). Ya puede pedir por WhatsApp desde su número.` : `Cambios de ${name(c)} guardados.`); setEditing(null); setRevision(r=>r+1);}}/>}{creandoPedido && data && <NuevoPedido clientes={data.clientes} productos={data.productos} onClose={()=>setCreandoPedido(false)} onSaved={p=>{setAviso(`Pedido #${p.id} creado para ${p.cliente_nombre || 'el cliente'} por ${money(p.total)}. Quedó pendiente.`); setCreandoPedido(false); setRevision(r=>r+1);}}/>}</div></main></div>;
 }
 
 // #137: columnas ordenables de la tabla de clientes. El día de reparto sigue el orden de la semana.
@@ -235,13 +235,27 @@ function TablaClientes({ clientes, onEditar, onVerFicha }) {
   </div>;
 }
 
-function DetallePedido({ detail, onClose, onEntregar, onEditar }) {
+function DetallePedido({ detail, onClose, onEntregar, onEditar, onRevisado }) {
+  const [revisando, setRevisando] = useState(false);
+  const [errorRevision, setErrorRevision] = useState('');
+  // PATCH /pedidos/{id} con requiere_revision=false: el backend borra el motivo y lo registra en la auditoría.
+  async function marcarRevisado(id) {
+    setRevisando(true); setErrorRevision('');
+    try { await api(`/pedidos/${id}`, { method: 'PATCH', body: JSON.stringify({ requiere_revision: false }) }); onRevisado(id); }
+    catch (e) { setErrorRevision(e.message); setRevisando(false); }
+  }
   const { historial } = detail;
   return <div className="modal" role="dialog" aria-modal="true" aria-label="Detalle del pedido"><section>
     <button autoFocus onClick={onClose}>Cerrar detalle</button><h2>Pedido #{detail.id}</h2>
     <p>{detail.cliente_nombre} · <span className={`badge ${detail.estado}`}>{ETIQUETA_ESTADO[detail.estado]}</span></p>
     <p>{detail.direccion_despacho || 'Sin dirección de despacho informada'}</p>
+    {detail.requiere_revision && <div className="aviso-revision" role="status">
+      <p><strong>Requiere revisión</strong>{detail.motivo_revision && <> · {detail.motivo_revision}</>}</p>
+      <p className="muted">Pedido grande: contacta al cliente para coordinar la entrega. Cuando esté coordinado, márcalo como revisado.</p>
+      <button className="primary" disabled={revisando} onClick={() => marcarRevisado(detail.id)}>{revisando ? 'Guardando…' : 'Marcar como revisado'}</button>
+    </div>}
     {detail.lineas.map((l,i)=><p key={i}>{l.cantidad_solicitada === 0 ? <>{l.cantidad_entregada ?? 0} × {l.producto_nombre} · {money(l.precio_unitario)} · agregado al entregar</> : <>{l.cantidad_solicitada} × {l.producto_nombre} · {money(l.precio_unitario)}{l.cantidad_entregada != null && ` · entregó ${l.cantidad_entregada}`}</>}</p>)}<strong>Total: {money(detail.total)}</strong>
+    {errorRevision && <p role="alert" className="error">No se pudo marcar como revisado: {errorRevision}</p>}
     {(puedeEntregarse(detail.estado) || puedeEditarse(detail.estado)) && <p className="acciones">
       {puedeEntregarse(detail.estado) && <button className="primary" onClick={() => onEntregar(detail.id)}>Registrar entrega</button>}
       {puedeEditarse(detail.estado) && <button onClick={() => onEditar(detail)}>Editar pedido</button>}
@@ -286,7 +300,7 @@ function OrderTable({ rows, view, cambiarEstado, cambiando, entregar, paraPestan
           return <tr key={p.id}>
             <td data-label="Pedido" className="col-pedido">#{p.id}</td>
             {paraPestanaPedidos && <td data-label="Fecha">{fechaCorta(p.creado_en)}{p.reagendado_para && <small className="reagendado">Reagendado para el {fechaCorta(`${p.reagendado_para}T12:00:00Z`)}</small>}</td>}
-            <td data-label="Cliente" className="col-cliente">{p.cliente_nombre || `Cliente ${p.cliente_id}`}</td>
+            <td data-label="Cliente" className="col-cliente">{p.cliente_nombre || `Cliente ${p.cliente_id}`}{p.requiere_revision && <span className="marca-revision" title={p.motivo_revision || undefined}>Requiere revisión{p.motivo_revision && <small>{p.motivo_revision}</small>}</span>}</td>
             <td data-label="Comuna" className="col-comuna">{p.comuna_nombre || '—'}</td>
             {!paraPestanaPedidos && <td data-label="Estado"><span className={`badge ${p.estado}`}>{ETIQUETA_ESTADO[p.estado] || p.estado}</span></td>}
             <td data-label="Total" className="col-total">{money(p.total)}</td>
